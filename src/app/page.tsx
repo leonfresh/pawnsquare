@@ -1,66 +1,169 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+"use client";
+
+import dynamic from "next/dynamic";
+import { useState, useEffect } from "react";
+
+const World = dynamic(() => import("@/components/world"), { ssr: false });
 
 export default function Home() {
-  return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.tsx file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
+  const [joined, setJoined] = useState(false);
+  const [username, setUsername] = useState("");
+  const [gender, setGender] = useState<"male" | "female">("male");
+  const [inputValue, setInputValue] = useState("");
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem("pawnsquare-user");
+    if (stored) {
+      try {
+        const data = JSON.parse(stored);
+        setUsername(data.username || "");
+        setGender(data.gender || "male");
+        setJoined(true);
+      } catch {}
+    }
+  }, []);
+
+  const handleJoin = () => {
+    const name = inputValue.trim() || "Guest";
+    setUsername(name);
+    sessionStorage.setItem(
+      "pawnsquare-user",
+      JSON.stringify({ username: name, gender })
+    );
+    setJoined(true);
+  };
+
+  if (!joined) {
+    return (
+      <div style={{
+        position: "fixed",
+        inset: 0,
+        background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "system-ui, -apple-system, sans-serif"
+      }}>
+        <div style={{
+          background: "white",
+          borderRadius: "20px",
+          padding: "40px",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+          maxWidth: "400px",
+          width: "90%"
+        }}>
+          <h1 style={{
+            margin: "0 0 10px 0",
+            fontSize: "32px",
+            fontWeight: "700",
+            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text"
+          }}>PawnSquare</h1>
+          <p style={{ margin: "0 0 30px 0", color: "#666", fontSize: "14px" }}>
+            Enter the 3D multiplayer world
           </p>
-        </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          
+          <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#333", fontSize: "14px" }}>
+            Username
+          </label>
+          <input
+            type="text"
+            placeholder="Enter your name..."
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+            maxLength={24}
+            style={{
+              width: "100%",
+              padding: "12px 16px",
+              fontSize: "16px",
+              border: "2px solid #e0e0e0",
+              borderRadius: "12px",
+              outline: "none",
+              transition: "border-color 0.2s",
+              boxSizing: "border-box",
+              marginBottom: "20px"
+            }}
+            onFocus={(e) => e.target.style.borderColor = "#667eea"}
+            onBlur={(e) => e.target.style.borderColor = "#e0e0e0"}
+          />
+
+          <label style={{ display: "block", marginBottom: "12px", fontWeight: "600", color: "#333", fontSize: "14px" }}>
+            Avatar Gender
+          </label>
+          <div style={{ display: "flex", gap: "12px", marginBottom: "30px" }}>
+            <button
+              onClick={() => setGender("male")}
+              style={{
+                flex: 1,
+                padding: "16px",
+                fontSize: "16px",
+                fontWeight: "600",
+                border: gender === "male" ? "3px solid #667eea" : "2px solid #e0e0e0",
+                borderRadius: "12px",
+                background: gender === "male" ? "#f0f4ff" : "white",
+                color: gender === "male" ? "#667eea" : "#666",
+                cursor: "pointer",
+                transition: "all 0.2s"
+              }}
+            >
+              🚹 Male
+            </button>
+            <button
+              onClick={() => setGender("female")}
+              style={{
+                flex: 1,
+                padding: "16px",
+                fontSize: "16px",
+                fontWeight: "600",
+                border: gender === "female" ? "3px solid #764ba2" : "2px solid #e0e0e0",
+                borderRadius: "12px",
+                background: gender === "female" ? "#f8f0ff" : "white",
+                color: gender === "female" ? "#764ba2" : "#666",
+                cursor: "pointer",
+                transition: "all 0.2s"
+              }}
+            >
+              🚺 Female
+            </button>
+          </div>
+
+          <button
+            onClick={handleJoin}
+            style={{
+              width: "100%",
+              padding: "16px",
+              fontSize: "18px",
+              fontWeight: "700",
+              border: "none",
+              borderRadius: "12px",
+              background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+              color: "white",
+              cursor: "pointer",
+              transition: "transform 0.2s, box-shadow 0.2s",
+              boxShadow: "0 4px 12px rgba(102, 126, 234, 0.4)"
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = "translateY(-2px)";
+              e.currentTarget.style.boxShadow = "0 6px 20px rgba(102, 126, 234, 0.5)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = "translateY(0)";
+              e.currentTarget.style.boxShadow = "0 4px 12px rgba(102, 126, 234, 0.4)";
+            }}
           >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            Join World
+          </button>
         </div>
-      </main>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0 }}>
+      <World initialName={username} initialGender={gender} onExit={() => {}} />
     </div>
   );
 }
