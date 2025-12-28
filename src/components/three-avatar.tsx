@@ -11,6 +11,203 @@ import {
   type AvatarAnimationDataSource,
 } from "@/lib/threeAvatar";
 
+type BoneKey =
+  | "hips"
+  | "spine"
+  | "chest"
+  | "leftUpperLeg"
+  | "rightUpperLeg"
+  | "leftLowerLeg"
+  | "rightLowerLeg"
+  | "leftFoot"
+  | "rightFoot"
+  | "leftUpperArm"
+  | "rightUpperArm"
+  | "leftLowerArm"
+  | "rightLowerArm";
+
+function buildHeuristicHumanoidMap(
+  root: THREE.Object3D
+): Map<BoneKey, THREE.Object3D> {
+  const out = new Map<BoneKey, THREE.Object3D>();
+
+  // First try to pick the primary deform skeleton from SkinnedMesh.
+  const skeletonSet = new Set<THREE.Skeleton>();
+  root.traverse((obj) => {
+    const anyObj = obj as any;
+    if (anyObj?.isSkinnedMesh && anyObj?.skeleton) {
+      skeletonSet.add(anyObj.skeleton as THREE.Skeleton);
+    }
+  });
+
+  let bones: THREE.Bone[] = [];
+  if (skeletonSet.size) {
+    // Choose the skeleton with the most bones (usually the main body rig).
+    let best: THREE.Skeleton | null = null;
+    let bestCount = -1;
+    for (const sk of skeletonSet) {
+      const count = sk.bones?.length ?? 0;
+      if (count > bestCount) {
+        bestCount = count;
+        best = sk;
+      }
+    }
+    bones = best?.bones ? [...best.bones] : [];
+  }
+
+  // Fallback: collect any bones reachable under the avatar root.
+  if (!bones.length) {
+    const boneSet = new Set<THREE.Bone>();
+    root.traverse((obj) => {
+      if ((obj as any).isBone) boneSet.add(obj as THREE.Bone);
+      const anyObj = obj as any;
+      const skeleton = anyObj?.skeleton as THREE.Skeleton | undefined;
+      if (skeleton?.bones?.length) {
+        for (const b of skeleton.bones) boneSet.add(b);
+      }
+    });
+    bones = Array.from(boneSet);
+  }
+
+  if (!bones.length) return out;
+
+  root.updateMatrixWorld(true);
+
+  const tmp = new THREE.Vector3();
+  const worldPos = new Map<THREE.Bone, THREE.Vector3>();
+
+  const getPos = (b: THREE.Bone) => {
+    let v = worldPos.get(b);
+    if (!v) {
+      v = b.getWorldPosition(tmp.clone());
+      worldPos.set(b, v);
+    }
+    return v;
+  };
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const b of bones) {
+    const v = getPos(b);
+    if (v.y < minY) minY = v.y;
+    if (v.y > maxY) maxY = v.y;
+  }
+  const height = Math.max(1e-6, maxY - minY);
+  const pelvisY = minY + height * 0.55;
+
+  const childBones = (b: THREE.Bone) =>
+    b.children.filter((c): c is THREE.Bone => (c as any).isBone);
+
+  // Pick hips: near center, around pelvis height, has both up and down children.
+  let bestHips: THREE.Bone | null = null;
+  let bestScore = -Infinity;
+  for (const b of bones) {
+    const p = getPos(b);
+    const kids = childBones(b);
+    if (kids.length < 2) continue;
+
+    let down = 0;
+    let up = 0;
+    for (const k of kids) {
+      const kp = getPos(k);
+      if (kp.y < p.y - height * 0.03) down++;
+      if (kp.y > p.y + height * 0.02) up++;
+    }
+    if (down < 1 || up < 1) continue;
+
+    const yScore = 1 - Math.min(1, Math.abs(p.y - pelvisY) / height);
+    const xScore = 1 - Math.min(1, Math.abs(p.x) / (height * 0.25));
+    const score = down * 2 + up + yScore * 2 + xScore;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestHips = b;
+    }
+  }
+
+  if (!bestHips) return out;
+  out.set("hips", bestHips);
+
+  const hipsPos = getPos(bestHips);
+  const hipsKids = childBones(bestHips);
+  const upKids = hipsKids
+    .filter((k) => getPos(k).y > hipsPos.y + height * 0.02)
+    .sort((a, b) => getPos(b).y - getPos(a).y);
+  if (upKids[0]) out.set("spine", upKids[0]);
+
+  // Chest = next bone up the spine if present.
+  const spine = out.get("spine") as THREE.Bone | undefined;
+  if (spine) {
+    const spinePos = getPos(spine);
+    const spineUp = childBones(spine)
+      .filter((k) => getPos(k).y > spinePos.y + height * 0.01)
+      .sort((a, b) => getPos(b).y - getPos(a).y);
+    if (spineUp[0]) out.set("chest", spineUp[0]);
+  }
+
+  // Legs: choose two most left/right children below hips.
+  const downKids = hipsKids
+    .filter((k) => getPos(k).y < hipsPos.y - height * 0.03)
+    .sort((a, b) => getPos(a).x - getPos(b).x);
+  const leftUpperLeg = downKids[0];
+  const rightUpperLeg = downKids.length >= 2 ? downKids[downKids.length - 1] : null;
+
+  if (leftUpperLeg) out.set("leftUpperLeg", leftUpperLeg);
+  if (rightUpperLeg) out.set("rightUpperLeg", rightUpperLeg);
+
+  const pickDownChain = (start?: THREE.Bone | null) => {
+    if (!start) return { lower: null as THREE.Bone | null, foot: null as THREE.Bone | null };
+    const startPos = getPos(start);
+    const lower = childBones(start)
+      .filter((k) => getPos(k).y < startPos.y - height * 0.02)
+      .sort((a, b) => getPos(a).y - getPos(b).y)[0];
+    if (!lower) return { lower: null, foot: null };
+    const lowerPos = getPos(lower);
+    const foot = childBones(lower)
+      .filter((k) => getPos(k).y < lowerPos.y - height * 0.01)
+      .sort((a, b) => getPos(a).y - getPos(b).y)[0];
+    return { lower, foot: foot ?? null };
+  };
+
+  const leftChain = pickDownChain(leftUpperLeg ?? null);
+  const rightChain = pickDownChain(rightUpperLeg ?? null);
+  if (leftChain.lower) out.set("leftLowerLeg", leftChain.lower);
+  if (rightChain.lower) out.set("rightLowerLeg", rightChain.lower);
+  if (leftChain.foot) out.set("leftFoot", leftChain.foot);
+  if (rightChain.foot) out.set("rightFoot", rightChain.foot);
+
+  // Arms (optional, best-effort): pick two farthest-x bones near top as upper arms.
+  const chestOrSpine = (out.get("chest") as THREE.Bone | undefined) ?? spine;
+  if (chestOrSpine) {
+    const basePos = getPos(chestOrSpine);
+    const candidates = bones
+      .filter((b) => {
+        const p = getPos(b);
+        return p.y > basePos.y - height * 0.05 && p.y < basePos.y + height * 0.15;
+      })
+      .sort((a, b) => Math.abs(getPos(b).x) - Math.abs(getPos(a).x));
+    const left = candidates.find((b) => getPos(b).x < -height * 0.05);
+    const right = candidates.find((b) => getPos(b).x > height * 0.05);
+    if (left) out.set("leftUpperArm", left);
+    if (right) out.set("rightUpperArm", right);
+
+    const pickArmLower = (upper?: THREE.Bone) => {
+      if (!upper) return null;
+      const upPos = getPos(upper);
+      return (
+        childBones(upper)
+          .filter((k) => getPos(k).y < upPos.y + height * 0.03)
+          .sort((a, b) => getPos(a).y - getPos(b).y)[0] ?? null
+      );
+    };
+    const lLower = pickArmLower(left ?? undefined);
+    const rLower = pickArmLower(right ?? undefined);
+    if (lLower) out.set("leftLowerArm", lLower);
+    if (rLower) out.set("rightLowerArm", rLower);
+  }
+
+  return out;
+}
+
 const ANIMATION_MAP: AvatarAnimationDataSource = {
   idle: "/three-avatar/asset/animation/idle.fbx",
   walk: "/three-avatar/asset/animation/walk.fbx",
@@ -36,15 +233,36 @@ async function ensureAnimationsLoaded() {
 export function ThreeAvatar({
   movingSpeed = 0,
   url,
+  pose = "stand",
 }: {
   movingSpeed?: number;
   url?: string;
+  pose?: "stand" | "sit";
 }) {
   const { gl } = useThree();
   const [avatar, setAvatar] = useState<Avatar | null>(null);
 
   const avatarRef = useRef<Avatar | null>(null);
   const lastClipRef = useRef<"idle" | "walk" | null>(null);
+  const restQuatsByNodeRef = useRef<WeakMap<THREE.Object3D, THREE.Quaternion>>(
+    new WeakMap()
+  );
+  const tmpQuatRef = useRef<THREE.Quaternion>(new THREE.Quaternion());
+  const tmpTargetQuatRef = useRef<THREE.Quaternion>(new THREE.Quaternion());
+  const boneNameIndexRef = useRef<Map<string, THREE.Object3D>>(new Map());
+  const heuristicHumanoidRef = useRef<Map<BoneKey, THREE.Object3D>>(new Map());
+  const warnedNoBonesRef = useRef(false);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    const a = avatarRef.current;
+    // eslint-disable-next-line no-console
+    console.log("[pose]", pose, {
+      hasAvatar: !!a,
+      hasVrm: !!a?.vrm,
+      heuristicKeys: Array.from(heuristicHumanoidRef.current.keys()),
+    });
+  }, [pose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +325,34 @@ export function ThreeAvatar({
 
       nextAvatar.object3D.rotation.y = MODEL_YAW_OFFSET;
 
+      // Ground the avatar so its feet touch y=0 in local space.
+      // Different avatar exports have different origins; this normalizes them.
+      try {
+        nextAvatar.object3D.updateWorldMatrix(true, true);
+        const box = new THREE.Box3().setFromObject(nextAvatar.object3D);
+        if (Number.isFinite(box.min.y)) {
+          const lift = -box.min.y;
+          // Small epsilon avoids z-fighting with the ground.
+          nextAvatar.object3D.position.y += lift + 0.002;
+          nextAvatar.object3D.updateWorldMatrix(true, true);
+        }
+      } catch {
+        // ignore grounding failures
+      }
+
+      // Reset any cached pose/rest data for the newly loaded avatar.
+      restQuatsByNodeRef.current = new WeakMap();
+      warnedNoBonesRef.current = false;
+      lastClipRef.current = null;
+      const nameIndex = new Map<string, THREE.Object3D>();
+      nextAvatar.object3D.traverse((obj) => {
+        if (obj.name) nameIndex.set(obj.name.toLowerCase(), obj);
+      });
+      boneNameIndexRef.current = nameIndex;
+
+      // Heuristic fallback: works for skinned humanoids even if bones have no names.
+      heuristicHumanoidRef.current = buildHeuristicHumanoidMap(nextAvatar.object3D);
+
       if (cancelled) {
         nextAvatar.dispose();
         return;
@@ -126,12 +372,124 @@ export function ThreeAvatar({
   }, [gl, url]);
 
   useFrame((_state, dt) => {
-    avatarRef.current?.tick(dt);
+    const a = avatarRef.current;
+    if (!a) return;
+    a.tick(dt);
+
+    // Procedural sit pose (best-effort) for VRM avatars.
+    // This avoids needing external tooling/authoring for a sit.fbx.
+    const vrm = a.vrm;
+    const humanoid = vrm?.humanoid;
+
+    const BONE_ALIASES: Record<string, string[]> = {
+      hips: ["Hips", "mixamorigHips", "hips"],
+      spine: ["Spine", "mixamorigSpine", "spine"],
+      chest: ["Chest", "Spine1", "mixamorigSpine1", "chest"],
+      leftUpperLeg: ["LeftUpLeg", "mixamorigLeftUpLeg", "leftUpperLeg"],
+      rightUpperLeg: ["RightUpLeg", "mixamorigRightUpLeg", "rightUpperLeg"],
+      leftLowerLeg: ["LeftLeg", "mixamorigLeftLeg", "leftLowerLeg"],
+      rightLowerLeg: ["RightLeg", "mixamorigRightLeg", "rightLowerLeg"],
+      leftFoot: ["LeftFoot", "mixamorigLeftFoot", "leftFoot"],
+      rightFoot: ["RightFoot", "mixamorigRightFoot", "rightFoot"],
+      leftUpperArm: ["LeftArm", "mixamorigLeftArm", "leftUpperArm"],
+      rightUpperArm: ["RightArm", "mixamorigRightArm", "rightUpperArm"],
+      leftLowerArm: ["LeftForeArm", "mixamorigLeftForeArm", "leftLowerArm"],
+      rightLowerArm: ["RightForeArm", "mixamorigRightForeArm", "rightLowerArm"],
+    };
+
+    const getBone = (boneName: BoneKey | string): THREE.Object3D | null => {
+      if (humanoid) {
+        return (
+          (humanoid.getNormalizedBoneNode as any)?.(boneName) ||
+          (humanoid.getBoneNode as any)?.(boneName) ||
+          (humanoid.getRawBoneNode as any)?.(boneName) ||
+          null
+        );
+      }
+
+      const heuristic = heuristicHumanoidRef.current;
+      if (heuristic && heuristic.has(boneName as BoneKey)) {
+        return heuristic.get(boneName as BoneKey) ?? null;
+      }
+
+      const index = boneNameIndexRef.current;
+      const aliases = BONE_ALIASES[boneName] ?? [boneName];
+      for (const alias of aliases) {
+        const found = index.get(alias.toLowerCase());
+        if (found) return found;
+      }
+      return null;
+    };
+
+    const lerpAlpha = 1 - Math.pow(0.0001, dt * 6);
+    const sitQ = tmpQuatRef.current;
+    const targetQ = tmpTargetQuatRef.current;
+    const restByNode = restQuatsByNodeRef.current;
+
+    let appliedAny = false;
+
+    const apply = (boneName: string, sitEuler: THREE.Euler) => {
+      const node = getBone(boneName);
+      if (!node) return;
+      appliedAny = true;
+      let restQ = restByNode.get(node);
+      if (!restQ) {
+        restQ = node.quaternion.clone();
+        restByNode.set(node, restQ);
+      }
+      if (pose === "sit") {
+        sitQ.setFromEuler(sitEuler);
+        targetQ.multiplyQuaternions(restQ, sitQ);
+        node.quaternion.slerp(targetQ, lerpAlpha);
+      } else {
+        node.quaternion.slerp(restQ, lerpAlpha);
+      }
+    };
+
+    // Values are conservative and may vary across VRMs, but should read as seated.
+    apply("hips", new THREE.Euler(-0.35, 0, 0));
+    apply("spine", new THREE.Euler(0.18, 0, 0));
+    apply("chest", new THREE.Euler(0.12, 0, 0));
+
+    apply("leftUpperLeg", new THREE.Euler(1.1, 0.05, 0));
+    apply("rightUpperLeg", new THREE.Euler(1.1, -0.05, 0));
+    apply("leftLowerLeg", new THREE.Euler(-1.25, 0, 0));
+    apply("rightLowerLeg", new THREE.Euler(-1.25, 0, 0));
+    apply("leftFoot", new THREE.Euler(0.25, 0, 0));
+    apply("rightFoot", new THREE.Euler(0.25, 0, 0));
+
+    apply("leftUpperArm", new THREE.Euler(0.25, 0.15, 0));
+    apply("rightUpperArm", new THREE.Euler(0.25, -0.15, 0));
+    apply("leftLowerArm", new THREE.Euler(-0.25, 0, 0));
+    apply("rightLowerArm", new THREE.Euler(-0.25, 0, 0));
+
+    if (pose === "sit" && !appliedAny && !warnedNoBonesRef.current) {
+      warnedNoBonesRef.current = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "Sit pose requested, but no humanoid bones were found. " +
+          "If you are using a non-VRM avatar/rig, its bone names may not match the fallback list."
+      );
+
+      // eslint-disable-next-line no-console
+      console.info(
+        "Heuristic map keys:",
+        Array.from(heuristicHumanoidRef.current.keys())
+      );
+    }
   });
 
   useEffect(() => {
     const a = avatarRef.current;
     if (!a) return;
+
+    if (pose === "sit") {
+      if (lastClipRef.current !== "idle") {
+        a.playClip("idle");
+        lastClipRef.current = "idle";
+      }
+      return;
+    }
 
     // Hysteresis prevents chattering around the threshold.
     const walkOn = 0.45;
@@ -150,7 +508,7 @@ export function ThreeAvatar({
       a.playClip(next);
       lastClipRef.current = next;
     }
-  }, [movingSpeed]);
+  }, [movingSpeed, pose]);
 
   if (!avatar) return null;
   return <primitive object={avatar.object3D} />;

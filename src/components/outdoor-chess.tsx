@@ -6,6 +6,7 @@ import { Chess, type Square } from "chess.js";
 import PartySocket from "partysocket";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import type { Vec3 } from "@/lib/partyRoom";
 
 type Side = "w" | "b";
 
@@ -22,19 +23,26 @@ type ClockState = {
   lastTickMs: number | null;
 };
 
+type SeatInfo = {
+  connId: string;
+  playerId: string;
+  name: string;
+};
+
 type ChessNetState = {
-  seats: { w: string | null; b: string | null };
+  seats: { w: SeatInfo | null; b: SeatInfo | null };
   fen: string;
   seq: number;
   clock: ClockState;
   result: GameResult | null;
+  lastMove: { from: Square; to: Square } | null;
 };
 
 type ChessMessage =
   | { type: "state"; state: ChessNetState };
 
 type ChessSendMessage =
-  | { type: "join"; side: Side }
+  | { type: "join"; side: Side; playerId?: string; name?: string }
   | { type: "leave"; side: Side }
   | { type: "move"; from: Square; to: Square; promotion?: "q" | "r" | "b" | "n" }
   | { type: "setTime"; baseSeconds: number }
@@ -153,6 +161,121 @@ function PieceModel({
 }
 
 const BOARD_TOP_Y = 0.08;
+const SQUARE_TOP_Y = 0.04;
+
+function easeInOut(t: number) {
+  // smoothstep
+  return t * t * (3 - 2 * t);
+}
+
+function AnimatedPiece({
+  square,
+  type,
+  color,
+  originVec,
+  squareSize,
+  animateFrom,
+  animSeq,
+  canMove,
+  mySide,
+  onPickPiece,
+  whiteTint,
+  blackTint,
+}: {
+  square: Square;
+  type: string;
+  color: Side;
+  originVec: THREE.Vector3;
+  squareSize: number;
+  animateFrom: Square | null;
+  animSeq: number;
+  canMove: boolean;
+  mySide: Side | null;
+  onPickPiece: (sq: Square) => void;
+  whiteTint: THREE.Color;
+  blackTint: THREE.Color;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const animRef = useRef<{
+    seq: number;
+    startMs: number;
+    from: THREE.Vector3;
+    to: THREE.Vector3;
+  } | null>(null);
+
+  const finalPos = useMemo(
+    () => squareCenter(square, originVec, squareSize),
+    [square, originVec, squareSize]
+  );
+
+  useEffect(() => {
+    if (!animateFrom) {
+      animRef.current = null;
+      const g = groupRef.current;
+      if (g) g.position.set(finalPos.x, BOARD_TOP_Y, finalPos.z);
+      return;
+    }
+
+    const fromPos = squareCenter(animateFrom, originVec, squareSize);
+    animRef.current = {
+      seq: animSeq,
+      startMs: performance.now(),
+      from: fromPos,
+      to: finalPos,
+    };
+    const g = groupRef.current;
+    if (g) g.position.set(fromPos.x, BOARD_TOP_Y, fromPos.z);
+  }, [animateFrom, animSeq, originVec, squareSize, finalPos]);
+
+  useFrame(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    const a = animRef.current;
+    if (!a) {
+      g.position.set(finalPos.x, BOARD_TOP_Y, finalPos.z);
+      return;
+    }
+    if (a.seq !== animSeq) {
+      animRef.current = null;
+      g.position.set(finalPos.x, BOARD_TOP_Y, finalPos.z);
+      return;
+    }
+
+    const dur = 240;
+    const t = (performance.now() - a.startMs) / dur;
+    const k = easeInOut(clamp(t, 0, 1));
+    const x = THREE.MathUtils.lerp(a.from.x, a.to.x, k);
+    const z = THREE.MathUtils.lerp(a.from.z, a.to.z, k);
+    g.position.set(x, BOARD_TOP_Y, z);
+
+    if (t >= 1) {
+      animRef.current = null;
+    }
+  });
+
+  const tint = color === "w" ? whiteTint : blackTint;
+  const scale = 11.25;
+
+  return (
+    <group
+      ref={groupRef}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onPickPiece(square);
+      }}
+      onPointerEnter={() => {
+        if (canMove) document.body.style.cursor = "pointer";
+      }}
+      onPointerLeave={() => {
+        document.body.style.cursor = "default";
+      }}
+    >
+      <group scale={[scale, scale, scale]}>
+        <PieceModel path={piecePath(type)} tint={tint} />
+      </group>
+    </group>
+  );
+}
 
 function JoinPad({
   label,
@@ -247,16 +370,31 @@ function JoinPad({
 
 export function OutdoorChess({
   roomId,
+  boardKey,
+  origin,
   selfPositionRef,
   selfId,
+  selfName,
+  joinLockedBoardKey,
+  onJoinIntent,
+  onSelfSeatChange,
+  onRequestMove,
 }: {
   roomId: string;
+  boardKey: string;
+  origin: [number, number, number];
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
+  selfName?: string;
+  joinLockedBoardKey?: string | null;
+  onJoinIntent?: (boardKey: string) => void;
+  onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
+  onRequestMove?: (dest: Vec3, opts?: { rotY?: number; sit?: boolean }) => void;
 }) {
-  // Place the board inside the central plaza, but not directly on spawn.
-  // Movement bounds are x/z clamped to [-18, 18] in world.
-  const origin = useMemo(() => new THREE.Vector3(0, 0.04, -10), []);
+  const originVec = useMemo(
+    () => new THREE.Vector3(origin[0], origin[1], origin[2]),
+    [origin]
+  );
   const squareSize = 0.6;
   const boardSize = squareSize * 8;
 
@@ -269,6 +407,7 @@ export function OutdoorChess({
   const [chessConnected, setChessConnected] = useState(false);
   const chessConnectedRef = useRef(false);
   const pendingJoinRef = useRef<Side | null>(null);
+  const [pendingJoinSide, setPendingJoinSide] = useState<Side | null>(null);
   
   useEffect(() => {
     chessConnectedRef.current = chessConnected;
@@ -285,11 +424,12 @@ export function OutdoorChess({
     seq: 0,
     clock: defaultClock,
     result: null,
+    lastMove: null,
   });
 
   const mySide: Side | null = useMemo(() => {
-    if (netState.seats.w === chessSelfId) return "w";
-    if (netState.seats.b === chessSelfId) return "b";
+    if (netState.seats.w?.connId === chessSelfId) return "w";
+    if (netState.seats.b?.connId === chessSelfId) return "b";
     return null;
   }, [netState.seats.w, netState.seats.b, chessSelfId]);
 
@@ -299,7 +439,7 @@ export function OutdoorChess({
 
   const [selected, setSelected] = useState<Square | null>(null);
   const [legalTargets, setLegalTargets] = useState<Square[]>([]);
-  const [lastMove, setLastMove] = useState<{ from: Square; to: Square } | null>(null);
+  const lastMove = netState.lastMove;
 
   // Drive clock rendering while it's running.
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -316,13 +456,18 @@ export function OutdoorChess({
   };
 
   useEffect(() => {
+    onSelfSeatChange?.(boardKey, mySide);
+    if (mySide) setPendingJoinSide(null);
+  }, [boardKey, mySide, onSelfSeatChange]);
+
+  useEffect(() => {
     if (!chessConnected) return;
 
-    console.log(`[Chess] Connecting to room ${roomId}-chess`);
+    console.log(`[Chess] Connecting to room ${roomId}-chess-${boardKey}`);
     const socket = new PartySocket({
       host: PARTYKIT_HOST,
       party: "chess",
-      room: `${roomId}-chess`,
+      room: `${roomId}-chess-${boardKey}`,
     });
 
     socketRef.current = socket;
@@ -350,8 +495,6 @@ export function OutdoorChess({
           setNetState((prev) => {
             if (msg.state.seq < prev.seq) return prev;
             if (msg.state.seq === prev.seq && msg.state.fen === prev.fen) return prev;
-            setSelected(null);
-            setLegalTargets([]);
             return msg.state;
           });
         }
@@ -367,12 +510,20 @@ export function OutdoorChess({
     return () => {
       socket.close();
     };
-  }, [chessConnected, roomId]);
+  }, [chessConnected, roomId, boardKey]);
+
+  const lastSeenSeqRef = useRef<number>(-1);
+  useEffect(() => {
+    if (netState.seq === lastSeenSeqRef.current) return;
+    lastSeenSeqRef.current = netState.seq;
+    setSelected(null);
+    setLegalTargets([]);
+  }, [netState.seq]);
 
   const requestJoin = (side: Side) => {
     const seat = netState.seats[side];
-    if (seat && seat !== chessSelfId) return; // Taken by someone else
-    send({ type: "join", side });
+    if (seat && seat.connId !== chessSelfId) return; // Taken by someone else
+    send({ type: "join", side, playerId: selfId, name: selfName });
   };
 
   const requestLeave = (side: Side) => {
@@ -400,7 +551,6 @@ export function OutdoorChess({
           : undefined;
 
       submitMove(selected, square, promotion);
-      setLastMove({ from: selected, to: square });
       setSelected(null);
       setLegalTargets([]);
       return;
@@ -435,8 +585,8 @@ export function OutdoorChess({
     // Only connect to the chess room when the player is near the board.
     // This avoids doubling WebRTC room overhead for everyone.
     if (!chessConnectedRef.current) {
-      const dx = pos.x - origin.x;
-      const dz = pos.z - origin.z;
+      const dx = pos.x - originVec.x;
+      const dz = pos.z - originVec.z;
       const near = dx * dx + dz * dz < 12 * 12;
       if (near) {
         chessConnectedRef.current = true;
@@ -467,18 +617,39 @@ export function OutdoorChess({
     return out;
   }, [chess]);
 
+  const animatedFromByTo = useMemo(() => {
+    const map = new Map<Square, Square>();
+    if (!lastMove) return map;
+
+    map.set(lastMove.to, lastMove.from);
+
+    // Castling rook animation: infer rook move from king move.
+    if (lastMove.from === "e1" && lastMove.to === "g1") map.set("f1", "h1");
+    if (lastMove.from === "e1" && lastMove.to === "c1") map.set("d1", "a1");
+    if (lastMove.from === "e8" && lastMove.to === "g8") map.set("f8", "h8");
+    if (lastMove.from === "e8" && lastMove.to === "c8") map.set("d8", "a8");
+
+    return map;
+  }, [lastMove]);
+
   const padOffset = boardSize / 2 + 1.1;
   const padSize: [number, number] = [2.1, 0.7];
   const whitePadCenter = useMemo(
-    () => new THREE.Vector3(origin.x, 0.06, origin.z + padOffset),
-    [origin, padOffset]
+    () => new THREE.Vector3(originVec.x, 0.06, originVec.z + padOffset),
+    [originVec, padOffset]
   );
   const blackPadCenter = useMemo(
-    () => new THREE.Vector3(origin.x, 0.06, origin.z - padOffset),
-    [origin, padOffset]
+    () => new THREE.Vector3(originVec.x, 0.06, originVec.z - padOffset),
+    [originVec, padOffset]
   );
 
   const clickJoin = (side: Side) => {
+    if (joinLockedBoardKey && joinLockedBoardKey !== boardKey) return;
+
+    // Lock the user's intent globally so they can't start joining another board.
+    onJoinIntent?.(boardKey);
+    setPendingJoinSide(side);
+
     // Ensure we are connected, then join.
     if (!chessConnectedRef.current) {
       pendingJoinRef.current = side;
@@ -498,11 +669,20 @@ export function OutdoorChess({
     // - Clicking the other side switches
     if (mySide === side) {
       requestLeave(side);
+      setPendingJoinSide(null);
       return;
     }
 
     if (mySide) requestLeave(mySide);
     requestJoin(side);
+  };
+
+  const requestSitAt = (seatX: number, seatZ: number) => {
+    if (!onRequestMove) return;
+    const dx = originVec.x - seatX;
+    const dz = originVec.z - seatZ;
+    const face = Math.atan2(dx, dz);
+    onRequestMove([seatX, 0.36, seatZ], { rotY: face, sit: true });
   };
 
   const clocks = useMemo(() => {
@@ -562,7 +742,7 @@ export function OutdoorChess({
       {/* Result banner */}
       {resultLabel ? (
         <Text
-          position={[origin.x, origin.y + 1.5, origin.z]}
+          position={[originVec.x, originVec.y + 1.5, originVec.z]}
           fontSize={0.32}
           color="#ffffff"
           anchorX="center"
@@ -577,8 +757,21 @@ export function OutdoorChess({
 
       {/* Decorative stone benches */}
       {/* White side benches */}
-      <group position={[origin.x - 3.5, 0.2, origin.z + padOffset + 1.5]}>
-        <mesh castShadow receiveShadow>
+      <group position={[originVec.x - 3.5, 0.2, originVec.z + padOffset + 1.5]}>
+        <mesh
+          castShadow
+          receiveShadow
+          onPointerEnter={() => {
+            document.body.style.cursor = "pointer";
+          }}
+          onPointerLeave={() => {
+            document.body.style.cursor = "default";
+          }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 0.95);
+          }}
+        >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
           <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
         </mesh>
@@ -592,8 +785,21 @@ export function OutdoorChess({
           <meshStandardMaterial color="#8b7355" roughness={0.6} />
         </mesh>
       </group>
-      <group position={[origin.x + 3.5, 0.2, origin.z + padOffset + 1.5]}>
-        <mesh castShadow receiveShadow>
+      <group position={[originVec.x + 3.5, 0.2, originVec.z + padOffset + 1.5]}>
+        <mesh
+          castShadow
+          receiveShadow
+          onPointerEnter={() => {
+            document.body.style.cursor = "pointer";
+          }}
+          onPointerLeave={() => {
+            document.body.style.cursor = "default";
+          }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 0.95);
+          }}
+        >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
           <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
         </mesh>
@@ -608,8 +814,21 @@ export function OutdoorChess({
       </group>
       
       {/* Black side benches */}
-      <group position={[origin.x - 3.5, 0.2, origin.z - padOffset - 1.5]}>
-        <mesh castShadow receiveShadow>
+      <group position={[originVec.x - 3.5, 0.2, originVec.z - padOffset - 1.5]}>
+        <mesh
+          castShadow
+          receiveShadow
+          onPointerEnter={() => {
+            document.body.style.cursor = "pointer";
+          }}
+          onPointerLeave={() => {
+            document.body.style.cursor = "default";
+          }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 0.95);
+          }}
+        >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
           <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
         </mesh>
@@ -622,8 +841,21 @@ export function OutdoorChess({
           <meshStandardMaterial color="#8b7355" roughness={0.6} />
         </mesh>
       </group>
-      <group position={[origin.x + 3.5, 0.2, origin.z - padOffset - 1.5]}>
-        <mesh castShadow receiveShadow>
+      <group position={[originVec.x + 3.5, 0.2, originVec.z - padOffset - 1.5]}>
+        <mesh
+          castShadow
+          receiveShadow
+          onPointerEnter={() => {
+            document.body.style.cursor = "pointer";
+          }}
+          onPointerLeave={() => {
+            document.body.style.cursor = "default";
+          }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 0.95);
+          }}
+        >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
           <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
         </mesh>
@@ -639,7 +871,7 @@ export function OutdoorChess({
       
       {/* Decorative potted plants */}
       {[-1, 1].map((side) => (
-        <group key={`plant-${side}`} position={[origin.x + side * 5, 0, origin.z]}>
+        <group key={`plant-${side}`} position={[originVec.x + side * 5, 0, originVec.z]}>
           {/* Pot (rim + body + soil) */}
           <mesh castShadow receiveShadow position={[0, 0.12, 0]}>
             <cylinderGeometry args={[0.34, 0.38, 0.26, 14]} />
@@ -681,7 +913,7 @@ export function OutdoorChess({
       ))}
       
       {/* Board */}
-      <group position={[origin.x, origin.y, origin.z]}>
+      <group position={[originVec.x, originVec.y, originVec.z]}>
         {Array.from({ length: 64 }).map((_, idx) => {
           const file = idx % 8;
           const rankFromTop = Math.floor(idx / 8);
@@ -725,74 +957,85 @@ export function OutdoorChess({
                 />
               </mesh>
 
-              {/* Selected square highlight */}
+              {/* Glow indicators (flush to board) */}
               {isSel && (
-                <mesh position={[0, 0.06, 0]}>
-                  <boxGeometry args={[squareSize * 0.82, 0.02, squareSize * 0.82]} />
-                  <meshStandardMaterial
-                    color="#e6e6e6"
-                    roughness={0.8}
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={3}
+                >
+                  <planeGeometry args={[squareSize * 0.92, squareSize * 0.92]} />
+                  <meshBasicMaterial
+                    color="#ffffff"
                     transparent
-                    opacity={0.65}
+                    opacity={0.14}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
                   />
                 </mesh>
               )}
-              
-              {/* Legal move target highlight */}
+
               {isTarget && !isSel && (
-                <mesh position={[0, 0.06, 0]}>
-                  <boxGeometry args={[squareSize * 0.82, 0.02, squareSize * 0.82]} />
-                  <meshStandardMaterial
-                    color="#9a9a9a"
-                    roughness={0.8}
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={2}
+                >
+                  <planeGeometry args={[squareSize * 0.9, squareSize * 0.9]} />
+                  <meshBasicMaterial
+                    color="#ffffff"
                     transparent
-                    opacity={0.65}
+                    opacity={0.09}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
                   />
                 </mesh>
               )}
-              
-              {/* Last move glow - from square */}
+
               {isLastMoveFrom && (
-                <>
-                  <mesh position={[0, 0.1, 0]}>
-                    <boxGeometry args={[squareSize * 0.9, 0.01, squareSize * 0.9]} />
-                    <meshStandardMaterial
-                      color="#4a9eff"
-                      emissive="#4a9eff"
-                      emissiveIntensity={0.5}
-                      transparent
-                      opacity={0.4}
-                    />
-                  </mesh>
-                  <pointLight
-                    position={[0, 0.2, 0]}
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={1}
+                >
+                  <planeGeometry args={[squareSize * 0.96, squareSize * 0.96]} />
+                  <meshBasicMaterial
                     color="#4a9eff"
-                    intensity={0.8}
-                    distance={1.2}
+                    transparent
+                    opacity={0.18}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
                   />
-                </>
+                </mesh>
               )}
-              
-              {/* Last move glow - to square */}
+
               {isLastMoveTo && (
-                <>
-                  <mesh position={[0, 0.1, 0]}>
-                    <boxGeometry args={[squareSize * 0.9, 0.01, squareSize * 0.9]} />
-                    <meshStandardMaterial
-                      color="#ffa04a"
-                      emissive="#ffa04a"
-                      emissiveIntensity={0.6}
-                      transparent
-                      opacity={0.5}
-                    />
-                  </mesh>
-                  <pointLight
-                    position={[0, 0.2, 0]}
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={1}
+                >
+                  <planeGeometry args={[squareSize * 0.96, squareSize * 0.96]} />
+                  <meshBasicMaterial
                     color="#ffa04a"
-                    intensity={1}
-                    distance={1.5}
+                    transparent
+                    opacity={0.2}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
                   />
-                </>
+                </mesh>
               )}
             </group>
           );
@@ -801,26 +1044,38 @@ export function OutdoorChess({
 
       {/* Join pads */}
       <JoinPad
-        label={`${formatClock(clocks.remaining.w)}\n${netState.seats.w ? "White Taken" : "Join White"}`}
+        label={`${formatClock(clocks.remaining.w)}\n${
+          netState.seats.w ? (netState.seats.w.name || "White") : pendingJoinSide === "w" ? "Joining…" : "Join White"
+        }`}
         center={whitePadCenter}
         size={padSize}
         active={mySide === "w"}
-        disabled={!!netState.seats.w && netState.seats.w !== chessSelfId}
+        disabled={
+          (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
+          pendingJoinSide === "b" ||
+          (!!netState.seats.w && netState.seats.w.connId !== chessSelfId)
+        }
         onClick={() => clickJoin("w")}
       />
       <JoinPad
-        label={`${formatClock(clocks.remaining.b)}\n${netState.seats.b ? "Black Taken" : "Join Black"}`}
+        label={`${formatClock(clocks.remaining.b)}\n${
+          netState.seats.b ? (netState.seats.b.name || "Black") : pendingJoinSide === "b" ? "Joining…" : "Join Black"
+        }`}
         center={blackPadCenter}
         size={padSize}
         active={mySide === "b"}
-        disabled={!!netState.seats.b && netState.seats.b !== chessSelfId}
+        disabled={
+          (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
+          pendingJoinSide === "w" ||
+          (!!netState.seats.b && netState.seats.b.connId !== chessSelfId)
+        }
         onClick={() => clickJoin("b")}
       />
 
       {/* Time control + reset (right side of board) */}
       {(() => {
-        const controlX = origin.x + boardSize / 2 + 2.6;
-        const controlZ = origin.z;
+        const controlX = originVec.x + boardSize / 2 + 2.6;
+        const controlZ = originVec.z;
         const smallSize: [number, number] = [0.9, 0.6];
         const leftCenter = new THREE.Vector3(controlX - 1.15, 0.06, controlZ + 1.2);
         const rightCenter = new THREE.Vector3(controlX + 1.15, 0.06, controlZ + 1.2);
@@ -870,32 +1125,31 @@ export function OutdoorChess({
 
       {/* Pieces */}
       {pieces.map((p) => {
-        const pos = squareCenter(p.square, origin, squareSize);
-        const tint = p.color === "w" ? whiteTint : blackTint;
-        const scale = 11.25;
         const isMyPiece = mySide === p.color;
         const canMove = turn === p.color && isMyPiece;
+        const animateFrom = animatedFromByTo.get(p.square) ?? null;
+
+        // Keep key stable for the duration of a move animation.
+        const animKey = animateFrom
+          ? `anim:${netState.seq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
+          : `static:${p.color}:${p.type}:${p.square}`;
 
         return (
-          <group
-            key={`${p.square}:${p.type}:${p.color}`}
-            position={[pos.x, BOARD_TOP_Y, pos.z]}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              onPickPiece(p.square);
-            }}
-            onPointerEnter={() => {
-              if (canMove) document.body.style.cursor = "pointer";
-            }}
-            onPointerLeave={() => {
-              document.body.style.cursor = "default";
-            }}
-          >
-            {/* Visual model (scaled up) */}
-            <group scale={[scale, scale, scale]}>
-              <PieceModel path={piecePath(p.type)} tint={tint} />
-            </group>
-          </group>
+          <AnimatedPiece
+            key={animKey}
+            square={p.square}
+            type={p.type}
+            color={p.color}
+            originVec={originVec}
+            squareSize={squareSize}
+            animateFrom={animateFrom}
+            animSeq={netState.seq}
+            canMove={canMove}
+            mySide={mySide}
+            onPickPiece={onPickPiece}
+            whiteTint={whiteTint}
+            blackTint={blackTint}
+          />
         );
       })}
     </group>

@@ -10,13 +10,29 @@ type Player = {
   rotY: number;
 };
 
+type ChatMessage = {
+  id: string;
+  fromId: string;
+  fromName: string;
+  text: string;
+  t: number;
+};
+
 type Message =
-  | { type: "hello"; name: string; color: string; gender: "male" | "female"; avatarUrl?: string }
+  | {
+      type: "hello";
+      name: string;
+      color: string;
+      gender: "male" | "female";
+      avatarUrl?: string;
+    }
   | { type: "state"; position: [number, number, number]; rotY: number }
-  | { type: "sync"; players: Record<string, Player> };
+  | { type: "chat"; text: string }
+  | { type: "sync"; players: Record<string, Player>; chat: ChatMessage[] };
 
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
+  chat: ChatMessage[] = [];
   
   constructor(readonly room: Party.Room) {}
 
@@ -29,7 +45,7 @@ export default class RoomServer implements Party.Server {
       players[id] = player;
     });
     
-    conn.send(JSON.stringify({ type: "sync", players }));
+    conn.send(JSON.stringify({ type: "sync", players, chat: this.chat }));
   }
 
   onMessage(message: string, sender: Party.Connection) {
@@ -44,7 +60,7 @@ export default class RoomServer implements Party.Server {
           color: msg.color,
           gender: msg.gender,
           avatarUrl: msg.avatarUrl,
-          position: [0, 0.5, 0],
+          position: [0, 0, 0],
           rotY: 0,
         };
         this.players.set(sender.id, player);
@@ -72,6 +88,25 @@ export default class RoomServer implements Party.Server {
             [sender.id]
           );
         }
+      } else if (msg.type === "chat") {
+        const player = this.players.get(sender.id);
+        if (!player) return;
+
+        const text = (msg.text ?? "").toString().trim().slice(0, 160);
+        if (!text) return;
+
+        const chatMsg: ChatMessage = {
+          id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          fromId: sender.id,
+          fromName: player.name,
+          text,
+          t: Date.now(),
+        };
+
+        this.chat.push(chatMsg);
+        if (this.chat.length > 60) this.chat.splice(0, this.chat.length - 60);
+
+        this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
       }
     } catch (err) {
       console.error("[PartyKit] Error parsing message:", err);

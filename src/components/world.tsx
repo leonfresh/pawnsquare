@@ -1,10 +1,10 @@
 "use client";
 
-import { Canvas, useFrame } from "@react-three/fiber";
-import { Plane } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Billboard, Plane, Text } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { usePartyRoom as useP2PRoom, type Vec3 } from "@/lib/partyRoom";
+import { usePartyRoom as useP2PRoom, type ChatMessage, type Vec3 } from "@/lib/partyRoom";
 import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
@@ -21,15 +21,87 @@ function distSq(a: Vec3, b: Vec3) {
   return dx * dx + dy * dy + dz * dz;
 }
 
-function BoardLights() {
+function OrganicPath({
+  points,
+  y = 0.017,
+  width = 2.7,
+  color = "#4a4038",
+}: {
+  points: Array<[number, number]>;
+  y?: number;
+  width?: number;
+  color?: string;
+}) {
+  const geom = useMemo(() => {
+    const pts = points.map(([x, z]) => new THREE.Vector3(x, y, z));
+    const curve = new THREE.CatmullRomCurve3(pts, false, "centripetal");
+
+    const segments = 160;
+    const halfW = width / 2;
+
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const p = curve.getPointAt(t);
+      const tangent = curve.getTangentAt(t);
+      const side = new THREE.Vector3(-tangent.z, 0, tangent.x);
+      if (side.lengthSq() < 1e-8) side.set(1, 0, 0);
+      side.normalize();
+
+      const left = new THREE.Vector3(p.x, y, p.z).addScaledVector(side, halfW);
+      const right = new THREE.Vector3(p.x, y, p.z).addScaledVector(side, -halfW);
+
+      positions.push(left.x, left.y, left.z, right.x, right.y, right.z);
+      uvs.push(0, t, 1, t);
+
+      if (i < segments) {
+        const a = i * 2;
+        const b = a + 1;
+        const c = a + 2;
+        const d = a + 3;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    g.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(indices);
+    g.computeVertexNormals();
+    return g;
+  }, [points, y, width]);
+
+  return (
+    <mesh geometry={geom} receiveShadow>
+      <meshStandardMaterial
+        color={color}
+        roughness={0.96}
+        metalness={0.01}
+        polygonOffset
+        polygonOffsetFactor={-1}
+        polygonOffsetUnits={-1}
+      />
+    </mesh>
+  );
+}
+
+function BoardLamp({
+  lampPos,
+  targetPos,
+}: {
+  lampPos: [number, number, number];
+  targetPos: [number, number, number];
+}) {
   const keyRef = useRef<THREE.SpotLight>(null);
   const fillRef = useRef<THREE.SpotLight>(null);
   const targetRef = useRef<THREE.Object3D | null>(null);
 
   useEffect(() => {
     const target = new THREE.Object3D();
-    // OutdoorChess origin is near (0, 0, -10)
-    target.position.set(0, 0.2, -10);
+    target.position.set(targetPos[0], targetPos[1], targetPos[2]);
     targetRef.current = target;
 
     const key = keyRef.current;
@@ -40,12 +112,11 @@ function BoardLights() {
     return () => {
       targetRef.current = null;
     };
-  }, []);
+  }, [targetPos]);
 
   return (
     <>
-      {/* Visible cozy lamp post near the board (kept away from join pads/clocks) */}
-      <group position={[10.5, 0, -16.0]}>
+      <group position={lampPos}>
         <mesh castShadow receiveShadow>
           <cylinderGeometry args={[0.11, 0.13, 3.2, 12]} />
           <meshStandardMaterial color="#2a2a2a" roughness={0.65} metalness={0.25} />
@@ -73,13 +144,12 @@ function BoardLights() {
         />
       </group>
 
-      {/* Focused warm light so board/pieces stay readable */}
       <spotLight
         ref={keyRef}
-        position={[10.5, 3.4, -16.0]}
+        position={[lampPos[0], lampPos[1] + 3.4, lampPos[2]]}
         angle={0.58}
         penumbra={0.85}
-        intensity={1.15}
+        intensity={1.05}
         distance={34}
         decay={2}
         color="#fff1d6"
@@ -90,20 +160,13 @@ function BoardLights() {
       />
       <spotLight
         ref={fillRef}
-        position={[-3.0, 6.0, -8.5]}
+        position={[lampPos[0] - 6.0, lampPos[1] + 6.0, lampPos[2] + 4.5]}
         angle={0.68}
         penumbra={0.9}
-        intensity={0.55}
+        intensity={0.45}
         distance={24}
         decay={2}
         color="#ffe3b5"
-      />
-      <pointLight
-        position={[0, 1.25, -10]}
-        intensity={0.35}
-        distance={8}
-        decay={2}
-        color="#ffd39a"
       />
       {targetRef.current ? <primitive object={targetRef.current} /> : null}
     </>
@@ -256,10 +319,29 @@ function AvatarBody({
     const lipsDark = new THREE.Color().setHSL(0.98, 0.48, 0.55);
     const irisColor = new THREE.Color().setHSL(hsl.h, 0.45, 0.33);
 
-    return { 
-      shirt, shirtDark, pants, pantsDark, skin, skinLight, skinDark, shoes, shoeSole, 
-      hair, hairShine, lips, lipsDark, irisColor, outfitType, skinTone, hairstyleType,
-      accent1, accent2, belt, bodyHeight, bodyBuild
+    return {
+      shirt,
+      shirtDark,
+      pants,
+      pantsDark,
+      skin,
+      skinLight,
+      skinDark,
+      shoes,
+      shoeSole,
+      hair,
+      hairShine,
+      lips,
+      lipsDark,
+      irisColor,
+      outfitType,
+      skinTone,
+      hairstyleType,
+      accent1,
+      accent2,
+      belt,
+      bodyHeight,
+      bodyBuild,
     };
   }, [color, gender]);
   
@@ -963,6 +1045,7 @@ function SelfAvatar({
   speed,
   gender,
   avatarUrl,
+  sittingRef,
 }: {
   color: string;
   name: string;
@@ -971,9 +1054,12 @@ function SelfAvatar({
   speed: React.RefObject<number>;
   gender: "male" | "female";
   avatarUrl?: string;
+  sittingRef?: React.RefObject<boolean>;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const [movingSpeed, setMovingSpeed] = useState(0);
+  const [pose, setPose] = useState<"stand" | "sit">("stand");
+  const lastPoseRef = useRef<"stand" | "sit">("stand");
 
   useFrame(() => {
     const g = groupRef.current;
@@ -983,6 +1069,12 @@ function SelfAvatar({
     // Smooth rotation with lerp
     g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, rotY.current, 0.15);
     setMovingSpeed(speed.current);
+
+    const nextPose = sittingRef?.current ? "sit" : "stand";
+    if (nextPose !== lastPoseRef.current) {
+      lastPoseRef.current = nextPose;
+      setPose(nextPose);
+    }
   });
 
   return (
@@ -992,6 +1084,7 @@ function SelfAvatar({
         movingSpeed={movingSpeed}
         gender={gender}
         url={avatarUrl}
+        pose={pose}
       />
     </group>
   );
@@ -1005,6 +1098,7 @@ function RemoteAvatar({
   targetRotY,
   gender,
   avatarUrl,
+  bubbleText,
 }: {
   id: string;
   name: string;
@@ -1013,6 +1107,7 @@ function RemoteAvatar({
   targetRotY: number;
   gender: "male" | "female";
   avatarUrl?: string;
+  bubbleText?: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const posRef = useRef<THREE.Vector3>(
@@ -1055,21 +1150,119 @@ function RemoteAvatar({
 
   return (
     <group ref={groupRef}>
+      <Billboard position={[0, 2.25, 0]}>
+        <Text
+          fontSize={0.22}
+          color={color}
+          outlineWidth={0.012}
+          outlineColor="rgba(0,0,0,0.65)"
+          anchorX="center"
+          anchorY="bottom"
+          maxWidth={3.4}
+          textAlign="center"
+        >
+          {name || id.slice(0, 4)}
+        </Text>
+      </Billboard>
+
+      {bubbleText ? (
+        <Billboard position={[0, 2.65, 0]}>
+          <Text
+            fontSize={0.2}
+            color="#ffffff"
+            outlineWidth={0.012}
+            outlineColor="rgba(0,0,0,0.75)"
+            anchorX="center"
+            anchorY="bottom"
+            maxWidth={4.6}
+            textAlign="center"
+          >
+            {bubbleText}
+          </Text>
+        </Billboard>
+      ) : null}
+
       <PlayerAvatar id={id} movingSpeed={movingSpeed} gender={gender} url={avatarUrl} />
     </group>
   );
 }
 
 function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
+  const { gl } = useThree();
+  const draggingRef = useRef(false);
+  const lastRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Camera orbit state (spherical)
+  const thetaRef = useRef(0); // azimuth around Y
+  const phiRef = useRef(1.06); // polar from +Y (matches ~[0,4.5,8])
+  const radiusRef = useRef(9.2);
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const onContextMenu = (e: MouseEvent) => e.preventDefault();
+    const onDown = (e: PointerEvent) => {
+      // Right mouse button only
+      if (e.button !== 2) return;
+      draggingRef.current = true;
+      lastRef.current = { x: e.clientX, y: e.clientY };
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    };
+    const onUp = (e: PointerEvent) => {
+      if (e.button !== 2) return;
+      draggingRef.current = false;
+      lastRef.current = null;
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!draggingRef.current) return;
+      const last = lastRef.current;
+      if (!last) return;
+      const dx = e.clientX - last.x;
+      const dy = e.clientY - last.y;
+      lastRef.current = { x: e.clientX, y: e.clientY };
+
+      const rotSpeed = 0.004;
+      thetaRef.current -= dx * rotSpeed;
+      phiRef.current = clamp(phiRef.current + dy * rotSpeed, 0.45, 1.45);
+    };
+
+    el.addEventListener("contextmenu", onContextMenu);
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+    el.addEventListener("pointermove", onMove);
+
+    return () => {
+      el.removeEventListener("contextmenu", onContextMenu);
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      el.removeEventListener("pointermove", onMove);
+    };
+  }, [gl]);
+
   useFrame(({ camera }, dt) => {
     const t = target.current;
     if (!t) return;
-    const desired = new THREE.Vector3(t.x, t.y, t.z).add(
-      new THREE.Vector3(0, 4.5, 8)
+
+    const offset = new THREE.Vector3().setFromSphericalCoords(
+      radiusRef.current,
+      phiRef.current,
+      thetaRef.current
     );
+    const desired = new THREE.Vector3(t.x, t.y, t.z).add(offset);
     camera.position.lerp(desired, clamp(dt * 6, 0, 1));
     camera.lookAt(t.x, t.y + 1.0, t.z);
   });
+
   return null;
 }
 
@@ -1090,6 +1283,8 @@ function SelfSimulation({
   lastSent,
   sendSelfState,
   speedRef,
+  moveTargetRef,
+  sittingRef,
 }: {
   enabled: boolean;
   keysRef: ReturnType<typeof useWASDKeys>;
@@ -1098,26 +1293,93 @@ function SelfSimulation({
   lastSent: React.RefObject<{ t: number; p: Vec3; r: number }>;
   sendSelfState: (position: Vec3, rotY: number) => void;
   speedRef: React.RefObject<number>;
+  moveTargetRef: React.RefObject<
+    | {
+        dest: Vec3;
+        rotY?: number;
+        sit?: boolean;
+      }
+    | null
+  >;
+  sittingRef: React.RefObject<boolean>;
 }) {
   const vRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const camDirRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const forwardRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const rightRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const upRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 1, 0));
   const lastPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
-  useFrame((_state, dt) => {
+  useFrame((state, dt) => {
     if (!enabled) return;
 
     const keys = keysRef.current;
     const v = vRef.current;
-    v.set(
-      (keys.right ? 1 : 0) - (keys.left ? 1 : 0),
-      0,
-      (keys.back ? 1 : 0) - (keys.forward ? 1 : 0)
-    );
+    const inputForward = (keys.forward ? 1 : 0) - (keys.back ? 1 : 0);
+    const inputRight = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+
+    const hasKeyboardInput = inputForward !== 0 || inputRight !== 0;
+    if (hasKeyboardInput) {
+      // Keyboard input always cancels click-to-move and standing up from sitting.
+      moveTargetRef.current = null;
+      if (sittingRef.current && process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.log("[sit] canceled via keyboard");
+      }
+      sittingRef.current = false;
+    }
+
+    // If we're sitting, ignore movement until user provides input or click-to-move sets a target.
+    if (sittingRef.current && !hasKeyboardInput && !moveTargetRef.current) {
+      speedRef.current = THREE.MathUtils.lerp(speedRef.current, 0, clamp(dt * 10, 0, 1));
+      lastPosRef.current.copy(pos.current);
+      return;
+    }
+
+    // Camera-relative movement (horizontal plane only)
+    const camDir = camDirRef.current;
+    state.camera.getWorldDirection(camDir);
+    const forward = forwardRef.current;
+    forward.set(camDir.x, 0, camDir.z);
+    if (forward.lengthSq() < 1e-6) {
+      forward.set(0, 0, -1);
+    } else {
+      forward.normalize();
+    }
+    const right = rightRef.current;
+    right.crossVectors(forward, upRef.current).normalize();
+
+    v.set(0, 0, 0);
+    if (hasKeyboardInput) {
+      v.copy(forward).multiplyScalar(inputForward).addScaledVector(right, inputRight);
+    } else if (moveTargetRef.current) {
+      const d = moveTargetRef.current.dest;
+      v.set(d[0] - pos.current.x, 0, d[2] - pos.current.z);
+      const dist = v.length();
+      if (dist < 0.25) {
+        // Snap to target and optionally sit.
+        pos.current.set(d[0], pos.current.y, d[2]);
+        if (typeof moveTargetRef.current.rotY === "number") {
+          rotY.current = moveTargetRef.current.rotY;
+        }
+        if (moveTargetRef.current.sit) {
+          if (!sittingRef.current && process.env.NODE_ENV !== "production") {
+            // eslint-disable-next-line no-console
+            console.log("[sit] entered (arrived)");
+          }
+          sittingRef.current = true;
+        }
+        moveTargetRef.current = null;
+        v.set(0, 0, 0);
+      }
+    }
 
     const speed = 3.2;
     if (v.lengthSq() > 0) {
+      // face movement direction (before scaling by dt)
+      rotY.current = Math.atan2(v.x, v.z);
+
       v.normalize().multiplyScalar(speed * dt);
       pos.current.add(v);
-      // face movement direction
-      rotY.current = Math.atan2(v.x, v.z);
     }
 
     // track movement speed for animation
@@ -1163,9 +1425,59 @@ export default function World({
   initialName?: string;
   initialGender?: "male" | "female";
 }) {
-  const { self, players, peerCount, sendSelfState, setName, setAvatarUrl } =
-    useP2PRoom(roomId, { initialName, initialGender });
+  const {
+    self,
+    players,
+    peerCount,
+    connected,
+    chat,
+    sendSelfState,
+    sendChat,
+    setName,
+    setAvatarUrl,
+  } = useP2PRoom(roomId, { initialName, initialGender });
   const keysRef = useWASDKeys();
+
+  const [chatInput, setChatInput] = useState("");
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const [bubbles, setBubbles] = useState<Record<string, { text: string; until: number }>>({});
+  const lastSeenChatIdRef = useRef<string>("");
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [chat]);
+
+  useEffect(() => {
+    const last = chat[chat.length - 1];
+    if (!last) return;
+    if (last.id === lastSeenChatIdRef.current) return;
+    lastSeenChatIdRef.current = last.id;
+
+    setBubbles((prev) => ({
+      ...prev,
+      [last.fromId]: { text: last.text, until: Date.now() + 4500 },
+    }));
+  }, [chat]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      const now = Date.now();
+      setBubbles((prev) => {
+        let changed = false;
+        const next: typeof prev = { ...prev };
+        for (const [id, b] of Object.entries(prev)) {
+          if (b.until <= now) {
+            delete next[id];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 400);
+    return () => window.clearInterval(t);
+  }, []);
 
   const avatarSystem = getAvatarSystem();
   const [debugAvatarUrl, setDebugAvatarUrl] = useState<string>(
@@ -1201,13 +1513,53 @@ export default function World({
   const [contextLost, setContextLost] = useState(false);
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
 
-  const selfPosRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0.5, 0));
+  const selfPosRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
   const selfRotRef = useRef<number>(0);
   const selfSpeedRef = useRef<number>(0);
 
+  const moveTargetRef = useRef<
+    | {
+        dest: Vec3;
+        rotY?: number;
+        sit?: boolean;
+      }
+    | null
+  >(null);
+  const sittingRef = useRef<boolean>(false);
+  const sitDebugRef = useRef<{ requested: number }>({ requested: 0 });
+
+  const [joinedBoardKey, setJoinedBoardKey] = useState<string | null>(null);
+  const [pendingJoinBoardKey, setPendingJoinBoardKey] = useState<string | null>(null);
+  const joinLockedBoardKey = joinedBoardKey ?? pendingJoinBoardKey;
+
+  useEffect(() => {
+    if (!pendingJoinBoardKey) return;
+    if (joinedBoardKey) {
+      setPendingJoinBoardKey(null);
+      return;
+    }
+
+    const t = window.setTimeout(() => {
+      setPendingJoinBoardKey((cur) => (cur === pendingJoinBoardKey ? null : cur));
+    }, 8000);
+    return () => window.clearTimeout(t);
+  }, [pendingJoinBoardKey, joinedBoardKey]);
+
+  const boards = useMemo(
+    () =>
+      [
+        // Centered 2x2 layout so boards don't collide with plaza planters/greenery blocks.
+        { key: "a", origin: [-6, 0.04, -6] as [number, number, number] },
+        { key: "b", origin: [6, 0.04, -6] as [number, number, number] },
+        { key: "c", origin: [-6, 0.04, 6] as [number, number, number] },
+        { key: "d", origin: [6, 0.04, 6] as [number, number, number] },
+      ] as const,
+    []
+  );
+
   const lastSentRef = useRef<{ t: number; p: Vec3; r: number }>({
     t: 0,
-    p: [0, 0.5, 0],
+    p: [0, 0, 0],
     r: 0,
   });
 
@@ -1325,48 +1677,142 @@ export default function World({
           canvasElRef.current = gl.domElement;
         }}
       >
-        {/* Cozy garden plaza lighting (sunset) */}
-        <ambientLight intensity={0.28} color="#ffe8c8" />
-        <hemisphereLight intensity={0.35} groundColor="#35513a" color="#ffd1a1" />
+        <group
+          onPointerDown={(e: any) => {
+            // Click-to-move: left click anywhere in the world that doesn't stopPropagation
+            // (chess squares, join pads, benches already stopPropagation).
+            if (e.button !== 0) return;
+            if (!self) return;
 
-        {/* Low-angle golden sun */}
-        <directionalLight
-          intensity={1.05}
-          position={[10, 16, 6]}
-          color="#ffd5ab"
-          castShadow
-          shadow-mapSize-width={1024}
-          shadow-mapSize-height={1024}
-          shadow-camera-far={70}
-          shadow-camera-left={-28}
-          shadow-camera-right={28}
-          shadow-camera-top={28}
-          shadow-camera-bottom={-28}
-          shadow-bias={-0.00015}
-        />
+            const planeY = selfPosRef.current.y;
+            const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+            const hit = new THREE.Vector3();
+            const ok = e.ray?.intersectPlane?.(plane, hit);
+            if (!ok) return;
 
-        {/* Cool fill to keep silhouettes readable */}
-        <directionalLight intensity={0.25} position={[-18, 18, -12]} color="#b9d6ff" />
+            const x = clamp(hit.x, -18, 18);
+            const z = clamp(hit.z, -18, 18);
+            moveTargetRef.current = { dest: [x, planeY, z] };
+            sittingRef.current = false;
+          }}
+        >
+          {/* Cozy garden plaza lighting (sunset) */}
+          <ambientLight intensity={0.28} color="#ffe8c8" />
+          <hemisphereLight intensity={0.35} groundColor="#35513a" color="#ffd1a1" />
 
-        {/* Warm haze */}
-        <fog attach="fog" args={["#d6a57d", 30, 120]} />
+          {/* Low-angle golden sun */}
+          <directionalLight
+            intensity={1.05}
+            position={[10, 16, 6]}
+            color="#ffd5ab"
+            castShadow
+            shadow-mapSize-width={1024}
+            shadow-mapSize-height={1024}
+            shadow-camera-far={70}
+            shadow-camera-left={-28}
+            shadow-camera-right={28}
+            shadow-camera-top={28}
+            shadow-camera-bottom={-28}
+            shadow-bias={-0.00015}
+          />
 
-        {/* Ground: grass base */}
-        <Plane args={[220, 220]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <meshStandardMaterial color="#263626" roughness={1} metalness={0} />
-        </Plane>
+          {/* Cool fill to keep silhouettes readable */}
+          <directionalLight intensity={0.25} position={[-18, 18, -12]} color="#b9d6ff" />
 
-        {/* Main plaza path (stone-ish) */}
-        <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <circleGeometry args={[22, 72]} />
-          <meshStandardMaterial color="#4a4038" roughness={0.95} metalness={0.02} />
-        </mesh>
+          {/* Warm haze */}
+          <fog attach="fog" args={["#d6a57d", 30, 120]} />
+
+          {/* Ground: grass base */}
+          <Plane args={[220, 220]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <meshStandardMaterial color="#263626" roughness={1} metalness={0} />
+          </Plane>
+
+          {/* Main plaza path (stone-ish) */}
+          <mesh position={[0, 0.016, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <circleGeometry args={[22, 72]} />
+            <meshStandardMaterial
+              color="#4a4038"
+              roughness={0.95}
+              metalness={0.02}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
+          </mesh>
 
         {/* Subtle ring path near the edge for depth */}
-        <mesh position={[0, 0.011, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <mesh position={[0, 0.015, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
           <ringGeometry args={[26, 30, 80]} />
-          <meshStandardMaterial color="#3b332f" roughness={0.98} metalness={0.01} />
+          <meshStandardMaterial
+            color="#3b332f"
+            roughness={0.98}
+            metalness={0.01}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-1}
+          />
         </mesh>
+
+        {/* Organic pathways (curved ribbons) */}
+        <OrganicPath
+          points={[
+            [-18, -8],
+            [-12, -14],
+            [-4, -16],
+            [6, -14],
+            [16, -10],
+          ]}
+          width={2.5}
+          color="#4a4038"
+        />
+        <OrganicPath
+          points={[
+            [-16, 10],
+            [-10, 14],
+            [-2, 16],
+            [8, 14],
+            [14, 10],
+          ]}
+          width={2.1}
+          color="#463d36"
+        />
+        <OrganicPath
+          points={[
+            [18, -14],
+            [14, -10],
+            [12, -4],
+            [14, 4],
+            [18, 10],
+          ]}
+          width={1.8}
+          color="#3f3832"
+        />
+
+        {/* Small grass variation patches (subtle, helps the ground feel less flat) */}
+        {Array.from({ length: 18 }).map((_, i) => {
+          const x = ((i * 37) % 34) - 17;
+          const z = (((i * 61) % 34) - 17);
+          const r = 0.9 + (i % 5) * 0.22;
+          const c = i % 3 === 0 ? "#223222" : i % 3 === 1 ? "#2a3b2a" : "#1f2f22";
+          return (
+            <mesh
+              key={i}
+              position={[x, 0.003, z]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              receiveShadow
+            >
+              <circleGeometry args={[r, 24]} />
+              <meshStandardMaterial
+                color={c}
+                roughness={1}
+                metalness={0}
+                polygonOffset
+                polygonOffsetFactor={-1}
+                polygonOffsetUnits={-1}
+              />
+            </mesh>
+          );
+        })}
 
         {/* Low planters / seating blocks (kept inside movement bounds) */}
         {Array.from({ length: 6 }).map((_, i) => {
@@ -1478,11 +1924,56 @@ export default function World({
           );
         })}
 
-        <BoardLights />
-
-        <Suspense fallback={null}>
-          <OutdoorChess roomId={roomId} selfPositionRef={selfPosRef} selfId={self?.id || ""} />
-        </Suspense>
+        {boards.map((b) => (
+          <group key={b.key}>
+            <BoardLamp
+              lampPos={[
+                b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
+                0,
+                b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
+              ]}
+              targetPos={[b.origin[0], 0.2, b.origin[2]]}
+            />
+            <Suspense fallback={null}>
+              <OutdoorChess
+                roomId={roomId}
+                boardKey={b.key}
+                origin={b.origin}
+                selfPositionRef={selfPosRef}
+                selfId={self?.id || ""}
+                selfName={self?.name || ""}
+                joinLockedBoardKey={joinLockedBoardKey}
+                onJoinIntent={(boardKey) => {
+                  // Lock immediately to prevent starting a second join elsewhere.
+                  setPendingJoinBoardKey((prev) => prev ?? boardKey);
+                }}
+                onSelfSeatChange={(boardKey, side) => {
+                  setJoinedBoardKey((prev) => {
+                    if (side) return boardKey;
+                    // Only clear if this board was the one we were locked to.
+                    if (prev === boardKey) return null;
+                    return prev;
+                  });
+                  // If we successfully joined (or cleared) this board, clear pending lock.
+                  setPendingJoinBoardKey((prev) => (prev === boardKey ? null : prev));
+                }}
+                onRequestMove={(dest, opts) => {
+                  moveTargetRef.current = { dest, rotY: opts?.rotY, sit: opts?.sit };
+                  if (opts?.sit) {
+                    if (!sittingRef.current && process.env.NODE_ENV !== "production") {
+                      sitDebugRef.current.requested++;
+                      // eslint-disable-next-line no-console
+                      console.log("[sit] requested", sitDebugRef.current.requested);
+                    }
+                    sittingRef.current = true;
+                  } else {
+                    sittingRef.current = false;
+                  }
+                }}
+              />
+            </Suspense>
+          </group>
+        ))}
 
         <FollowCamera target={selfPosRef} />
 
@@ -1494,6 +1985,8 @@ export default function World({
           lastSent={lastSentRef}
           sendSelfState={sendSelfState}
           speedRef={selfSpeedRef}
+          moveTargetRef={moveTargetRef}
+          sittingRef={sittingRef}
         />
 
         {self ? (
@@ -1506,6 +1999,7 @@ export default function World({
               speed={selfSpeedRef}
               gender={self.gender}
               avatarUrl={avatarSystem === "three-avatar" ? debugAvatarUrl : undefined}
+              sittingRef={sittingRef}
             />
           </Suspense>
         ) : null}
@@ -1521,9 +2015,11 @@ export default function World({
               targetRotY={p.rotY}
               gender={p.gender}
               avatarUrl={p.avatarUrl}
+              bubbleText={bubbles[p.id]?.text}
             />
           ))}
         </Suspense>
+        </group>
       </Canvas>
 
       {contextLost ? (
@@ -1745,6 +2241,68 @@ export default function World({
         >
           Exit
         </button>
+      </div>
+
+      <div
+        style={{
+          position: "fixed",
+          left: 12,
+          bottom: 12,
+          width: 320,
+          maxWidth: "calc(100vw - 24px)",
+          borderRadius: 10,
+          border: "1px solid rgba(127,127,127,0.25)",
+          background: "rgba(0,0,0,0.35)",
+          backdropFilter: "blur(6px)",
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          pointerEvents: "auto",
+        }}
+      >
+        <div
+          ref={chatScrollRef}
+          style={{
+            maxHeight: 180,
+            overflow: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            fontSize: 12,
+            opacity: 0.95,
+          }}
+        >
+          {chat.slice(-30).map((m: ChatMessage) => (
+            <div key={m.id} style={{ lineHeight: 1.25 }}>
+              <span style={{ opacity: 0.9, fontWeight: 600 }}>{m.fromName}:</span>{" "}
+              <span style={{ opacity: 0.95 }}>{m.text}</span>
+            </div>
+          ))}
+        </div>
+
+        <input
+          value={chatInput}
+          placeholder={connected ? "Chat..." : "Connecting..."}
+          onChange={(e) => setChatInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            if (!connected) return;
+            const cleaned = chatInput.trim().slice(0, 160);
+            if (!cleaned) return;
+            sendChat(cleaned);
+            setChatInput("");
+          }}
+          style={{
+            height: 34,
+            padding: "0 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(127,127,127,0.25)",
+            background: "transparent",
+            color: "inherit",
+            outline: "none",
+          }}
+        />
       </div>
     </div>
   );

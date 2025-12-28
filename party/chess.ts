@@ -3,10 +3,18 @@ import { Chess, type Square } from "chess.js";
 
 type Side = "w" | "b";
 
+type SeatInfo = {
+  connId: string;
+  playerId: string;
+  name: string;
+};
+
 type GameResult =
   | { type: "timeout"; winner: Side }
   | { type: "checkmate"; winner: Side }
-  | { type: "draw"; reason: "stalemate" | "insufficient" | "threefold" | "fifty-move" | "draw" };
+  | { type: "draw"; reason: DrawReason };
+
+type DrawReason = "stalemate" | "insufficient" | "threefold" | "fifty-move" | "draw";
 
 type ClockState = {
   baseMs: number;
@@ -17,15 +25,16 @@ type ClockState = {
 };
 
 type ChessState = {
-  seats: { w: string | null; b: string | null };
+  seats: { w: SeatInfo | null; b: SeatInfo | null };
   fen: string;
   seq: number;
   clock: ClockState;
   result: GameResult | null;
+  lastMove: { from: Square; to: Square } | null;
 };
 
 type ChessMessage =
-  | { type: "join"; side: Side }
+  | { type: "join"; side: Side; playerId?: string; name?: string }
   | { type: "leave"; side: Side }
   | { type: "move"; from: Square; to: Square; promotion?: "q" | "r" | "b" | "n" }
   | { type: "setTime"; baseSeconds: number }
@@ -51,14 +60,14 @@ function initialClock(baseMs: number): ClockState {
 }
 
 function isPlayerInSeat(state: ChessState, connId: string) {
-  return state.seats.w === connId || state.seats.b === connId;
+  return state.seats.w?.connId === connId || state.seats.b?.connId === connId;
 }
 
 function otherSide(side: Side): Side {
   return side === "w" ? "b" : "w";
 }
 
-function computeDrawReason(chess: Chess): GameResult["reason"] {
+function computeDrawReason(chess: Chess): DrawReason {
   // chess.js naming varies slightly across versions; check what exists.
   const anyChess = chess as any;
   if (typeof anyChess.isStalemate === "function" && anyChess.isStalemate()) return "stalemate";
@@ -80,6 +89,7 @@ export default class ChessServer implements Party.Server {
       seq: 0,
       clock: initialClock(baseMs),
       result: null,
+      lastMove: null,
     };
 
     // Enforce timeouts even if nobody sends messages.
@@ -143,6 +153,7 @@ export default class ChessServer implements Party.Server {
     this.state.fen = new Chess().fen();
     this.state.clock = initialClock(baseMs);
     this.state.result = null;
+    this.state.lastMove = null;
   }
 
   onConnect(conn: Party.Connection) {
@@ -158,24 +169,26 @@ export default class ChessServer implements Party.Server {
       
       if (msg.type === "join") {
         const seat = msg.side;
-        if (this.state.seats[seat] && this.state.seats[seat] !== sender.id) {
+        if (this.state.seats[seat] && this.state.seats[seat]?.connId !== sender.id) {
           // Seat taken by someone else
           return;
         }
 
         // Ensure a player can only occupy one seat.
         const other: Side = seat === "w" ? "b" : "w";
-        if (this.state.seats[other] === sender.id) {
+        if (this.state.seats[other]?.connId === sender.id) {
           this.state.seats[other] = null;
         }
-        
-        this.state.seats[seat] = sender.id;
+
+        const playerId = typeof msg.playerId === "string" && msg.playerId ? msg.playerId : sender.id;
+        const name = typeof msg.name === "string" && msg.name ? msg.name : "Player";
+        this.state.seats[seat] = { connId: sender.id, playerId, name };
         this.state.seq++;
         
         this.room.broadcast(JSON.stringify({ type: "state", state: this.state }));
       } else if (msg.type === "leave") {
         const seat = msg.side;
-        if (this.state.seats[seat] !== sender.id) return;
+        if (this.state.seats[seat]?.connId !== sender.id) return;
 
         this.state.seats[seat] = null;
         this.state.seq++;
@@ -185,7 +198,7 @@ export default class ChessServer implements Party.Server {
 
         const chess = new Chess(this.state.fen);
         const turn = chess.turn();
-        const expectedPlayer = turn === "w" ? this.state.seats.w : this.state.seats.b;
+        const expectedPlayer = turn === "w" ? this.state.seats.w?.connId : this.state.seats.b?.connId;
         
         if (expectedPlayer !== sender.id) {
           console.log(`[Chess] Unauthorized move from ${sender.id}`);
@@ -214,6 +227,7 @@ export default class ChessServer implements Party.Server {
         }
         
         this.state.fen = chess.fen();
+        this.state.lastMove = { from: msg.from, to: msg.to };
 
         // If the move ended the game, lock clocks.
         const anyChess = chess as any;
@@ -276,11 +290,11 @@ export default class ChessServer implements Party.Server {
     
     // Remove seats held by this player
     let changed = false;
-    if (this.state.seats.w === conn.id) {
+    if (this.state.seats.w?.connId === conn.id) {
       this.state.seats.w = null;
       changed = true;
     }
-    if (this.state.seats.b === conn.id) {
+    if (this.state.seats.b?.connId === conn.id) {
       this.state.seats.b = null;
       changed = true;
     }

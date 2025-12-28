@@ -17,11 +17,20 @@ export type Player = {
   lastSeen: number;
 };
 
+export type ChatMessage = {
+  id: string;
+  fromId: string;
+  fromName: string;
+  text: string;
+  t: number;
+};
+
 type PartyMessage =
-  | { type: "sync"; players: Record<string, Omit<Player, "lastSeen">> }
+  | { type: "sync"; players: Record<string, Omit<Player, "lastSeen">>; chat?: ChatMessage[] }
   | { type: "player-joined"; player: Omit<Player, "lastSeen"> }
   | { type: "player-moved"; id: string; position: Vec3; rotY: number }
-  | { type: "player-left"; id: string };
+  | { type: "player-left"; id: string }
+  | { type: "chat"; message: ChatMessage };
 
 function defaultName(selfId: string) {
   return `Player-${selfId.slice(0, 4)}`;
@@ -38,6 +47,7 @@ export function usePartyRoom(
   const [selfGender, setSelfGender] = useState<"male" | "female">("male");
   const [selfAvatarUrl, setSelfAvatarUrl] = useState<string | undefined>(undefined);
   const [players, setPlayers] = useState<Record<string, Player>>({});
+  const [chat, setChat] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
   
   const socketRef = useRef<PartySocket | null>(null);
@@ -93,6 +103,9 @@ export function usePartyRoom(
             playersWithTimestamp[id] = { ...player, lastSeen: Date.now() };
           });
           setPlayers(playersWithTimestamp);
+          if (Array.isArray(msg.chat)) {
+            setChat(msg.chat.slice(-60));
+          }
         } else if (msg.type === "player-joined") {
           console.log("[PartyKit] Player joined:", msg.player.id);
           setPlayers((prev) => ({
@@ -118,6 +131,12 @@ export function usePartyRoom(
           setPlayers((prev) => {
             const next = { ...prev };
             delete next[msg.id];
+            return next;
+          });
+        } else if (msg.type === "chat") {
+          setChat((prev) => {
+            const next = [...prev, msg.message];
+            if (next.length > 60) next.splice(0, next.length - 60);
             return next;
           });
         }
@@ -149,6 +168,14 @@ export function usePartyRoom(
           rotY,
         })
       );
+    }
+  }, []);
+
+  const sendChat = useCallback((text: string) => {
+    const cleaned = (text ?? "").toString().trim().slice(0, 160);
+    if (!cleaned) return;
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: "chat", text: cleaned }));
     }
   }, []);
 
@@ -189,8 +216,10 @@ export function usePartyRoom(
     self,
     players,
     peerCount: Object.keys(players).length,
+    chat,
     connected,
     sendSelfState,
+    sendChat,
     setName,
     setAvatarUrl,
   };

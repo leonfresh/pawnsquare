@@ -8,16 +8,18 @@ export function PlayerAvatar({
   movingSpeed,
   gender,
   url,
+  pose,
 }: {
   id?: string;
   movingSpeed?: number;
   gender?: "male" | "female";
   url?: string;
+  pose?: "stand" | "sit";
 }) {
   const system = getAvatarSystem();
 
   if (system === "three-avatar") {
-    return <ThreeAvatar movingSpeed={movingSpeed ?? 0} url={url} />;
+    return <ThreeAvatar movingSpeed={movingSpeed ?? 0} url={url} pose={pose} />;
   }
 
   return null;
