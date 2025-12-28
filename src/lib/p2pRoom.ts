@@ -21,19 +21,13 @@ type HelloPayload = { name: string; color: string; gender: "male" | "female"; av
 type StatePayload = { p: Vec3; r: number };
 
 const APP_ID = "pawnsquare-v2";
-const GLOBAL_ROOM = "global-lobby";
-
-// Multiple trackers for redundancy
-const TRACKER_URLS = [
-  "wss://tracker.openwebtorrent.com",
-  "wss://tracker.webtorrent.dev",
-];
+const MAX_PLAYERS_PER_ROOM = 20;
 
 function defaultName(selfId: string) {
   return `Player-${selfId.slice(0, 4)}`;
 }
 
-export function useP2PRoom(opts?: { initialName?: string; initialGender?: "male" | "female" }) {
+export function useP2PRoom(roomId: string, opts?: { initialName?: string; initialGender?: "male" | "female" }) {
   const roomRef = useRef<ReturnType<typeof joinRoom> | null>(null);
   const sendStateRef = useRef<
     ((data: any, targetPeers?: any) => Promise<any>) | null
@@ -64,7 +58,7 @@ export function useP2PRoom(opts?: { initialName?: string; initialGender?: "male"
   }, [selfId, selfName, selfGender, selfAvatarUrl]);
 
   useEffect(() => {
-    console.log(`[P2P] Joining global peer space`);
+    console.log(`[P2P] Joining room: ${roomId}`);
     const room = joinRoom(
       { 
         appId: APP_ID,
@@ -75,7 +69,7 @@ export function useP2PRoom(opts?: { initialName?: string; initialGender?: "male"
           ],
         },
       }, 
-      GLOBAL_ROOM
+      roomId
     );
     roomRef.current = room;
     setSelfId(trysteroSelfId);
@@ -179,13 +173,13 @@ export function useP2PRoom(opts?: { initialName?: string; initialGender?: "male"
     }
 
     return () => {
-      console.log(`[P2P] Leaving global peer space`);
+      console.log(`[P2P] Leaving room: ${roomId}`);
       room.leave();
       roomRef.current = null;
       sendStateRef.current = null;
       sendHelloRef.current = null;
     };
-  }, []);
+  }, [roomId]);
 
   const setName = useCallback((name: string) => {
     const cleaned = name.trim().slice(0, 24);

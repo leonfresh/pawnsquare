@@ -4,7 +4,7 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import { Plane } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { useP2PRoom, type Vec3 } from "@/lib/p2pRoom";
+import { usePartyRoom as useP2PRoom, type Vec3 } from "@/lib/partyRoom";
 import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
@@ -19,6 +19,95 @@ function distSq(a: Vec3, b: Vec3) {
   const dy = a[1] - b[1];
   const dz = a[2] - b[2];
   return dx * dx + dy * dy + dz * dz;
+}
+
+function BoardLights() {
+  const keyRef = useRef<THREE.SpotLight>(null);
+  const fillRef = useRef<THREE.SpotLight>(null);
+  const targetRef = useRef<THREE.Object3D | null>(null);
+
+  useEffect(() => {
+    const target = new THREE.Object3D();
+    // OutdoorChess origin is near (0, 0, -10)
+    target.position.set(0, 0.2, -10);
+    targetRef.current = target;
+
+    const key = keyRef.current;
+    const fill = fillRef.current;
+    if (key) key.target = target;
+    if (fill) fill.target = target;
+
+    return () => {
+      targetRef.current = null;
+    };
+  }, []);
+
+  return (
+    <>
+      {/* Visible cozy lamp post near the board (kept away from join pads/clocks) */}
+      <group position={[10.5, 0, -16.0]}>
+        <mesh castShadow receiveShadow>
+          <cylinderGeometry args={[0.11, 0.13, 3.2, 12]} />
+          <meshStandardMaterial color="#2a2a2a" roughness={0.65} metalness={0.25} />
+        </mesh>
+        <mesh castShadow receiveShadow position={[0, 1.65, 0]}>
+          <cylinderGeometry args={[0.17, 0.19, 0.18, 12]} />
+          <meshStandardMaterial color="#2a2a2a" roughness={0.65} metalness={0.25} />
+        </mesh>
+        <mesh castShadow position={[0, 1.85, 0]}>
+          <boxGeometry args={[0.55, 0.55, 0.55]} />
+          <meshStandardMaterial
+            color="#ffe0b8"
+            emissive="#ffb45a"
+            emissiveIntensity={0.35}
+            roughness={0.35}
+            metalness={0}
+          />
+        </mesh>
+        <pointLight
+          position={[0, 1.85, 0]}
+          intensity={0.9}
+          distance={14}
+          decay={2}
+          color="#ffcf98"
+        />
+      </group>
+
+      {/* Focused warm light so board/pieces stay readable */}
+      <spotLight
+        ref={keyRef}
+        position={[10.5, 3.4, -16.0]}
+        angle={0.58}
+        penumbra={0.85}
+        intensity={1.15}
+        distance={34}
+        decay={2}
+        color="#fff1d6"
+        castShadow
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
+        shadow-bias={-0.0002}
+      />
+      <spotLight
+        ref={fillRef}
+        position={[-3.0, 6.0, -8.5]}
+        angle={0.68}
+        penumbra={0.9}
+        intensity={0.55}
+        distance={24}
+        decay={2}
+        color="#ffe3b5"
+      />
+      <pointLight
+        position={[0, 1.25, -10]}
+        intensity={0.35}
+        distance={8}
+        decay={2}
+        color="#ffd39a"
+      />
+      {targetRef.current ? <primitive object={targetRef.current} /> : null}
+    </>
+  );
 }
 
 function AvatarBody({
@@ -1064,16 +1153,18 @@ function SelfSimulation({
 }
 
 export default function World({
+  roomId,
   onExit,
   initialName,
   initialGender = "male",
 }: {
+  roomId: string;
   onExit: () => void;
   initialName?: string;
   initialGender?: "male" | "female";
 }) {
   const { self, players, peerCount, sendSelfState, setName, setAvatarUrl } =
-    useP2PRoom({ initialName, initialGender });
+    useP2PRoom(roomId, { initialName, initialGender });
   const keysRef = useWASDKeys();
 
   const avatarSystem = getAvatarSystem();
@@ -1228,40 +1319,169 @@ export default function World({
         dpr={[1, 1]}
         camera={{ position: [0, 5, 8], fov: 60 }}
         gl={{ antialias: false }}
-        style={{ background: "#111" }}
+        style={{ background: "#b98a63" }}
         onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color("#111"), 1);
+          gl.setClearColor(new THREE.Color("#b98a63"), 1);
           canvasElRef.current = gl.domElement;
         }}
       >
-        {/* Warm Sims 4 style lighting */}
-        <ambientLight intensity={0.55} color="#ffe8cc" />
-        <directionalLight 
-          intensity={1.1} 
-          position={[8, 12, 6]} 
-          color="#fff4e0"
+        {/* Cozy garden plaza lighting (sunset) */}
+        <ambientLight intensity={0.28} color="#ffe8c8" />
+        <hemisphereLight intensity={0.35} groundColor="#35513a" color="#ffd1a1" />
+
+        {/* Low-angle golden sun */}
+        <directionalLight
+          intensity={1.05}
+          position={[10, 16, 6]}
+          color="#ffd5ab"
           castShadow
           shadow-mapSize-width={1024}
           shadow-mapSize-height={1024}
-          shadow-camera-far={50}
-          shadow-camera-left={-20}
-          shadow-camera-right={20}
-          shadow-camera-top={20}
-          shadow-camera-bottom={-20}
+          shadow-camera-far={70}
+          shadow-camera-left={-28}
+          shadow-camera-right={28}
+          shadow-camera-top={28}
+          shadow-camera-bottom={-28}
+          shadow-bias={-0.00015}
         />
-        {/* Soft fill light */}
-        <directionalLight intensity={0.3} position={[-6, 4, -5]} color="#b8d4ff" />
-        {/* Hemisphere for natural sky/ground color */}
-        <hemisphereLight intensity={0.4} groundColor="#665544" color="#e8f4ff" />
 
-        <Plane args={[200, 200]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <meshStandardMaterial color={"#2a2a2a"} roughness={0.95} metalness={0} />
+        {/* Cool fill to keep silhouettes readable */}
+        <directionalLight intensity={0.25} position={[-18, 18, -12]} color="#b9d6ff" />
+
+        {/* Warm haze */}
+        <fog attach="fog" args={["#d6a57d", 30, 120]} />
+
+        {/* Ground: grass base */}
+        <Plane args={[220, 220]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+          <meshStandardMaterial color="#263626" roughness={1} metalness={0} />
         </Plane>
 
-        <gridHelper args={[80, 20, "#666", "#333"]} position={[0, 0.01, 0]} />
+        {/* Main plaza path (stone-ish) */}
+        <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+          <circleGeometry args={[22, 72]} />
+          <meshStandardMaterial color="#4a4038" roughness={0.95} metalness={0.02} />
+        </mesh>
+
+        {/* Subtle ring path near the edge for depth */}
+        <mesh position={[0, 0.011, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+          <ringGeometry args={[26, 30, 80]} />
+          <meshStandardMaterial color="#3b332f" roughness={0.98} metalness={0.01} />
+        </mesh>
+
+        {/* Low planters / seating blocks (kept inside movement bounds) */}
+        {Array.from({ length: 6 }).map((_, i) => {
+          const angle = (i / 6) * Math.PI * 2;
+          const radius = 16.5;
+          const x = Math.cos(angle) * radius;
+          const z = Math.sin(angle) * radius;
+          return (
+            <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
+              <mesh castShadow receiveShadow>
+                <boxGeometry args={[4.6, 0.55, 1.3]} />
+                <meshStandardMaterial color="#2b2a26" roughness={0.95} metalness={0.02} />
+              </mesh>
+              {/* Soil bed */}
+              <mesh position={[0, 0.44, 0]} castShadow receiveShadow>
+                <boxGeometry args={[4.2, 0.32, 0.95]} />
+                <meshStandardMaterial color="#1f2f22" roughness={1} metalness={0} />
+              </mesh>
+
+              {/* Bush clusters */}
+              {[-1.55, -0.55, 0.55, 1.55].map((bx, bi) => (
+                <group key={bi} position={[bx, 0.62, (bi % 2 === 0 ? -0.18 : 0.16)]}>
+                  <mesh castShadow>
+                    <sphereGeometry args={[0.32 + (bi % 2) * 0.06, 12, 10]} />
+                    <meshStandardMaterial color={bi % 2 === 0 ? "#2c5a33" : "#3a7436"} roughness={1} />
+                  </mesh>
+                  <mesh castShadow position={[0.18, 0.06, 0.12]}>
+                    <sphereGeometry args={[0.24, 12, 10]} />
+                    <meshStandardMaterial color="#2a4f2a" roughness={1} />
+                  </mesh>
+                </group>
+              ))}
+
+              {/* Tiny flowers along the front edge */}
+              {Array.from({ length: 7 }).map((__, fi) => (
+                <mesh key={fi} position={[-1.8 + fi * 0.6, 0.61, 0.42]}>
+                  <sphereGeometry args={[0.04, 8, 8]} />
+                  <meshStandardMaterial
+                    color={i % 2 === 0 ? (fi % 2 === 0 ? "#ffd6e7" : "#fff1b8") : (fi % 2 === 0 ? "#cfe8ff" : "#ffe1bf")}
+                    roughness={0.75}
+                  />
+                </mesh>
+              ))}
+            </group>
+          );
+        })}
+
+        {/* Lantern posts (subtle in daylight, still cozy)
+            Rotated/expanded so they don't line up behind the chess join pads. */}
+        {Array.from({ length: 8 }).map((_, i) => {
+          const angle = ((i + 0.5) / 8) * Math.PI * 2;
+          const radius = 14.6;
+          const x = Math.cos(angle) * radius;
+          const z = Math.sin(angle) * radius;
+          const warm = i % 2 === 0;
+          return (
+            <group key={i} position={[x, 0, z]}>
+              <mesh castShadow receiveShadow>
+                <cylinderGeometry args={[0.08, 0.1, 2.5, 10]} />
+                <meshStandardMaterial color="#232323" roughness={0.7} metalness={0.2} />
+              </mesh>
+              <mesh position={[0, 1.35, 0]} castShadow>
+                <boxGeometry args={[0.35, 0.35, 0.35]} />
+                <meshStandardMaterial
+                  color={warm ? "#ffd9a6" : "#d4e4ff"}
+                  emissive={warm ? "#ffb45a" : "#7fb6ff"}
+                  emissiveIntensity={0.25}
+                  roughness={0.35}
+                  metalness={0}
+                />
+              </mesh>
+              <pointLight
+                position={[0, 1.35, 0]}
+                intensity={warm ? 0.25 : 0.18}
+                color={warm ? "#ffbd73" : "#98c4ff"}
+                distance={7}
+                decay={2}
+              />
+            </group>
+          );
+        })}
+
+        {/* Background trees (outside bounds for atmosphere) */}
+        {Array.from({ length: 10 }).map((_, i) => {
+          const angle = (i / 10) * Math.PI * 2;
+          const radius = 28;
+          const x = Math.cos(angle) * radius;
+          const z = Math.sin(angle) * radius;
+          const h = 3.2 + (i % 3) * 0.4;
+          return (
+            <group key={i} position={[x, 0, z]}>
+              <mesh castShadow receiveShadow>
+                <cylinderGeometry args={[0.25, 0.32, h, 10]} />
+                <meshStandardMaterial color="#2a1f17" roughness={1} metalness={0} />
+              </mesh>
+              <mesh position={[0, h * 0.65, 0]} castShadow>
+                <sphereGeometry args={[1.4 + (i % 2) * 0.2, 14, 12]} />
+                <meshStandardMaterial color="#1f3a25" roughness={1} metalness={0} />
+              </mesh>
+              <mesh position={[0.65, h * 0.62, 0.2]} castShadow>
+                <sphereGeometry args={[1.05, 14, 12]} />
+                <meshStandardMaterial color="#214028" roughness={1} metalness={0} />
+              </mesh>
+              <mesh position={[-0.6, h * 0.6, -0.1]} castShadow>
+                <sphereGeometry args={[1.1, 14, 12]} />
+                <meshStandardMaterial color="#1b341f" roughness={1} metalness={0} />
+              </mesh>
+            </group>
+          );
+        })}
+
+        <BoardLights />
 
         <Suspense fallback={null}>
-          <OutdoorChess selfPositionRef={selfPosRef} />
+          <OutdoorChess roomId={roomId} selfPositionRef={selfPosRef} selfId={self?.id || ""} />
         </Suspense>
 
         <FollowCamera target={selfPosRef} />
@@ -1369,9 +1589,9 @@ export default function World({
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ fontSize: 13, opacity: 0.9 }}>Global World</div>
+          <div style={{ fontSize: 13, opacity: 0.9 }}>Room: {roomId}</div>
           <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Players: {peerCount + 1} • Move: WASD / arrows
+            Players: {peerCount + 1}/20 • Move: WASD / arrows
           </div>
 
           {avatarSystem === "three-avatar" ? (

@@ -10,6 +10,7 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [gender, setGender] = useState<"male" | "female">("male");
   const [inputValue, setInputValue] = useState("");
+  const [selectedRoom] = useState<string>("main-room");
 
   useEffect(() => {
     const stored = sessionStorage.getItem("pawnsquare-user");
@@ -163,7 +164,12 @@ export default function Home() {
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
-      <World initialName={username} initialGender={gender} onExit={() => {}} />
+      <World 
+        roomId={selectedRoom} 
+        initialName={username} 
+        initialGender={gender} 
+        onExit={() => {}}
+      />
     </div>
   );
 }

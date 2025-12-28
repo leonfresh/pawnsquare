@@ -10,7 +10,7 @@ export default function RoomClient({ roomId }: { roomId: string }) {
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
-      <World onExit={() => router.push("/")} />
+      <World roomId={roomId} onExit={() => router.push("/")} />
     </div>
   );
 }
