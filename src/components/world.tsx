@@ -2446,6 +2446,27 @@ export default function World({
   } = useP2PRoom(roomId, { initialName, initialGender });
   const keysRef = useWASDKeys();
 
+  const [isDuplicateSession, setIsDuplicateSession] = useState(false);
+
+  useEffect(() => {
+    const channel = new BroadcastChannel("pawnsquare-game-session");
+    const myId = Math.random().toString(36).slice(2);
+
+    channel.onmessage = (event) => {
+      if (event.data.type === "NEW_SESSION_STARTED" && event.data.id !== myId) {
+        setIsDuplicateSession(true);
+        channel.close();
+      }
+    };
+
+    // Announce presence
+    channel.postMessage({ type: "NEW_SESSION_STARTED", id: myId });
+
+    return () => {
+      channel.close();
+    };
+  }, []);
+
   const [chatInput, setChatInput] = useState("");
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const [bubbles, setBubbles] = useState<
@@ -2565,6 +2586,7 @@ export default function World({
 
   // Load shop state.
   useEffect(() => {
+    if (isDuplicateSession) return;
     try {
       const storedCoins = safeParseJson<number>(
         window.localStorage.getItem("pawnsquare:coins")
@@ -2844,6 +2866,45 @@ export default function World({
     }
     return list;
   }, [remotePlayers, self]);
+
+  if (isDuplicateSession) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.85)",
+          color: "white",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9999,
+          fontFamily: "system-ui, sans-serif",
+        }}
+      >
+        <h2>Session Active in Another Tab</h2>
+        <p style={{ marginTop: 16, color: "#ccc" }}>
+          You have opened PawnSquare in a new tab. This session has been paused.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            marginTop: 24,
+            padding: "12px 24px",
+            background: "#667eea",
+            border: "none",
+            borderRadius: 8,
+            color: "white",
+            cursor: "pointer",
+            fontWeight: "bold",
+          }}
+        >
+          Resume Here
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
