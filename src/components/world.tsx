@@ -3749,25 +3749,6 @@ export default function World({
                             setAuthMsg(null);
                             try {
                               setAuthBusy(true);
-                              const supabase = getSupabaseBrowserClient();
-                              const redirectTo = `${window.location.origin}/auth/callback`;
-                              const { data, error } =
-                                await supabase.auth.signInWithOAuth({
-                                  provider: "google",
-                                  options: {
-                                    redirectTo,
-                                    skipBrowserRedirect: true,
-                                  },
-                                });
-                              if (error || !data?.url) {
-                                setAuthMsg(
-                                  error?.message ||
-                                    "Could not start Google sign-in."
-                                );
-                                setAuthBusy(false);
-                                return;
-                              }
-
                               const w = 520;
                               const h = 720;
                               const left = Math.max(
@@ -3782,8 +3763,10 @@ export default function World({
                                   window.screenY + (window.outerHeight - h) / 2
                                 )
                               );
+
+                              const popupUrl = `${window.location.origin}/auth/popup?provider=google`;
                               const popup = window.open(
-                                data.url,
+                                popupUrl,
                                 "pawnsquare-oauth",
                                 `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                               );
@@ -3832,25 +3815,6 @@ export default function World({
                             setAuthMsg(null);
                             try {
                               setAuthBusy(true);
-                              const supabase = getSupabaseBrowserClient();
-                              const redirectTo = `${window.location.origin}/auth/callback`;
-                              const { data, error } =
-                                await supabase.auth.signInWithOAuth({
-                                  provider: "discord",
-                                  options: {
-                                    redirectTo,
-                                    skipBrowserRedirect: true,
-                                  },
-                                });
-                              if (error || !data?.url) {
-                                setAuthMsg(
-                                  error?.message ||
-                                    "Could not start Discord sign-in."
-                                );
-                                setAuthBusy(false);
-                                return;
-                              }
-
                               const w = 520;
                               const h = 720;
                               const left = Math.max(
@@ -3865,8 +3829,10 @@ export default function World({
                                   window.screenY + (window.outerHeight - h) / 2
                                 )
                               );
+
+                              const popupUrl = `${window.location.origin}/auth/popup?provider=discord`;
                               const popup = window.open(
-                                data.url,
+                                popupUrl,
                                 "pawnsquare-oauth",
                                 `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                               );
