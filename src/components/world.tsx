@@ -3647,10 +3647,24 @@ export default function World({
                             try {
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
-                              await supabase.auth.signInWithOAuth({
-                                provider: "google",
-                                options: { redirectTo: window.location.href },
-                              });
+                              const { data, error } =
+                                await supabase.auth.signInWithOAuth({
+                                  provider: "google",
+                                  options: {
+                                    redirectTo:
+                                      window.location.origin + "/auth/popup",
+                                    skipBrowserRedirect: true,
+                                  },
+                                });
+                              if (error) throw error;
+                              if (data?.url) {
+                                window.open(
+                                  data.url,
+                                  "pawnsquare-oauth",
+                                  "width=600,height=800"
+                                );
+                              }
+                              setAuthBusy(false);
                             } catch {
                               setAuthMsg("Could not start Google sign-in.");
                               setAuthBusy(false);
@@ -3680,10 +3694,24 @@ export default function World({
                             try {
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
-                              await supabase.auth.signInWithOAuth({
-                                provider: "discord",
-                                options: { redirectTo: window.location.href },
-                              });
+                              const { data, error } =
+                                await supabase.auth.signInWithOAuth({
+                                  provider: "discord",
+                                  options: {
+                                    redirectTo:
+                                      window.location.origin + "/auth/popup",
+                                    skipBrowserRedirect: true,
+                                  },
+                                });
+                              if (error) throw error;
+                              if (data?.url) {
+                                window.open(
+                                  data.url,
+                                  "pawnsquare-oauth",
+                                  "width=600,height=800"
+                                );
+                              }
+                              setAuthBusy(false);
                             } catch {
                               setAuthMsg("Could not start Discord sign-in.");
                               setAuthBusy(false);
