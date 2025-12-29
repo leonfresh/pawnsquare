@@ -3608,7 +3608,9 @@ export default function World({
                                 setAuthMsg(error.message);
                                 return;
                               }
-                              setAuthMsg("Magic link sent. Check your email.");
+                              setAuthMsg(
+                                "Magic link sent. Check your email (and Spam/Junk)."
+                              );
                             } catch {
                               setAuthMsg("Could not start email sign-in.");
                             } finally {

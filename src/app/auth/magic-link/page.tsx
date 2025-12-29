@@ -20,6 +20,10 @@ export default function MagicLinkPage() {
 
         if (data.session) {
           setMsg("Success! You are signed in.");
+          // Attempt to close the tab after a short delay
+          setTimeout(() => {
+            window.close();
+          }, 2000);
         } else {
           // Give it a moment in case the hash processing is slightly delayed
           setTimeout(async () => {
@@ -27,6 +31,9 @@ export default function MagicLinkPage() {
             const { data: retryData } = await supabase.auth.getSession();
             if (retryData.session) {
               setMsg("Success! You are signed in.");
+              setTimeout(() => {
+                window.close();
+              }, 2000);
             } else {
               setMsg(
                 "Could not verify session. Please try again or check your email link."
