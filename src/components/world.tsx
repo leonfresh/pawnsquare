@@ -2625,65 +2625,33 @@ export default function World({
     }
   }, [coins, ownedAvatarUrls]);
 
-  // If we came back from Stripe Checkout, verify the session and credit coins.
+  // Listen for Stripe payment success from popup.
   useEffect(() => {
-    if (avatarSystem !== "three-avatar") return;
-    if (typeof window === "undefined") return;
-    const url = new URL(window.location.href);
-    const sessionId = url.searchParams.get("stripe_session_id");
-    if (!sessionId) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === "pawnsquare:payment-success") {
+        const { coins: addedCoins, sessionId } = event.data;
 
-    const claimedRaw = window.localStorage.getItem(
-      "pawnsquare:claimedStripeSessions"
-    );
-    const claimed = new Set(safeParseJson<string[]>(claimedRaw) ?? []);
-    if (claimed.has(sessionId)) {
-      url.searchParams.delete("stripe_session_id");
-      window.history.replaceState(null, "", url.toString());
-      return;
-    }
-
-    let cancelled = false;
-    (async () => {
-      try {
-        setStripeBusy(true);
-        setStripeMsg("Finalizing purchase...");
-        const res = await fetch(
-          `/api/stripe/verify?session_id=${encodeURIComponent(sessionId)}`
+        const claimedRaw = window.localStorage.getItem(
+          "pawnsquare:claimedStripeSessions"
         );
-        const data = (await res.json()) as {
-          paid?: boolean;
-          coins?: number;
-          sessionId?: string;
-        };
-        if (cancelled) return;
-        if (!data?.paid || !data.sessionId || !data.coins) {
-          setStripeMsg("Payment not completed.");
-          return;
-        }
-        setCoins((c) => c + Math.max(0, Math.floor(data.coins ?? 0)));
-        claimed.add(data.sessionId);
+        const claimed = new Set(safeParseJson<string[]>(claimedRaw) ?? []);
+
+        if (claimed.has(sessionId)) return;
+
+        setCoins((c) => c + Math.max(0, Math.floor(addedCoins ?? 0)));
+        claimed.add(sessionId);
         window.localStorage.setItem(
           "pawnsquare:claimedStripeSessions",
           JSON.stringify(Array.from(claimed))
         );
-        setStripeMsg(`Added ${data.coins} coins!`);
-
-        // Clean URL.
-        url.searchParams.delete("stripe_session_id");
-        window.history.replaceState(null, "", url.toString());
-      } catch {
-        if (cancelled) return;
-        setStripeMsg("Could not verify payment.");
-      } finally {
-        if (!cancelled) setStripeBusy(false);
+        setStripeMsg(`Added ${addedCoins} coins!`);
+        setStripeBusy(false);
       }
-    })();
-
-    return () => {
-      cancelled = true;
     };
-  }, [avatarSystem, roomId]);
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   // If the user hasn't changed the selector yet, default males to the male avatar.
   useEffect(() => {
@@ -3589,10 +3557,14 @@ export default function World({
                               );
                               return;
                             }
-                            window.location.assign(data.url);
+                            window.open(
+                              data.url,
+                              "pawnsquare-checkout",
+                              "width=600,height=800"
+                            );
+                            setStripeMsg("Complete payment in the popup...");
                           } catch {
                             setStripeMsg("Could not start checkout.");
-                          } finally {
                             setStripeBusy(false);
                           }
                         }}

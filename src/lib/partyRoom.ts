@@ -26,7 +26,11 @@ export type ChatMessage = {
 };
 
 type PartyMessage =
-  | { type: "sync"; players: Record<string, Omit<Player, "lastSeen">>; chat?: ChatMessage[] }
+  | {
+      type: "sync";
+      players: Record<string, Omit<Player, "lastSeen">>;
+      chat?: ChatMessage[];
+    }
   | { type: "player-joined"; player: Omit<Player, "lastSeen"> }
   | { type: "player-moved"; id: string; position: Vec3; rotY: number }
   | { type: "player-left"; id: string }
@@ -87,7 +91,7 @@ export function usePartyRoom(
       console.log("[PartyKit] Connected");
       setConnected(true);
       setSelfId(socket.id);
-      
+
       // Send hello message
       socket.send(
         JSON.stringify({
@@ -193,23 +197,26 @@ export function usePartyRoom(
     setSelfName(name);
   }, []);
 
-  const setAvatarUrl = useCallback((url: string) => {
-    selfAvatarUrlRef.current = url;
-    setSelfAvatarUrl(url);
-    
-    // Re-send hello with updated avatar
-    if (socketRef.current?.readyState === WebSocket.OPEN && selfId) {
-      socketRef.current.send(
-        JSON.stringify({
-          type: "hello",
-          name: selfNameRef.current || defaultName(selfId),
-          color: colorFromId(selfId),
-          gender: selfGenderRef.current,
-          avatarUrl: url,
-        })
-      );
-    }
-  }, [selfId]);
+  const setAvatarUrl = useCallback(
+    (url: string) => {
+      selfAvatarUrlRef.current = url;
+      setSelfAvatarUrl(url);
+
+      // Re-send hello with updated avatar
+      if (socketRef.current?.readyState === WebSocket.OPEN && selfId) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: "hello",
+            name: selfNameRef.current || defaultName(selfId),
+            color: colorFromId(selfId),
+            gender: selfGenderRef.current,
+            avatarUrl: url,
+          })
+        );
+      }
+    },
+    [selfId]
+  );
 
   const self = selfId
     ? {

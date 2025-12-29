@@ -55,10 +55,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing origin" }, { status: 400 });
   }
 
-  const successUrl = `${origin}/room/${encodeURIComponent(
-    roomId
-  )}?stripe_session_id={CHECKOUT_SESSION_ID}`;
-  const cancelUrl = `${origin}/room/${encodeURIComponent(roomId)}`;
+  const successUrl = `${origin}/stripe/return?stripe_session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = `${origin}/stripe/return`;
 
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
