@@ -3899,10 +3899,10 @@ export default function World({
                                   provider: "discord",
                                   options: {
                                     redirectTo,
-                                    skipBrowserRedirect: true,
                                   },
                                 });
-                              if (error || !data?.url) {
+
+                              if (error) {
                                 setAuthMsg(
                                   error?.message ||
                                     "Could not start Discord sign-in."
@@ -3911,42 +3911,13 @@ export default function World({
                                 return;
                               }
 
-                              const w = 520;
-                              const h = 720;
-                              const left = Math.max(
-                                0,
-                                Math.floor(
-                                  window.screenX + (window.outerWidth - w) / 2
-                                )
-                              );
-                              const top = Math.max(
-                                0,
-                                Math.floor(
-                                  window.screenY + (window.outerHeight - h) / 2
-                                )
-                              );
-                              const popup = window.open(
-                                data.url,
-                                "pawnsquare-oauth",
-                                `popup=yes,width=${w},height=${h},left=${left},top=${top}`
-                              );
-                              if (!popup) {
-                                setAuthMsg(
-                                  "Popup blocked. Allow popups and try again."
-                                );
-                                setAuthBusy(false);
+                              // If Supabase doesn't auto-redirect for some reason, fall back.
+                              if (data?.url) {
+                                window.location.assign(data.url);
                                 return;
                               }
-                              try {
-                                window.localStorage.setItem(
-                                  "pawnsquare:oauthPopupStartedAt",
-                                  String(Date.now())
-                                );
-                              } catch {
-                                // ignore
-                              }
-                              setAuthMsg("Complete sign-in in the popup...");
-                              setAuthBusy(false);
+
+                              setAuthMsg("Redirecting to Discord...");
                             } catch {
                               setAuthMsg("Could not start Discord sign-in.");
                               setAuthBusy(false);
