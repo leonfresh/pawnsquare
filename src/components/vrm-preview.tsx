@@ -16,9 +16,16 @@ function Rotator({ children }: { children: React.ReactNode }) {
   return <group ref={groupRef}>{children}</group>;
 }
 
-function CameraAim({ target = [0, 1.1, 0] }: { target?: [number, number, number] }) {
+function CameraAim({
+  target = [0, 1.1, 0],
+}: {
+  target?: [number, number, number];
+}) {
   const { camera } = useThree();
-  const t = useMemo(() => new THREE.Vector3(target[0], target[1], target[2]), [target]);
+  const t = useMemo(
+    () => new THREE.Vector3(target[0], target[1], target[2]),
+    [target]
+  );
   useFrame(() => {
     camera.lookAt(t);
   });

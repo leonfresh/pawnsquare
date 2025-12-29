@@ -22,9 +22,12 @@ export async function POST(req: Request) {
     );
   }
 
-  const body = (await req.json().catch(() => null)) as
-    | { packId?: string; roomId?: string; playerId?: string; popup?: boolean }
-    | null;
+  const body = (await req.json().catch(() => null)) as {
+    packId?: string;
+    roomId?: string;
+    playerId?: string;
+    popup?: boolean;
+  } | null;
 
   const packId = (body?.packId ?? "") as PackId;
   const roomId = body?.roomId ?? "";
@@ -56,7 +59,9 @@ export async function POST(req: Request) {
 
   const successUrl = popup
     ? `${origin}/stripe/return?stripe_session_id={CHECKOUT_SESSION_ID}`
-    : `${origin}/room/${encodeURIComponent(roomId)}?stripe_session_id={CHECKOUT_SESSION_ID}`;
+    : `${origin}/room/${encodeURIComponent(
+        roomId
+      )}?stripe_session_id={CHECKOUT_SESSION_ID}`;
   const cancelUrl = popup
     ? `${origin}/stripe/return`
     : `${origin}/room/${encodeURIComponent(roomId)}`;

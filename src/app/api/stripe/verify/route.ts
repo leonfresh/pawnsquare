@@ -5,7 +5,9 @@ export async function GET(req: Request) {
   const stripe = getStripe();
 
   const url = new URL(req.url);
-  const sessionId = url.searchParams.get("session_id") || url.searchParams.get("stripe_session_id");
+  const sessionId =
+    url.searchParams.get("session_id") ||
+    url.searchParams.get("stripe_session_id");
   if (!sessionId) {
     return NextResponse.json({ error: "Missing session_id" }, { status: 400 });
   }

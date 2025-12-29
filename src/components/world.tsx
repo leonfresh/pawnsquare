@@ -2234,11 +2234,31 @@ const DEBUG_AVATAR_URLS = {
 } as const;
 
 const SHOP_ITEMS = [
-  { id: "cherry", name: "Cherry Rose", url: DEBUG_AVATAR_URLS.cherryRoseOptimized5mb, price: 250 },
-  { id: "fuyuki", name: "Fuyuki", url: DEBUG_AVATAR_URLS.fuyukiOptimized, price: 250 },
-  { id: "kawaii", name: "Kawaii", url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb, price: 250 },
+  {
+    id: "cherry",
+    name: "Cherry Rose",
+    url: DEBUG_AVATAR_URLS.cherryRoseOptimized5mb,
+    price: 250,
+  },
+  {
+    id: "fuyuki",
+    name: "Fuyuki",
+    url: DEBUG_AVATAR_URLS.fuyukiOptimized,
+    price: 250,
+  },
+  {
+    id: "kawaii",
+    name: "Kawaii",
+    url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb,
+    price: 250,
+  },
   { id: "miu", name: "Miu", url: DEBUG_AVATAR_URLS.miuOptimized, price: 350 },
-  { id: "ren", name: "Ren", url: DEBUG_AVATAR_URLS.renOptimized7mb, price: 350 },
+  {
+    id: "ren",
+    name: "Ren",
+    url: DEBUG_AVATAR_URLS.renOptimized7mb,
+    price: 350,
+  },
 ] as const;
 
 const COIN_PACKS = [
@@ -2505,7 +2525,9 @@ export default function World({
     SHOP_ITEMS[0]?.url ?? DEBUG_AVATAR_URLS.male
   );
   const [coins, setCoins] = useState<number>(500);
-  const [ownedAvatarUrls, setOwnedAvatarUrls] = useState<string[]>([DEBUG_AVATAR_URLS.male]);
+  const [ownedAvatarUrls, setOwnedAvatarUrls] = useState<string[]>([
+    DEBUG_AVATAR_URLS.male,
+  ]);
   const [stripeBusy, setStripeBusy] = useState(false);
   const [stripeMsg, setStripeMsg] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState("");
@@ -2516,7 +2538,8 @@ export default function World({
   // Supabase Auth (required before purchases)
   useEffect(() => {
     if (typeof window === "undefined") return;
-    let unsub: { data: { subscription: { unsubscribe: () => void } } } | null = null;
+    let unsub: { data: { subscription: { unsubscribe: () => void } } } | null =
+      null;
     try {
       const supabase = getSupabaseBrowserClient();
       void supabase.auth.getUser().then(({ data }) => {
@@ -2531,7 +2554,12 @@ export default function World({
         if (event.origin !== window.location.origin) return;
         const data = (event.data ?? null) as
           | { type?: "pawnsquare:supabase-auth"; ok?: boolean }
-          | { type?: "pawnsquare:stripe-credit"; ok?: boolean; sessionId?: string; coins?: number }
+          | {
+              type?: "pawnsquare:stripe-credit";
+              ok?: boolean;
+              sessionId?: string;
+              coins?: number;
+            }
           | null;
 
         if (data?.type === "pawnsquare:supabase-auth") {
@@ -2544,7 +2572,10 @@ export default function World({
 
         if (data?.type === "pawnsquare:stripe-credit") {
           const sessionId = (data.sessionId ?? "").trim();
-          const coinsToAdd = Math.max(0, Math.floor(Number(data.coins ?? 0) || 0));
+          const coinsToAdd = Math.max(
+            0,
+            Math.floor(Number(data.coins ?? 0) || 0)
+          );
           if (!sessionId || !coinsToAdd) return;
 
           try {
@@ -2577,7 +2608,8 @@ export default function World({
         window.removeEventListener("message", onMsg);
       };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Supabase auth not configured.";
+      const msg =
+        e instanceof Error ? e.message : "Supabase auth not configured.";
       setAuthMsg(msg);
     }
 
@@ -2603,7 +2635,9 @@ export default function World({
         setCoins(Math.max(0, Math.floor(storedCoins)));
       }
       if (Array.isArray(storedOwned) && storedOwned.length) {
-        const uniq = Array.from(new Set([DEBUG_AVATAR_URLS.male, ...storedOwned]));
+        const uniq = Array.from(
+          new Set([DEBUG_AVATAR_URLS.male, ...storedOwned])
+        );
         setOwnedAvatarUrls(uniq);
       }
     } catch {
@@ -2632,7 +2666,9 @@ export default function World({
     const sessionId = url.searchParams.get("stripe_session_id");
     if (!sessionId) return;
 
-    const claimedRaw = window.localStorage.getItem("pawnsquare:claimedStripeSessions");
+    const claimedRaw = window.localStorage.getItem(
+      "pawnsquare:claimedStripeSessions"
+    );
     const claimed = new Set(safeParseJson<string[]>(claimedRaw) ?? []);
     if (claimed.has(sessionId)) {
       url.searchParams.delete("stripe_session_id");
@@ -2645,8 +2681,14 @@ export default function World({
       try {
         setStripeBusy(true);
         setStripeMsg("Finalizing purchase...");
-        const res = await fetch(`/api/stripe/verify?session_id=${encodeURIComponent(sessionId)}`);
-        const data = (await res.json()) as { paid?: boolean; coins?: number; sessionId?: string };
+        const res = await fetch(
+          `/api/stripe/verify?session_id=${encodeURIComponent(sessionId)}`
+        );
+        const data = (await res.json()) as {
+          paid?: boolean;
+          coins?: number;
+          sessionId?: string;
+        };
         if (cancelled) return;
         if (!data?.paid || !data.sessionId || !data.coins) {
           setStripeMsg("Payment not completed.");
@@ -3469,12 +3511,16 @@ export default function World({
                   minWidth: 0,
                 }}
               >
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 6 }}
+                >
                   <div style={{ fontSize: 12, opacity: 0.85 }}>
                     Avatar shop (local MVP)
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div
+                    style={{ display: "flex", gap: 8, alignItems: "center" }}
+                  >
                     {COIN_PACKS.map((p) => (
                       <button
                         key={p.id}
@@ -3487,7 +3533,10 @@ export default function World({
                           border: "1px solid rgba(127,127,127,0.25)",
                           background: "transparent",
                           color: "inherit",
-                          cursor: stripeBusy || !supabaseUser ? "not-allowed" : "pointer",
+                          cursor:
+                            stripeBusy || !supabaseUser
+                              ? "not-allowed"
+                              : "pointer",
                           opacity: stripeBusy || !supabaseUser ? 0.6 : 1,
                           fontSize: 12,
                           whiteSpace: "nowrap",
@@ -3502,39 +3551,52 @@ export default function World({
                           try {
                             setStripeBusy(true);
                             const supabase = getSupabaseBrowserClient();
-                            const { data: sessionData } = await supabase.auth.getSession();
+                            const { data: sessionData } =
+                              await supabase.auth.getSession();
                             const token = sessionData.session?.access_token;
                             if (!token) {
                               setAuthMsg("Sign in required before purchases.");
                               return;
                             }
-                            const res = await fetch("/api/stripe/create-checkout", {
-                              method: "POST",
-                              headers: {
-                                "content-type": "application/json",
-                                authorization: `Bearer ${token}`,
-                              },
-                              body: JSON.stringify({
-                                packId: p.id,
-                                roomId,
-                                playerId: self.id,
-                                popup: true,
-                              }),
-                            });
-                            const data = (await res.json()) as { url?: string; error?: string };
+                            const res = await fetch(
+                              "/api/stripe/create-checkout",
+                              {
+                                method: "POST",
+                                headers: {
+                                  "content-type": "application/json",
+                                  authorization: `Bearer ${token}`,
+                                },
+                                body: JSON.stringify({
+                                  packId: p.id,
+                                  roomId,
+                                  playerId: self.id,
+                                  popup: true,
+                                }),
+                              }
+                            );
+                            const data = (await res.json()) as {
+                              url?: string;
+                              error?: string;
+                            };
                             if (!data.url) {
-                              setStripeMsg(data.error || "Could not start checkout.");
+                              setStripeMsg(
+                                data.error || "Could not start checkout."
+                              );
                               return;
                             }
                             const w = 520;
                             const h = 720;
                             const left = Math.max(
                               0,
-                              Math.floor(window.screenX + (window.outerWidth - w) / 2)
+                              Math.floor(
+                                window.screenX + (window.outerWidth - w) / 2
+                              )
                             );
                             const top = Math.max(
                               0,
-                              Math.floor(window.screenY + (window.outerHeight - h) / 2)
+                              Math.floor(
+                                window.screenY + (window.outerHeight - h) / 2
+                              )
                             );
                             const popup = window.open(
                               data.url,
@@ -3542,7 +3604,9 @@ export default function World({
                               `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                             );
                             if (!popup) {
-                              setStripeMsg("Popup blocked. Allow popups and try again.");
+                              setStripeMsg(
+                                "Popup blocked. Allow popups and try again."
+                              );
                               return;
                             }
                             setStripeMsg("Complete checkout in the popup...");
@@ -3559,12 +3623,24 @@ export default function World({
                   </div>
 
                   {!supabaseUser ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                      }}
+                    >
                       <div style={{ fontSize: 11, opacity: 0.75 }}>
                         Sign in required before purchases.
                       </div>
 
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                        }}
+                      >
                         <input
                           value={authEmail}
                           onChange={(e) => setAuthEmail(e.target.value)}
@@ -3607,10 +3683,11 @@ export default function World({
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
                               const redirectTo = window.location.href;
-                              const { error } = await supabase.auth.signInWithOtp({
-                                email,
-                                options: { emailRedirectTo: redirectTo },
-                              });
+                              const { error } =
+                                await supabase.auth.signInWithOtp({
+                                  email,
+                                  options: { emailRedirectTo: redirectTo },
+                                });
                               if (error) {
                                 setAuthMsg(error.message);
                                 return;
@@ -3627,7 +3704,14 @@ export default function World({
                         </button>
                       </div>
 
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                        }}
+                      >
                         <button
                           disabled={authBusy}
                           style={{
@@ -3649,30 +3733,46 @@ export default function World({
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
                               const redirectTo = `${window.location.origin}/auth/callback`;
-                              const { data, error } = await supabase.auth.signInWithOAuth({
-                                provider: "google",
-                                options: {
-                                  redirectTo,
-                                  skipBrowserRedirect: true,
-                                },
-                              });
+                              const { data, error } =
+                                await supabase.auth.signInWithOAuth({
+                                  provider: "google",
+                                  options: {
+                                    redirectTo,
+                                    skipBrowserRedirect: true,
+                                  },
+                                });
                               if (error || !data?.url) {
-                                setAuthMsg(error?.message || "Could not start Google sign-in.");
+                                setAuthMsg(
+                                  error?.message ||
+                                    "Could not start Google sign-in."
+                                );
                                 setAuthBusy(false);
                                 return;
                               }
 
                               const w = 520;
                               const h = 720;
-                              const left = Math.max(0, Math.floor(window.screenX + (window.outerWidth - w) / 2));
-                              const top = Math.max(0, Math.floor(window.screenY + (window.outerHeight - h) / 2));
+                              const left = Math.max(
+                                0,
+                                Math.floor(
+                                  window.screenX + (window.outerWidth - w) / 2
+                                )
+                              );
+                              const top = Math.max(
+                                0,
+                                Math.floor(
+                                  window.screenY + (window.outerHeight - h) / 2
+                                )
+                              );
                               const popup = window.open(
                                 data.url,
                                 "pawnsquare-oauth",
                                 `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                               );
                               if (!popup) {
-                                setAuthMsg("Popup blocked. Allow popups and try again.");
+                                setAuthMsg(
+                                  "Popup blocked. Allow popups and try again."
+                                );
                                 setAuthBusy(false);
                                 return;
                               }
@@ -3708,30 +3808,46 @@ export default function World({
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
                               const redirectTo = `${window.location.origin}/auth/callback`;
-                              const { data, error } = await supabase.auth.signInWithOAuth({
-                                provider: "discord",
-                                options: {
-                                  redirectTo,
-                                  skipBrowserRedirect: true,
-                                },
-                              });
+                              const { data, error } =
+                                await supabase.auth.signInWithOAuth({
+                                  provider: "discord",
+                                  options: {
+                                    redirectTo,
+                                    skipBrowserRedirect: true,
+                                  },
+                                });
                               if (error || !data?.url) {
-                                setAuthMsg(error?.message || "Could not start Discord sign-in.");
+                                setAuthMsg(
+                                  error?.message ||
+                                    "Could not start Discord sign-in."
+                                );
                                 setAuthBusy(false);
                                 return;
                               }
 
                               const w = 520;
                               const h = 720;
-                              const left = Math.max(0, Math.floor(window.screenX + (window.outerWidth - w) / 2));
-                              const top = Math.max(0, Math.floor(window.screenY + (window.outerHeight - h) / 2));
+                              const left = Math.max(
+                                0,
+                                Math.floor(
+                                  window.screenX + (window.outerWidth - w) / 2
+                                )
+                              );
+                              const top = Math.max(
+                                0,
+                                Math.floor(
+                                  window.screenY + (window.outerHeight - h) / 2
+                                )
+                              );
                               const popup = window.open(
                                 data.url,
                                 "pawnsquare-oauth",
                                 `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                               );
                               if (!popup) {
-                                setAuthMsg("Popup blocked. Allow popups and try again.");
+                                setAuthMsg(
+                                  "Popup blocked. Allow popups and try again."
+                                );
                                 setAuthBusy(false);
                                 return;
                               }
@@ -3748,13 +3864,18 @@ export default function World({
                       </div>
 
                       {authMsg ? (
-                        <div style={{ fontSize: 11, opacity: 0.75 }}>{authMsg}</div>
+                        <div style={{ fontSize: 11, opacity: 0.75 }}>
+                          {authMsg}
+                        </div>
                       ) : null}
                     </div>
                   ) : (
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <div
+                      style={{ display: "flex", gap: 8, alignItems: "center" }}
+                    >
                       <div style={{ fontSize: 11, opacity: 0.75 }}>
-                        Signed in{supabaseUser.email ? `: ${supabaseUser.email}` : "."}
+                        Signed in
+                        {supabaseUser.email ? `: ${supabaseUser.email}` : "."}
                       </div>
                       <button
                         disabled={authBusy}
@@ -3789,7 +3910,9 @@ export default function World({
                   )}
 
                   {stripeMsg ? (
-                    <div style={{ fontSize: 11, opacity: 0.75 }}>{stripeMsg}</div>
+                    <div style={{ fontSize: 11, opacity: 0.75 }}>
+                      {stripeMsg}
+                    </div>
                   ) : null}
                 </div>
                 <div
@@ -3841,7 +3964,9 @@ export default function World({
                           </div>
                         </div>
 
-                        <div style={{ display: "flex", gap: 8, flex: "0 0 auto" }}>
+                        <div
+                          style={{ display: "flex", gap: 8, flex: "0 0 auto" }}
+                        >
                           {!owned ? (
                             <button
                               style={{

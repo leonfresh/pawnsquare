@@ -13,7 +13,15 @@ type Side = "w" | "b";
 type GameResult =
   | { type: "timeout"; winner: Side }
   | { type: "checkmate"; winner: Side }
-  | { type: "draw"; reason: "stalemate" | "insufficient" | "threefold" | "fifty-move" | "draw" };
+  | {
+      type: "draw";
+      reason:
+        | "stalemate"
+        | "insufficient"
+        | "threefold"
+        | "fifty-move"
+        | "draw";
+    };
 
 type ClockState = {
   baseMs: number;
@@ -38,13 +46,17 @@ type ChessNetState = {
   lastMove: { from: Square; to: Square } | null;
 };
 
-type ChessMessage =
-  | { type: "state"; state: ChessNetState };
+type ChessMessage = { type: "state"; state: ChessNetState };
 
 type ChessSendMessage =
   | { type: "join"; side: Side; playerId?: string; name?: string }
   | { type: "leave"; side: Side }
-  | { type: "move"; from: Square; to: Square; promotion?: "q" | "r" | "b" | "n" }
+  | {
+      type: "move";
+      from: Square;
+      to: Square;
+      promotion?: "q" | "r" | "b" | "n";
+    }
   | { type: "setTime"; baseSeconds: number }
   | { type: "reset" };
 
@@ -110,13 +122,7 @@ function piecePath(type: string) {
   }
 }
 
-function PieceModel({
-  path,
-  tint,
-}: {
-  path: string;
-  tint: THREE.Color;
-}) {
+function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
   const gltf = useGLTF(path) as any;
 
   const cloned = useMemo(() => {
@@ -145,7 +151,11 @@ function PieceModel({
     root.rotation.set(Math.PI / 2, 0, 0);
     root.updateWorldMatrix(true, true);
     const box = new THREE.Box3().setFromObject(root);
-    if (Number.isFinite(box.min.x) && Number.isFinite(box.min.y) && Number.isFinite(box.min.z)) {
+    if (
+      Number.isFinite(box.min.x) &&
+      Number.isFinite(box.min.y) &&
+      Number.isFinite(box.min.z)
+    ) {
       const center = box.getCenter(new THREE.Vector3());
       // Center X/Z, but rest on the bottom Y
       root.position.x -= center.x;
@@ -310,11 +320,7 @@ function JoinPad({
       }}
     >
       {/* Stone pillar base */}
-      <mesh
-        receiveShadow
-        castShadow
-        onPointerDown={handleClick}
-      >
+      <mesh receiveShadow castShadow onPointerDown={handleClick}>
         <boxGeometry args={[w, 0.3, d]} />
         <meshStandardMaterial
           color={disabled ? "#4a4a4a" : active ? "#d4af37" : "#8b7355"}
@@ -408,7 +414,7 @@ export function OutdoorChess({
   const chessConnectedRef = useRef(false);
   const pendingJoinRef = useRef<Side | null>(null);
   const [pendingJoinSide, setPendingJoinSide] = useState<Side | null>(null);
-  
+
   useEffect(() => {
     chessConnectedRef.current = chessConnected;
   }, [chessConnected]);
@@ -416,7 +422,13 @@ export function OutdoorChess({
   const initialFen = useMemo(() => new Chess().fen(), []);
   const defaultClock = useMemo<ClockState>(() => {
     const baseMs = 5 * 60 * 1000;
-    return { baseMs, remainingMs: { w: baseMs, b: baseMs }, running: false, active: "w", lastTickMs: null };
+    return {
+      baseMs,
+      remainingMs: { w: baseMs, b: baseMs },
+      running: false,
+      active: "w",
+      lastTickMs: null,
+    };
   }, []);
   const [netState, setNetState] = useState<ChessNetState>({
     seats: { w: null, b: null },
@@ -478,7 +490,7 @@ export function OutdoorChess({
       // IMPORTANT: PartyKit ids are per-connection. Use the chess socket id
       // for seat ownership checks and move permissions.
       setChessSelfId(socket.id);
-      
+
       // Request any pending join
       const pendingSide = pendingJoinRef.current;
       if (pendingSide) {
@@ -494,7 +506,8 @@ export function OutdoorChess({
         if (msg.type === "state") {
           setNetState((prev) => {
             if (msg.state.seq < prev.seq) return prev;
-            if (msg.state.seq === prev.seq && msg.state.fen === prev.fen) return prev;
+            if (msg.state.seq === prev.seq && msg.state.fen === prev.fen)
+              return prev;
             return msg.state;
           });
         }
@@ -530,11 +543,15 @@ export function OutdoorChess({
     send({ type: "leave", side });
   };
 
-  const submitMove = (from: Square, to: Square, promotion?: "q" | "r" | "b" | "n") => {
+  const submitMove = (
+    from: Square,
+    to: Square,
+    promotion?: "q" | "r" | "b" | "n"
+  ) => {
     if (!mySide) return;
     if (netState.result) return;
     if (turn !== mySide) return;
-    
+
     send({ type: "move", from, to, promotion });
   };
 
@@ -546,7 +563,9 @@ export function OutdoorChess({
       const isPawn = piece?.type === "p";
       const toRank = Number(square[1]);
       const promotion =
-        isPawn && ((piece?.color === "w" && toRank === 8) || (piece?.color === "b" && toRank === 1))
+        isPawn &&
+        ((piece?.color === "w" && toRank === 8) ||
+          (piece?.color === "b" && toRank === 1))
           ? "q"
           : undefined;
 
@@ -555,10 +574,10 @@ export function OutdoorChess({
       setLegalTargets([]);
       return;
     }
-    
+
     // Check if there's a piece on this square we can select
     const piece = chess.get(square);
-    
+
     // If clicking our own piece, select it
     if (piece && mySide && turn === mySide && piece.color === mySide) {
       setSelected(square);
@@ -567,7 +586,7 @@ export function OutdoorChess({
       setLegalTargets(targets);
       return;
     }
-    
+
     // Otherwise deselect
     setSelected(null);
     setLegalTargets([]);
@@ -715,7 +734,11 @@ export function OutdoorChess({
     return bestIdx;
   }, [clocks.baseMs]);
 
-  const canConfigure = !!mySide && !netState.clock.running && !netState.result && netState.fen === initialFen;
+  const canConfigure =
+    !!mySide &&
+    !netState.clock.running &&
+    !netState.result &&
+    netState.fen === initialFen;
 
   const setTimeControlByIndex = (nextIdx: number) => {
     if (!canConfigure) return;
@@ -773,7 +796,11 @@ export function OutdoorChess({
           }}
         >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
+          <meshStandardMaterial
+            color="#a0826d"
+            roughness={0.7}
+            metalness={0.1}
+          />
         </mesh>
         {/* Bench legs */}
         <mesh castShadow position={[-1, -0.15, 0]}>
@@ -801,7 +828,11 @@ export function OutdoorChess({
           }}
         >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
+          <meshStandardMaterial
+            color="#a0826d"
+            roughness={0.7}
+            metalness={0.1}
+          />
         </mesh>
         <mesh castShadow position={[-1, -0.15, 0]}>
           <boxGeometry args={[0.15, 0.25, 0.5]} />
@@ -812,7 +843,7 @@ export function OutdoorChess({
           <meshStandardMaterial color="#8b7355" roughness={0.6} />
         </mesh>
       </group>
-      
+
       {/* Black side benches */}
       <group position={[originVec.x - 3.5, 0.2, originVec.z - padOffset - 1.5]}>
         <mesh
@@ -830,7 +861,11 @@ export function OutdoorChess({
           }}
         >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
+          <meshStandardMaterial
+            color="#a0826d"
+            roughness={0.7}
+            metalness={0.1}
+          />
         </mesh>
         <mesh castShadow position={[-1, -0.15, 0]}>
           <boxGeometry args={[0.15, 0.25, 0.5]} />
@@ -857,7 +892,11 @@ export function OutdoorChess({
           }}
         >
           <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial color="#a0826d" roughness={0.7} metalness={0.1} />
+          <meshStandardMaterial
+            color="#a0826d"
+            roughness={0.7}
+            metalness={0.1}
+          />
         </mesh>
         <mesh castShadow position={[-1, -0.15, 0]}>
           <boxGeometry args={[0.15, 0.25, 0.5]} />
@@ -868,14 +907,21 @@ export function OutdoorChess({
           <meshStandardMaterial color="#8b7355" roughness={0.6} />
         </mesh>
       </group>
-      
+
       {/* Decorative potted plants */}
       {[-1, 1].map((side) => (
-        <group key={`plant-${side}`} position={[originVec.x + side * 5, 0, originVec.z]}>
+        <group
+          key={`plant-${side}`}
+          position={[originVec.x + side * 5, 0, originVec.z]}
+        >
           {/* Pot (rim + body + soil) */}
           <mesh castShadow receiveShadow position={[0, 0.12, 0]}>
             <cylinderGeometry args={[0.34, 0.38, 0.26, 14]} />
-            <meshStandardMaterial color="#6f3b22" roughness={0.85} metalness={0.02} />
+            <meshStandardMaterial
+              color="#6f3b22"
+              roughness={0.85}
+              metalness={0.02}
+            />
           </mesh>
           <mesh castShadow receiveShadow position={[0, 0.26, 0]}>
             <cylinderGeometry args={[0.4, 0.4, 0.06, 14]} />
@@ -887,11 +933,18 @@ export function OutdoorChess({
           </mesh>
 
           {/* Plant: leafy shrub (more organic than stacked cones) */}
-          <group position={[0, 0.32, 0]} rotation={[0, side > 0 ? 0.35 : -0.25, 0]}>
+          <group
+            position={[0, 0.32, 0]}
+            rotation={[0, side > 0 ? 0.35 : -0.25, 0]}
+          >
             {/* Stem */}
             <mesh castShadow position={[0, 0.12, 0]}>
               <cylinderGeometry args={[0.03, 0.045, 0.26, 8]} />
-              <meshStandardMaterial color="#2a1f17" roughness={1} metalness={0} />
+              <meshStandardMaterial
+                color="#2a1f17"
+                roughness={1}
+                metalness={0}
+              />
             </mesh>
 
             {/* Leaf clumps */}
@@ -905,7 +958,12 @@ export function OutdoorChess({
                   flatShading
                 />
               </mesh>
-              <mesh castShadow position={[0.16, -0.02, 0.1]} rotation={[0, 0.6, 0]} scale={[1.05, 0.8, 1.0]}>
+              <mesh
+                castShadow
+                position={[0.16, -0.02, 0.1]}
+                rotation={[0, 0.6, 0]}
+                scale={[1.05, 0.8, 1.0]}
+              >
                 <dodecahedronGeometry args={[0.18, 0]} />
                 <meshStandardMaterial
                   color={side > 0 ? "#3a7a44" : "#3a7436"}
@@ -914,7 +972,12 @@ export function OutdoorChess({
                   flatShading
                 />
               </mesh>
-              <mesh castShadow position={[-0.15, -0.03, -0.12]} rotation={[0, -0.35, 0]} scale={[1.0, 0.78, 1.05]}>
+              <mesh
+                castShadow
+                position={[-0.15, -0.03, -0.12]}
+                rotation={[0, -0.35, 0]}
+                scale={[1.0, 0.78, 1.05]}
+              >
                 <dodecahedronGeometry args={[0.17, 0]} />
                 <meshStandardMaterial
                   color={side > 0 ? "#285a34" : "#2a4f2a"}
@@ -940,7 +1003,13 @@ export function OutdoorChess({
                 >
                   <coneGeometry args={[0.035, 0.16, 6]} />
                   <meshStandardMaterial
-                    color={li % 2 === 0 ? (side > 0 ? "#2f6a3d" : "#2c5a33") : "#3a7436"}
+                    color={
+                      li % 2 === 0
+                        ? side > 0
+                          ? "#2f6a3d"
+                          : "#2c5a33"
+                        : "#3a7436"
+                    }
                     roughness={1}
                     metalness={0}
                   />
@@ -961,7 +1030,7 @@ export function OutdoorChess({
           </group>
         </group>
       ))}
-      
+
       {/* Board */}
       <group position={[originVec.x, originVec.y, originVec.z]}>
         {Array.from({ length: 64 }).map((_, idx) => {
@@ -979,9 +1048,11 @@ export function OutdoorChess({
           const isLastMoveFrom = lastMove?.from === square;
           const isLastMoveTo = lastMove?.to === square;
           const pieceOnSquare = chess.get(square as Square);
-          const canInteract = 
-            (isTarget) || 
-            (pieceOnSquare && mySide === pieceOnSquare.color && turn === mySide);
+          const canInteract =
+            isTarget ||
+            (pieceOnSquare &&
+              mySide === pieceOnSquare.color &&
+              turn === mySide);
 
           return (
             <group
@@ -1014,7 +1085,9 @@ export function OutdoorChess({
                   rotation={[-Math.PI / 2, 0, 0]}
                   renderOrder={3}
                 >
-                  <planeGeometry args={[squareSize * 0.92, squareSize * 0.92]} />
+                  <planeGeometry
+                    args={[squareSize * 0.92, squareSize * 0.92]}
+                  />
                   <meshBasicMaterial
                     color="#ffffff"
                     transparent
@@ -1054,7 +1127,9 @@ export function OutdoorChess({
                   rotation={[-Math.PI / 2, 0, 0]}
                   renderOrder={1}
                 >
-                  <planeGeometry args={[squareSize * 0.96, squareSize * 0.96]} />
+                  <planeGeometry
+                    args={[squareSize * 0.96, squareSize * 0.96]}
+                  />
                   <meshBasicMaterial
                     color="#4a9eff"
                     transparent
@@ -1074,7 +1149,9 @@ export function OutdoorChess({
                   rotation={[-Math.PI / 2, 0, 0]}
                   renderOrder={1}
                 >
-                  <planeGeometry args={[squareSize * 0.96, squareSize * 0.96]} />
+                  <planeGeometry
+                    args={[squareSize * 0.96, squareSize * 0.96]}
+                  />
                   <meshBasicMaterial
                     color="#ffa04a"
                     transparent
@@ -1095,7 +1172,11 @@ export function OutdoorChess({
       {/* Join pads */}
       <JoinPad
         label={`${formatClock(clocks.remaining.w)}\n${
-          netState.seats.w ? (netState.seats.w.name || "White") : pendingJoinSide === "w" ? "Joining…" : "Join White"
+          netState.seats.w
+            ? netState.seats.w.name || "White"
+            : pendingJoinSide === "w"
+            ? "Joining…"
+            : "Join White"
         }`}
         center={whitePadCenter}
         size={padSize}
@@ -1109,7 +1190,11 @@ export function OutdoorChess({
       />
       <JoinPad
         label={`${formatClock(clocks.remaining.b)}\n${
-          netState.seats.b ? (netState.seats.b.name || "Black") : pendingJoinSide === "b" ? "Joining…" : "Join Black"
+          netState.seats.b
+            ? netState.seats.b.name || "Black"
+            : pendingJoinSide === "b"
+            ? "Joining…"
+            : "Join Black"
         }`}
         center={blackPadCenter}
         size={padSize}
@@ -1127,8 +1212,16 @@ export function OutdoorChess({
         const controlX = originVec.x + boardSize / 2 + 2.6;
         const controlZ = originVec.z;
         const smallSize: [number, number] = [0.9, 0.6];
-        const leftCenter = new THREE.Vector3(controlX - 1.15, 0.06, controlZ + 1.2);
-        const rightCenter = new THREE.Vector3(controlX + 1.15, 0.06, controlZ + 1.2);
+        const leftCenter = new THREE.Vector3(
+          controlX - 1.15,
+          0.06,
+          controlZ + 1.2
+        );
+        const rightCenter = new THREE.Vector3(
+          controlX + 1.15,
+          0.06,
+          controlZ + 1.2
+        );
         const resetCenter = new THREE.Vector3(controlX, 0.06, controlZ - 1.0);
         return (
           <group>
@@ -1145,7 +1238,9 @@ export function OutdoorChess({
               center={rightCenter}
               size={smallSize}
               active={false}
-              disabled={!canConfigure || timeIndex === TIME_OPTIONS_SECONDS.length - 1}
+              disabled={
+                !canConfigure || timeIndex === TIME_OPTIONS_SECONDS.length - 1
+              }
               onClick={() => setTimeControlByIndex(timeIndex + 1)}
             />
             <Text
