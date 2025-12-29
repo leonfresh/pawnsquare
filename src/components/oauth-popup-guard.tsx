@@ -20,6 +20,7 @@ export function OAuthPopupGuard() {
 
   const shouldRun = useMemo(() => {
     if (typeof window === "undefined") return false;
+    if (window.name !== "pawnsquare-oauth") return false;
 
     const u = new URL(window.location.href);
     const hasParams =
@@ -29,15 +30,7 @@ export function OAuthPopupGuard() {
       (u.hash || "").includes("refresh_token=") ||
       (u.hash || "").includes("error=");
 
-    // Run if:
-    // 1. Window name matches our popup
-    // 2. OR we have OAuth params and this was recently opened as a popup
-    // 3. OR we have OAuth params and window.opener exists
-    return (
-      window.name === "pawnsquare-oauth" ||
-      (hasParams && isRecentOAuthPopup()) ||
-      (hasParams && Boolean(window.opener))
-    );
+    return hasParams || isRecentOAuthPopup();
   }, []);
 
   useEffect(() => {
@@ -93,18 +86,25 @@ export function OAuthPopupGuard() {
         }
 
         if (code) {
-          // Exchange the code here. Even though we might see a PKCE error in console,
-          // the session still gets stored in localStorage (shared with main window).
-          const supabase = getSupabaseBrowserClient();
+          // IMPORTANT: Don't exchange the code in the popup.
+          // For PKCE, the code verifier was stored when the flow started (in the main window).
+          // Discord returns a code-only callback; exchanging in the popup fails with
+          // "PKCE code verifier not found". So we forward the callback URL to the main window.
+          const callbackUrl = window.location.href;
           try {
-            await supabase.auth.exchangeCodeForSession(window.location.href);
-          } catch (e) {
-            // Ignore PKCE errors - session is still persisted to localStorage
-            console.log("[OAuthPopup] Exchange error (ignoring):", e);
+            window.localStorage.setItem(
+              "pawnsquare:oauthCallbackUrl",
+              callbackUrl
+            );
+          } catch {
+            // ignore
           }
-
-          // Notify main window to refresh its auth state
-          notify({ type: "pawnsquare:supabase-auth", ok: true });
+          notify({
+            type: "pawnsquare:supabase-auth",
+            ok: true,
+            code: true,
+            callbackUrl,
+          });
           setMsg("Signed in. Closing...");
 
           // Wait a moment for the message to be received before closing

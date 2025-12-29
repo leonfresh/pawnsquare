@@ -2571,8 +2571,27 @@ export default function World({
           setAuthBusy(false);
           setAuthMsg(null);
 
-          // Popup has already exchanged the code and stored session in localStorage.
-          // Just refresh our auth state.
+          // If the popup returned a PKCE code callback URL, exchange it here
+          // (the verifier was stored in this window when we started OAuth).
+          if (data.code && data.callbackUrl) {
+            void (async () => {
+              try {
+                const callbackUrl = data.callbackUrl;
+                if (!callbackUrl) return;
+                await supabase.auth.exchangeCodeForSession(callbackUrl);
+              } catch (e) {
+                console.error("[Auth] exchangeCodeForSession failed", e);
+                setAuthMsg("Could not complete sign-in.");
+                return;
+              }
+
+              const { data: sessionData } = await supabase.auth.getSession();
+              setSupabaseUser(sessionData.session?.user ?? null);
+            })();
+            return;
+          }
+
+          // Otherwise, just refresh our auth state (hash-token flows, etc.)
           void supabase.auth.getSession().then(({ data }) => {
             setSupabaseUser(data.session?.user ?? null);
           });
@@ -2611,12 +2630,34 @@ export default function World({
       let ch: BroadcastChannel | null = null;
       try {
         ch = new BroadcastChannel("pawnsquare-auth");
-        ch.onmessage = () => {
+        ch.onmessage = (event) => {
           setAuthBusy(false);
           setAuthMsg(null);
 
-          // Popup has already exchanged the code and stored session in localStorage.
-          // Just refresh our auth state.
+          const data = (event.data ?? null) as {
+            type?: string;
+            code?: boolean;
+            callbackUrl?: string;
+          } | null;
+
+          if (data?.code && data.callbackUrl) {
+            void (async () => {
+              try {
+                const callbackUrl = data.callbackUrl;
+                if (!callbackUrl) return;
+                await supabase.auth.exchangeCodeForSession(callbackUrl);
+              } catch (e) {
+                console.error("[Auth] exchangeCodeForSession failed", e);
+                setAuthMsg("Could not complete sign-in.");
+                return;
+              }
+
+              const { data: sessionData } = await supabase.auth.getSession();
+              setSupabaseUser(sessionData.session?.user ?? null);
+            })();
+            return;
+          }
+
           void supabase.auth.getSession().then(({ data }) => {
             setSupabaseUser(data.session?.user ?? null);
           });
