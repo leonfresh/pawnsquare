@@ -22,9 +22,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const body = (await req.json().catch(() => null)) as
-    | { packId?: string; roomId?: string; playerId?: string }
-    | null;
+  const body = (await req.json().catch(() => null)) as {
+    packId?: string;
+    roomId?: string;
+    playerId?: string;
+  } | null;
 
   const packId = (body?.packId ?? "") as PackId;
   const roomId = body?.roomId ?? "";
@@ -53,7 +55,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing origin" }, { status: 400 });
   }
 
-  const successUrl = `${origin}/room/${encodeURIComponent(roomId)}?stripe_session_id={CHECKOUT_SESSION_ID}`;
+  const successUrl = `${origin}/room/${encodeURIComponent(
+    roomId
+  )}?stripe_session_id={CHECKOUT_SESSION_ID}`;
   const cancelUrl = `${origin}/room/${encodeURIComponent(roomId)}`;
 
   const session = await stripe.checkout.sessions.create({
