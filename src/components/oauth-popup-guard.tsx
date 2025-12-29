@@ -86,31 +86,61 @@ export function OAuthPopupGuard() {
         }
 
         if (code) {
-          // IMPORTANT: Don't exchange the code in the popup.
-          // For PKCE, the code verifier was stored when the flow started (in the main window).
-          // Discord returns a code-only callback; exchanging in the popup fails with
-          // "PKCE code verifier not found". So we forward the callback URL to the main window.
           const callbackUrl = window.location.href;
+          const supabase = getSupabaseBrowserClient();
+
+          // First try to exchange in the popup (works for many providers).
           try {
-            window.localStorage.setItem(
-              "pawnsquare:oauthCallbackUrl",
-              callbackUrl
-            );
-          } catch {
-            // ignore
+            await supabase.auth.exchangeCodeForSession(callbackUrl);
+          } catch (e) {
+            // Some providers / browsers can lose the PKCE verifier in this popup context.
+            // We'll fall back to exchanging in the opener.
+            console.log("[OAuthPopup] Exchange error (will fallback):", e);
           }
+
+          // Only close if we can confirm a session exists.
+          const { data: after } = await supabase.auth.getSession();
+          if (after.session) {
+            notify({ type: "pawnsquare:supabase-auth", ok: true });
+            setMsg("Signed in. Closing...");
+            setTimeout(() => {
+              tryCloseLoop();
+            }, 250);
+            return;
+          }
+
+          // Fallback: ask the main window to exchange the code (it has the verifier).
           notify({
             type: "pawnsquare:supabase-auth",
             ok: true,
             code: true,
             callbackUrl,
           });
-          setMsg("Signed in. Closing...");
+          setMsg("Finishing sign-in in the main tab...");
 
-          // Wait a moment for the message to be received before closing
-          setTimeout(() => {
-            tryCloseLoop();
-          }, 500);
+          // Poll briefly until the main tab persists the session, then close.
+          let tries = 0;
+          const t = window.setInterval(async () => {
+            tries++;
+            try {
+              const { data } = await supabase.auth.getSession();
+              if (data.session) {
+                notify({ type: "pawnsquare:supabase-auth", ok: true });
+                setMsg("Signed in. Closing...");
+                window.clearInterval(t);
+                tryCloseLoop();
+                return;
+              }
+            } catch {
+              // ignore
+            }
+
+            if (tries >= 40) {
+              window.clearInterval(t);
+              setMsg("Could not finish sign-in. Please try again.");
+            }
+          }, 250);
+
           return;
         }
 
