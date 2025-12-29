@@ -3928,7 +3928,10 @@ export default function World({
                                   .eq("id", supabaseUser.id)
                                   .then(({ error }) => {
                                     if (error) {
-                                      setAuthMsg("Purchase failed.");
+                                      console.error("Purchase error:", error);
+                                      setAuthMsg(
+                                        `Purchase failed: ${error.message}`
+                                      );
                                     }
                                   });
                               }}
