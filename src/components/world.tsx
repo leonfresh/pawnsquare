@@ -2433,19 +2433,6 @@ export default function World({
   initialName?: string;
   initialGender?: "male" | "female";
 }) {
-  const {
-    self,
-    players,
-    peerCount,
-    connected,
-    chat,
-    sendSelfState,
-    sendChat,
-    setName,
-    setAvatarUrl,
-  } = useP2PRoom(roomId, { initialName, initialGender });
-  const keysRef = useWASDKeys();
-
   const [isDuplicateSession, setIsDuplicateSession] = useState(false);
 
   useEffect(() => {
@@ -2466,6 +2453,23 @@ export default function World({
       channel.close();
     };
   }, []);
+
+  const {
+    self,
+    players,
+    peerCount,
+    connected,
+    chat,
+    sendSelfState,
+    sendChat,
+    setName,
+    setAvatarUrl,
+  } = useP2PRoom(roomId, {
+    initialName,
+    initialGender,
+    paused: isDuplicateSession,
+  });
+  const keysRef = useWASDKeys();
 
   const [chatInput, setChatInput] = useState("");
   const chatScrollRef = useRef<HTMLDivElement | null>(null);

@@ -40,20 +40,27 @@ const PARTYKIT_HOST = process.env.NEXT_PUBLIC_PARTYKIT_HOST || "localhost:1999";
 
 export function usePartyRoom(
   roomId: string,
-  opts?: { initialName?: string; initialGender?: "male" | "female" }
+  opts?: {
+    initialName?: string;
+    initialGender?: "male" | "female";
+    paused?: boolean;
+  }
 ) {
   const [selfId, setSelfId] = useState<string>("");
   const [selfName, setSelfName] = useState<string>("");
   const [selfGender, setSelfGender] = useState<"male" | "female">("male");
-  const [selfAvatarUrl, setSelfAvatarUrl] = useState<string | undefined>(undefined);
+  const [selfAvatarUrl, setSelfAvatarUrl] = useState<string | undefined>(
+    undefined
+  );
   const [players, setPlayers] = useState<Record<string, Player>>({});
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
-  
+
   const socketRef = useRef<PartySocket | null>(null);
   const selfNameRef = useRef<string>("");
   const selfGenderRef = useRef<"male" | "female">("male");
   const selfAvatarUrlRef = useRef<string | undefined>(undefined);
+  const paused = opts?.paused ?? false;
 
   useEffect(() => {
     const initial = (opts?.initialName ?? "").trim().slice(0, 24);
@@ -65,8 +72,10 @@ export function usePartyRoom(
   }, [opts?.initialName, opts?.initialGender]);
 
   useEffect(() => {
+    if (paused) return;
+
     console.log(`[PartyKit] Connecting to room: ${roomId}`);
-    
+
     const socket = new PartySocket({
       host: PARTYKIT_HOST,
       room: roomId,
@@ -157,7 +166,7 @@ export function usePartyRoom(
     return () => {
       socket.close();
     };
-  }, [roomId]);
+  }, [roomId, paused]);
 
   const sendSelfState = useCallback((position: Vec3, rotY: number) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
