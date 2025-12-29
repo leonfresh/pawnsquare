@@ -5,7 +5,9 @@ import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 function isRecentOAuthPopup() {
   try {
-    const markerRaw = window.localStorage.getItem("pawnsquare:oauthPopupStartedAt");
+    const markerRaw = window.localStorage.getItem(
+      "pawnsquare:oauthPopupStartedAt"
+    );
     const markerMs = Number(markerRaw ?? "0") || 0;
     return markerMs > 0 && Date.now() - markerMs < 10 * 60 * 1000;
   } catch {
@@ -69,36 +71,55 @@ export function OAuthPopupGuard() {
 
     (async () => {
       try {
-        const supabase = getSupabaseBrowserClient();
         const url = new URL(window.location.href);
 
         const code = url.searchParams.get("code");
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(
-            window.location.href
-          );
-          if (cancelled) return;
-          if (error) {
-            setMsg(error.message);
-            notify({ type: "pawnsquare:supabase-auth", ok: false, error: error.message });
-            return;
-          }
-        }
+        const error = url.searchParams.get("error");
+        const hash = url.hash || "";
+        const hasHashTokens =
+          hash.includes("access_token=") || hash.includes("refresh_token=");
 
-        // Make sure session is persisted (covers hash-token returns too).
-        const { data } = await supabase.auth.getSession();
-        if (cancelled) return;
-
-        if (!data.session) {
-          setMsg("No session found.");
+        if (error) {
+          setMsg(`Auth error: ${error}`);
+          notify({ type: "pawnsquare:supabase-auth", ok: false, error });
           return;
         }
 
-        notify({ type: "pawnsquare:supabase-auth", ok: true });
-        setMsg("Signed in. Closing...");
+        if (code) {
+          // Don't exchange here (popup doesn't have PKCE verifier).
+          // Send the full callback URL to the main window to exchange.
+          notify({
+            type: "pawnsquare:supabase-auth",
+            ok: true,
+            code: true,
+            callbackUrl: window.location.href,
+          });
+          setMsg("Signed in. Closing...");
+          tryCloseLoop();
+          return;
+        }
 
-        // Attempt close repeatedly; some browsers delay allowing it.
-        tryCloseLoop();
+        if (hasHashTokens) {
+          // Implicit flow tokens are in the hash; Supabase should auto-persist.
+          const supabase = getSupabaseBrowserClient();
+          await supabase.auth.getSession();
+          notify({ type: "pawnsquare:supabase-auth", ok: true });
+          setMsg("Signed in. Closing...");
+          tryCloseLoop();
+          return;
+        }
+
+        // Fallback: if session exists, close anyway.
+        const supabase = getSupabaseBrowserClient();
+        const { data } = await supabase.auth.getSession();
+        if (data.session) {
+          notify({ type: "pawnsquare:supabase-auth", ok: true });
+          setMsg("Signed in. Closing...");
+          tryCloseLoop();
+          return;
+        }
+
+        setMsg("No session found.");
       } catch {
         if (!cancelled) setMsg("Could not complete sign-in.");
       }

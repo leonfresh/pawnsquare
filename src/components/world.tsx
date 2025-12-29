@@ -2553,7 +2553,12 @@ export default function World({
       const onMsg = (event: MessageEvent) => {
         if (event.origin !== window.location.origin) return;
         const data = (event.data ?? null) as
-          | { type?: "pawnsquare:supabase-auth"; ok?: boolean }
+          | {
+              type?: "pawnsquare:supabase-auth";
+              ok?: boolean;
+              code?: boolean;
+              callbackUrl?: string;
+            }
           | {
               type?: "pawnsquare:stripe-credit";
               ok?: boolean;
@@ -2564,6 +2569,23 @@ export default function World({
 
         if (data?.type === "pawnsquare:supabase-auth") {
           setAuthBusy(false);
+
+          // If popup sent back a PKCE code, exchange it here (main window has the verifier).
+          if (data.code && data.callbackUrl) {
+            void (async () => {
+              try {
+                const url = data.callbackUrl;
+                if (!url) return;
+                await supabase.auth.exchangeCodeForSession(url);
+                const { data: userData } = await supabase.auth.getUser();
+                setSupabaseUser(userData.user ?? null);
+              } catch {
+                setAuthMsg("Could not complete sign-in.");
+              }
+            })();
+            return;
+          }
+
           void supabase.auth.getUser().then(({ data }) => {
             setSupabaseUser(data.user ?? null);
           });
@@ -2602,8 +2624,26 @@ export default function World({
       let ch: BroadcastChannel | null = null;
       try {
         ch = new BroadcastChannel("pawnsquare-auth");
-        ch.onmessage = () => {
+        ch.onmessage = (event) => {
           setAuthBusy(false);
+          const data = event.data ?? null;
+
+          // If popup sent back a PKCE code, exchange it here (main window has the verifier).
+          if (data?.code && data?.callbackUrl) {
+            void (async () => {
+              try {
+                const url = data.callbackUrl;
+                if (!url) return;
+                await supabase.auth.exchangeCodeForSession(url);
+                const { data: userData } = await supabase.auth.getUser();
+                setSupabaseUser(userData.user ?? null);
+              } catch {
+                setAuthMsg("Could not complete sign-in.");
+              }
+            })();
+            return;
+          }
+
           void supabase.auth.getUser().then(({ data }) => {
             setSupabaseUser(data.user ?? null);
           });
@@ -3749,6 +3789,25 @@ export default function World({
                             setAuthMsg(null);
                             try {
                               setAuthBusy(true);
+                              const supabase = getSupabaseBrowserClient();
+                              const redirectTo = `${window.location.origin}/auth/callback`;
+                              const { data, error } =
+                                await supabase.auth.signInWithOAuth({
+                                  provider: "google",
+                                  options: {
+                                    redirectTo,
+                                    skipBrowserRedirect: true,
+                                  },
+                                });
+                              if (error || !data?.url) {
+                                setAuthMsg(
+                                  error?.message ||
+                                    "Could not start Google sign-in."
+                                );
+                                setAuthBusy(false);
+                                return;
+                              }
+
                               const w = 520;
                               const h = 720;
                               const left = Math.max(
@@ -3763,10 +3822,8 @@ export default function World({
                                   window.screenY + (window.outerHeight - h) / 2
                                 )
                               );
-
-                              const popupUrl = `${window.location.origin}/auth/popup?provider=google`;
                               const popup = window.open(
-                                popupUrl,
+                                data.url,
                                 "pawnsquare-oauth",
                                 `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                               );
@@ -3815,6 +3872,25 @@ export default function World({
                             setAuthMsg(null);
                             try {
                               setAuthBusy(true);
+                              const supabase = getSupabaseBrowserClient();
+                              const redirectTo = `${window.location.origin}/auth/callback`;
+                              const { data, error } =
+                                await supabase.auth.signInWithOAuth({
+                                  provider: "discord",
+                                  options: {
+                                    redirectTo,
+                                    skipBrowserRedirect: true,
+                                  },
+                                });
+                              if (error || !data?.url) {
+                                setAuthMsg(
+                                  error?.message ||
+                                    "Could not start Discord sign-in."
+                                );
+                                setAuthBusy(false);
+                                return;
+                              }
+
                               const w = 520;
                               const h = 720;
                               const left = Math.max(
@@ -3829,10 +3905,8 @@ export default function World({
                                   window.screenY + (window.outerHeight - h) / 2
                                 )
                               );
-
-                              const popupUrl = `${window.location.origin}/auth/popup?provider=discord`;
                               const popup = window.open(
-                                popupUrl,
+                                data.url,
                                 "pawnsquare-oauth",
                                 `popup=yes,width=${w},height=${h},left=${left},top=${top}`
                               );
