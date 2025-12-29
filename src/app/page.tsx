@@ -2,10 +2,17 @@
 
 import dynamic from "next/dynamic";
 import { useState, useEffect } from "react";
+import { OAuthPopupGuard } from "@/components/oauth-popup-guard";
 
 const World = dynamic(() => import("@/components/world"), { ssr: false });
 
 export default function Home() {
+  // If this window is the OAuth popup, do NOT mount the 3D world or connect networking.
+  // Just finalize auth and close.
+  if (typeof window !== "undefined" && window.name === "pawnsquare-oauth") {
+    return <OAuthPopupGuard />;
+  }
+
   const [joined, setJoined] = useState(false);
   const [username, setUsername] = useState("");
   const [gender, setGender] = useState<"male" | "female">("male");
@@ -36,37 +43,53 @@ export default function Home() {
 
   if (!joined) {
     return (
-      <div style={{
-        position: "fixed",
-        inset: 0,
-        background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "system-ui, -apple-system, sans-serif"
-      }}>
-        <div style={{
-          background: "white",
-          borderRadius: "20px",
-          padding: "40px",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
-          maxWidth: "400px",
-          width: "90%"
-        }}>
-          <h1 style={{
-            margin: "0 0 10px 0",
-            fontSize: "32px",
-            fontWeight: "700",
-            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            backgroundClip: "text"
-          }}>PawnSquare</h1>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "system-ui, -apple-system, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            background: "white",
+            borderRadius: "20px",
+            padding: "40px",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+            maxWidth: "400px",
+            width: "90%",
+          }}
+        >
+          <h1
+            style={{
+              margin: "0 0 10px 0",
+              fontSize: "32px",
+              fontWeight: "700",
+              background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+            }}
+          >
+            PawnSquare
+          </h1>
           <p style={{ margin: "0 0 30px 0", color: "#666", fontSize: "14px" }}>
             Enter the 3D multiplayer world
           </p>
-          
-          <label style={{ display: "block", marginBottom: "8px", fontWeight: "600", color: "#333", fontSize: "14px" }}>
+
+          <label
+            style={{
+              display: "block",
+              marginBottom: "8px",
+              fontWeight: "600",
+              color: "#333",
+              fontSize: "14px",
+            }}
+          >
             Username
           </label>
           <input
@@ -85,13 +108,21 @@ export default function Home() {
               outline: "none",
               transition: "border-color 0.2s",
               boxSizing: "border-box",
-              marginBottom: "20px"
+              marginBottom: "20px",
             }}
-            onFocus={(e) => e.target.style.borderColor = "#667eea"}
-            onBlur={(e) => e.target.style.borderColor = "#e0e0e0"}
+            onFocus={(e) => (e.target.style.borderColor = "#667eea")}
+            onBlur={(e) => (e.target.style.borderColor = "#e0e0e0")}
           />
 
-          <label style={{ display: "block", marginBottom: "12px", fontWeight: "600", color: "#333", fontSize: "14px" }}>
+          <label
+            style={{
+              display: "block",
+              marginBottom: "12px",
+              fontWeight: "600",
+              color: "#333",
+              fontSize: "14px",
+            }}
+          >
             Avatar Gender
           </label>
           <div style={{ display: "flex", gap: "12px", marginBottom: "30px" }}>
@@ -102,12 +133,13 @@ export default function Home() {
                 padding: "16px",
                 fontSize: "16px",
                 fontWeight: "600",
-                border: gender === "male" ? "3px solid #667eea" : "2px solid #e0e0e0",
+                border:
+                  gender === "male" ? "3px solid #667eea" : "2px solid #e0e0e0",
                 borderRadius: "12px",
                 background: gender === "male" ? "#f0f4ff" : "white",
                 color: gender === "male" ? "#667eea" : "#666",
                 cursor: "pointer",
-                transition: "all 0.2s"
+                transition: "all 0.2s",
               }}
             >
               🚹 Male
@@ -119,12 +151,15 @@ export default function Home() {
                 padding: "16px",
                 fontSize: "16px",
                 fontWeight: "600",
-                border: gender === "female" ? "3px solid #764ba2" : "2px solid #e0e0e0",
+                border:
+                  gender === "female"
+                    ? "3px solid #764ba2"
+                    : "2px solid #e0e0e0",
                 borderRadius: "12px",
                 background: gender === "female" ? "#f8f0ff" : "white",
                 color: gender === "female" ? "#764ba2" : "#666",
                 cursor: "pointer",
-                transition: "all 0.2s"
+                transition: "all 0.2s",
               }}
             >
               🚺 Female
@@ -144,15 +179,17 @@ export default function Home() {
               color: "white",
               cursor: "pointer",
               transition: "transform 0.2s, box-shadow 0.2s",
-              boxShadow: "0 4px 12px rgba(102, 126, 234, 0.4)"
+              boxShadow: "0 4px 12px rgba(102, 126, 234, 0.4)",
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.transform = "translateY(-2px)";
-              e.currentTarget.style.boxShadow = "0 6px 20px rgba(102, 126, 234, 0.5)";
+              e.currentTarget.style.boxShadow =
+                "0 6px 20px rgba(102, 126, 234, 0.5)";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.transform = "translateY(0)";
-              e.currentTarget.style.boxShadow = "0 4px 12px rgba(102, 126, 234, 0.4)";
+              e.currentTarget.style.boxShadow =
+                "0 4px 12px rgba(102, 126, 234, 0.4)";
             }}
           >
             Join World
@@ -164,10 +201,10 @@ export default function Home() {
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
-      <World 
-        roomId={selectedRoom} 
-        initialName={username} 
-        initialGender={gender} 
+      <World
+        roomId={selectedRoom}
+        initialName={username}
+        initialGender={gender}
         onExit={() => {}}
       />
     </div>
