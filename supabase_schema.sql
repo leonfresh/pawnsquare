@@ -11,11 +11,13 @@ alter table profiles enable row level security;
 
 -- Create policies
 -- Allow users to read their own data
+drop policy if exists "Users can view their own profile" on profiles;
 create policy "Users can view their own profile" on profiles
   for select using (auth.uid() = id);
 
 -- Allow users to update their own data (for buying avatars client-side)
 -- Note: In a production app, you might want to move purchases to a server action
+drop policy if exists "Users can update their own profile" on profiles;
 create policy "Users can update their own profile" on profiles
   for update using (auth.uid() = id);
 
@@ -34,3 +36,9 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- BACKFILL: Run this once to create profiles for users who signed up BEFORE this script existed
+insert into public.profiles (id, coins, owned_avatars, processed_sessions)
+select id, 0, '[]'::jsonb, '[]'::jsonb
+from auth.users
+where id not in (select id from public.profiles);

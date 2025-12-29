@@ -2250,14 +2250,14 @@ const SHOP_ITEMS = [
     id: "kawaii",
     name: "Kawaii",
     url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb,
-    price: 250,
+    price: 80,
   },
   { id: "miu", name: "Miu", url: DEBUG_AVATAR_URLS.miuOptimized, price: 350 },
   {
     id: "ren",
     name: "Ren",
     url: DEBUG_AVATAR_URLS.renOptimized7mb,
-    price: 350,
+    price: 80,
   },
 ] as const;
 
