@@ -2572,14 +2572,24 @@ export default function World({
 
           // If popup sent back a PKCE code, exchange it here (main window has the verifier).
           if (data.code && data.callbackUrl) {
+            console.log(
+              "[World] Received callback URL from popup, exchanging..."
+            );
             void (async () => {
               try {
                 const url = data.callbackUrl;
                 if (!url) return;
+                console.log("[World] Exchanging code for session:", url);
                 await supabase.auth.exchangeCodeForSession(url);
                 const { data: userData } = await supabase.auth.getUser();
                 setSupabaseUser(userData.user ?? null);
-              } catch {
+                console.log(
+                  "[World] Sign-in complete, user:",
+                  userData.user?.email
+                );
+                setAuthMsg(null);
+              } catch (e) {
+                console.error("[World] Exchange failed:", e);
                 setAuthMsg("Could not complete sign-in.");
               }
             })();
@@ -2630,14 +2640,24 @@ export default function World({
 
           // If popup sent back a PKCE code, exchange it here (main window has the verifier).
           if (data?.code && data?.callbackUrl) {
+            console.log(
+              "[World/BC] Received callback URL from popup, exchanging..."
+            );
             void (async () => {
               try {
                 const url = data.callbackUrl;
                 if (!url) return;
+                console.log("[World/BC] Exchanging code for session:", url);
                 await supabase.auth.exchangeCodeForSession(url);
                 const { data: userData } = await supabase.auth.getUser();
                 setSupabaseUser(userData.user ?? null);
-              } catch {
+                console.log(
+                  "[World/BC] Sign-in complete, user:",
+                  userData.user?.email
+                );
+                setAuthMsg(null);
+              } catch (e) {
+                console.error("[World/BC] Exchange failed:", e);
                 setAuthMsg("Could not complete sign-in.");
               }
             })();

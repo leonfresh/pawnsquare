@@ -88,6 +88,10 @@ export function OAuthPopupGuard() {
         if (code) {
           // Don't exchange here (popup doesn't have PKCE verifier).
           // Send the full callback URL to the main window to exchange.
+          console.log(
+            "[OAuthPopup] Sending callback URL to main window:",
+            window.location.href
+          );
           notify({
             type: "pawnsquare:supabase-auth",
             ok: true,
@@ -95,7 +99,10 @@ export function OAuthPopupGuard() {
             callbackUrl: window.location.href,
           });
           setMsg("Signed in. Closing...");
-          tryCloseLoop();
+          // Wait a moment for the message to be received before closing
+          setTimeout(() => {
+            tryCloseLoop();
+          }, 500);
           return;
         }
 
