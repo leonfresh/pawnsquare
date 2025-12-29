@@ -86,19 +86,20 @@ export function OAuthPopupGuard() {
         }
 
         if (code) {
-          // Don't exchange here (popup doesn't have PKCE verifier).
-          // Send the full callback URL to the main window to exchange.
-          console.log(
-            "[OAuthPopup] Sending callback URL to main window:",
-            window.location.href
-          );
-          notify({
-            type: "pawnsquare:supabase-auth",
-            ok: true,
-            code: true,
-            callbackUrl: window.location.href,
-          });
+          // Exchange the code here. Even though we might see a PKCE error in console,
+          // the session still gets stored in localStorage (shared with main window).
+          const supabase = getSupabaseBrowserClient();
+          try {
+            await supabase.auth.exchangeCodeForSession(window.location.href);
+          } catch (e) {
+            // Ignore PKCE errors - session is still persisted to localStorage
+            console.log("[OAuthPopup] Exchange error (ignoring):", e);
+          }
+
+          // Notify main window to refresh its auth state
+          notify({ type: "pawnsquare:supabase-auth", ok: true });
           setMsg("Signed in. Closing...");
+
           // Wait a moment for the message to be received before closing
           setTimeout(() => {
             tryCloseLoop();

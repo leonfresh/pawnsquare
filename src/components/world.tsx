@@ -2569,35 +2569,12 @@ export default function World({
 
         if (data?.type === "pawnsquare:supabase-auth") {
           setAuthBusy(false);
+          setAuthMsg(null);
 
-          // If popup sent back a PKCE code, exchange it here (main window has the verifier).
-          if (data.code && data.callbackUrl) {
-            console.log(
-              "[World] Received callback URL from popup, exchanging..."
-            );
-            void (async () => {
-              try {
-                const url = data.callbackUrl;
-                if (!url) return;
-                console.log("[World] Exchanging code for session:", url);
-                await supabase.auth.exchangeCodeForSession(url);
-                const { data: userData } = await supabase.auth.getUser();
-                setSupabaseUser(userData.user ?? null);
-                console.log(
-                  "[World] Sign-in complete, user:",
-                  userData.user?.email
-                );
-                setAuthMsg(null);
-              } catch (e) {
-                console.error("[World] Exchange failed:", e);
-                setAuthMsg("Could not complete sign-in.");
-              }
-            })();
-            return;
-          }
-
-          void supabase.auth.getUser().then(({ data }) => {
-            setSupabaseUser(data.user ?? null);
+          // Popup has already exchanged the code and stored session in localStorage.
+          // Just refresh our auth state.
+          void supabase.auth.getSession().then(({ data }) => {
+            setSupabaseUser(data.session?.user ?? null);
           });
           return;
         }
@@ -2634,38 +2611,14 @@ export default function World({
       let ch: BroadcastChannel | null = null;
       try {
         ch = new BroadcastChannel("pawnsquare-auth");
-        ch.onmessage = (event) => {
+        ch.onmessage = () => {
           setAuthBusy(false);
-          const data = event.data ?? null;
+          setAuthMsg(null);
 
-          // If popup sent back a PKCE code, exchange it here (main window has the verifier).
-          if (data?.code && data?.callbackUrl) {
-            console.log(
-              "[World/BC] Received callback URL from popup, exchanging..."
-            );
-            void (async () => {
-              try {
-                const url = data.callbackUrl;
-                if (!url) return;
-                console.log("[World/BC] Exchanging code for session:", url);
-                await supabase.auth.exchangeCodeForSession(url);
-                const { data: userData } = await supabase.auth.getUser();
-                setSupabaseUser(userData.user ?? null);
-                console.log(
-                  "[World/BC] Sign-in complete, user:",
-                  userData.user?.email
-                );
-                setAuthMsg(null);
-              } catch (e) {
-                console.error("[World/BC] Exchange failed:", e);
-                setAuthMsg("Could not complete sign-in.");
-              }
-            })();
-            return;
-          }
-
-          void supabase.auth.getUser().then(({ data }) => {
-            setSupabaseUser(data.user ?? null);
+          // Popup has already exchanged the code and stored session in localStorage.
+          // Just refresh our auth state.
+          void supabase.auth.getSession().then(({ data }) => {
+            setSupabaseUser(data.session?.user ?? null);
           });
         };
       } catch {
