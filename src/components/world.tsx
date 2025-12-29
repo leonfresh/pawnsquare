@@ -3597,7 +3597,8 @@ export default function World({
                             try {
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
-                              const redirectTo = window.location.href;
+                              const redirectTo =
+                                window.location.origin + "/auth/magic-link";
                               const { error } =
                                 await supabase.auth.signInWithOtp({
                                   email,

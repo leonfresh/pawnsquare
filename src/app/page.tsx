@@ -20,7 +20,7 @@ export default function Home() {
   const [selectedRoom] = useState<string>("main-room");
 
   useEffect(() => {
-    const stored = sessionStorage.getItem("pawnsquare-user");
+    const stored = localStorage.getItem("pawnsquare-user");
     if (stored) {
       try {
         const data = JSON.parse(stored);
@@ -34,7 +34,7 @@ export default function Home() {
   const handleJoin = () => {
     const name = inputValue.trim() || "Guest";
     setUsername(name);
-    sessionStorage.setItem(
+    localStorage.setItem(
       "pawnsquare-user",
       JSON.stringify({ username: name, gender })
     );
