@@ -2542,6 +2542,23 @@ export default function World({
       null;
     try {
       const supabase = getSupabaseBrowserClient();
+
+      const refreshSessionWithRetry = async () => {
+        for (let i = 0; i < 16; i++) {
+          const { data: s } = await supabase.auth.getSession();
+          const user = s.session?.user ?? null;
+          if (user) {
+            setSupabaseUser(user);
+            return;
+          }
+          await new Promise((r) => window.setTimeout(r, 200));
+        }
+
+        // final attempt
+        const { data: s } = await supabase.auth.getSession();
+        setSupabaseUser(s.session?.user ?? null);
+      };
+
       void supabase.auth.getUser().then(({ data }) => {
         setSupabaseUser(data.user ?? null);
       });
@@ -2582,16 +2599,13 @@ export default function World({
               } catch {
                 // ignore; we'll still refresh below
               }
-              const { data: s } = await supabase.auth.getSession();
-              setSupabaseUser(s.session?.user ?? null);
+              await refreshSessionWithRetry();
             })();
             return;
           }
 
           // Otherwise, popup already stored session in localStorage; just refresh.
-          void supabase.auth.getSession().then(({ data }) => {
-            setSupabaseUser(data.session?.user ?? null);
-          });
+          void refreshSessionWithRetry();
           return;
         }
 
@@ -2645,17 +2659,14 @@ export default function World({
               } catch {
                 // ignore; we'll still refresh below
               }
-              const { data: s } = await supabase.auth.getSession();
-              setSupabaseUser(s.session?.user ?? null);
+              await refreshSessionWithRetry();
             })();
             return;
           }
 
           // Popup has already exchanged the code and stored session in localStorage.
           // Just refresh our auth state.
-          void supabase.auth.getSession().then(({ data }) => {
-            setSupabaseUser(data.session?.user ?? null);
-          });
+          void refreshSessionWithRetry();
         };
       } catch {
         // ignore
