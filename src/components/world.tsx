@@ -2599,6 +2599,19 @@ export default function World({
       };
       window.addEventListener("message", onMsg);
 
+      let ch: BroadcastChannel | null = null;
+      try {
+        ch = new BroadcastChannel("pawnsquare-auth");
+        ch.onmessage = () => {
+          setAuthBusy(false);
+          void supabase.auth.getUser().then(({ data }) => {
+            setSupabaseUser(data.user ?? null);
+          });
+        };
+      } catch {
+        // ignore
+      }
+
       return () => {
         try {
           unsub?.data.subscription.unsubscribe();
@@ -2606,6 +2619,11 @@ export default function World({
           // ignore
         }
         window.removeEventListener("message", onMsg);
+        try {
+          ch?.close();
+        } catch {
+          // ignore
+        }
       };
     } catch (e) {
       const msg =
@@ -3776,6 +3794,14 @@ export default function World({
                                 setAuthBusy(false);
                                 return;
                               }
+                              try {
+                                window.localStorage.setItem(
+                                  "pawnsquare:oauthPopupStartedAt",
+                                  String(Date.now())
+                                );
+                              } catch {
+                                // ignore
+                              }
                               setAuthMsg("Complete sign-in in the popup...");
                               setAuthBusy(false);
                             } catch {
@@ -3850,6 +3876,14 @@ export default function World({
                                 );
                                 setAuthBusy(false);
                                 return;
+                              }
+                              try {
+                                window.localStorage.setItem(
+                                  "pawnsquare:oauthPopupStartedAt",
+                                  String(Date.now())
+                                );
+                              } catch {
+                                // ignore
                               }
                               setAuthMsg("Complete sign-in in the popup...");
                               setAuthBusy(false);

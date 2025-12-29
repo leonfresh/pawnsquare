@@ -22,7 +22,15 @@ export function AuthUrlHandler() {
       hash.includes("refresh_token=") ||
       hash.includes("error=");
 
-    if (!code && !error && !hasHashTokens) return;
+    const markerRaw = window.localStorage.getItem(
+      "pawnsquare:oauthPopupStartedAt"
+    );
+    const markerMs = Number(markerRaw ?? "0") || 0;
+    const markerFresh = markerMs > 0 && Date.now() - markerMs < 10 * 60 * 1000;
+
+    // If there are no visible auth params, still try a quick session check when this is our OAuth popup.
+    // On some setups Supabase may clean the URL after persisting the session.
+    if (!code && !error && !hasHashTokens && !markerFresh) return;
 
     let cancelled = false;
 
@@ -30,24 +38,32 @@ export function AuthUrlHandler() {
       try {
         const supabase = getSupabaseBrowserClient();
 
+        const notify = (payload: any) => {
+          try {
+            window.opener?.postMessage(payload, window.location.origin);
+          } catch {
+            // ignore
+          }
+          try {
+            const ch = new BroadcastChannel("pawnsquare-auth");
+            ch.postMessage(payload);
+            ch.close();
+          } catch {
+            // ignore
+          }
+        };
+
         if (code) {
           const { error } = await supabase.auth.exchangeCodeForSession(
             window.location.href
           );
           if (cancelled) return;
           if (error) {
-            try {
-              window.opener?.postMessage(
-                {
-                  type: "pawnsquare:supabase-auth",
-                  ok: false,
-                  error: error.message,
-                },
-                window.location.origin
-              );
-            } catch {
-              // ignore
-            }
+            notify({
+              type: "pawnsquare:supabase-auth",
+              ok: false,
+              error: error.message,
+            });
             return;
           }
         }
@@ -58,14 +74,13 @@ export function AuthUrlHandler() {
           await supabase.auth.getSession();
         }
 
-        try {
-          window.opener?.postMessage(
-            { type: "pawnsquare:supabase-auth", ok: true },
-            window.location.origin
-          );
-        } catch {
-          // ignore
+        // Fallback: if URL is clean but session exists, close anyway.
+        if (!code && !hasHashTokens) {
+          const { data } = await supabase.auth.getSession();
+          if (!data.session) return;
         }
+
+        notify({ type: "pawnsquare:supabase-auth", ok: true });
 
         window.close();
       } catch {
