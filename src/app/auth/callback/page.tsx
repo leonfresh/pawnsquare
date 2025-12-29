@@ -9,6 +9,10 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     let cancelled = false;
 
+    const isPopup =
+      typeof window !== "undefined" &&
+      (Boolean(window.opener) || window.name === "pawnsquare-oauth");
+
     (async () => {
       try {
         const supabase = getSupabaseBrowserClient();
@@ -39,17 +43,40 @@ export default function AuthCallbackPage() {
           return;
         }
 
+        if (isPopup) {
+          try {
+            window.opener?.postMessage(
+              { type: "pawnsquare:supabase-auth", ok: true },
+              window.location.origin
+            );
+          } catch {
+            // ignore
+          }
+          try {
+            const ch = new BroadcastChannel("pawnsquare-auth");
+            ch.postMessage({ type: "pawnsquare:supabase-auth", ok: true });
+            ch.close();
+          } catch {
+            // ignore
+          }
+
+          setMsg("Signed in. You can close this window.");
+          window.close();
+          return;
+        }
+
+        // Same-tab flow: navigate back to where the user started.
+        let returnTo = "/";
         try {
-          window.opener?.postMessage(
-            { type: "pawnsquare:supabase-auth", ok: true },
-            window.location.origin
-          );
+          const raw = window.localStorage.getItem("pawnsquare:authReturnTo");
+          if (raw) returnTo = raw;
+          window.localStorage.removeItem("pawnsquare:authReturnTo");
         } catch {
           // ignore
         }
 
-        setMsg("Signed in. You can close this window.");
-        window.close();
+        setMsg("Signed in. Redirecting...");
+        window.location.replace(returnTo);
       } catch {
         if (!cancelled) setMsg("Could not complete sign-in.");
       }

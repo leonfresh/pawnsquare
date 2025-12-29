@@ -3894,6 +3894,15 @@ export default function World({
                               setAuthBusy(true);
                               const supabase = getSupabaseBrowserClient();
                               const redirectTo = `${window.location.origin}/auth/callback`;
+
+                              try {
+                                window.localStorage.setItem(
+                                  "pawnsquare:authReturnTo",
+                                  `${window.location.pathname}${window.location.search}${window.location.hash}`
+                                );
+                              } catch {
+                                // ignore
+                              }
                               const { data, error } =
                                 await supabase.auth.signInWithOAuth({
                                   provider: "discord",
