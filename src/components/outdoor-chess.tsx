@@ -886,26 +886,76 @@ export function OutdoorChess({
             <meshStandardMaterial color="#2a1b12" roughness={1} />
           </mesh>
 
-          {/* Plant: layered leaves */}
-          <group position={[0, 0.32, 0]}>
-            <mesh castShadow>
-              <coneGeometry args={[0.28, 0.45, 10]} />
-              <meshStandardMaterial color="#2f5b2f" roughness={1} />
+          {/* Plant: leafy shrub (more organic than stacked cones) */}
+          <group position={[0, 0.32, 0]} rotation={[0, side > 0 ? 0.35 : -0.25, 0]}>
+            {/* Stem */}
+            <mesh castShadow position={[0, 0.12, 0]}>
+              <cylinderGeometry args={[0.03, 0.045, 0.26, 8]} />
+              <meshStandardMaterial color="#2a1f17" roughness={1} metalness={0} />
             </mesh>
-            <mesh castShadow position={[0.12, 0.05, 0.08]} rotation={[0, 0.4, 0]}>
-              <coneGeometry args={[0.22, 0.38, 10]} />
-              <meshStandardMaterial color="#3a7436" roughness={1} />
-            </mesh>
-            <mesh castShadow position={[-0.12, 0.03, -0.06]} rotation={[0, -0.3, 0]}>
-              <coneGeometry args={[0.2, 0.34, 10]} />
-              <meshStandardMaterial color="#2a4f2a" roughness={1} />
-            </mesh>
+
+            {/* Leaf clumps */}
+            <group position={[0, 0.22, 0]}>
+              <mesh castShadow scale={[1.25, 0.92, 1.2]}>
+                <dodecahedronGeometry args={[0.22, 0]} />
+                <meshStandardMaterial
+                  color={side > 0 ? "#2f6a3d" : "#2c5a33"}
+                  roughness={1}
+                  metalness={0}
+                  flatShading
+                />
+              </mesh>
+              <mesh castShadow position={[0.16, -0.02, 0.1]} rotation={[0, 0.6, 0]} scale={[1.05, 0.8, 1.0]}>
+                <dodecahedronGeometry args={[0.18, 0]} />
+                <meshStandardMaterial
+                  color={side > 0 ? "#3a7a44" : "#3a7436"}
+                  roughness={1}
+                  metalness={0}
+                  flatShading
+                />
+              </mesh>
+              <mesh castShadow position={[-0.15, -0.03, -0.12]} rotation={[0, -0.35, 0]} scale={[1.0, 0.78, 1.05]}>
+                <dodecahedronGeometry args={[0.17, 0]} />
+                <meshStandardMaterial
+                  color={side > 0 ? "#285a34" : "#2a4f2a"}
+                  roughness={1}
+                  metalness={0}
+                  flatShading
+                />
+              </mesh>
+            </group>
+
+            {/* Leaf blades around the rim (adds detail, breaks silhouette) */}
+            {Array.from({ length: 6 }).map((_, li) => {
+              const a = (li / 6) * Math.PI * 2;
+              const r = 0.17;
+              const lx = Math.cos(a) * r;
+              const lz = Math.sin(a) * r;
+              return (
+                <mesh
+                  key={li}
+                  castShadow
+                  position={[lx, 0.17, lz]}
+                  rotation={[0.55, a + (side > 0 ? 0.12 : -0.08), 0.15]}
+                >
+                  <coneGeometry args={[0.035, 0.16, 6]} />
+                  <meshStandardMaterial
+                    color={li % 2 === 0 ? (side > 0 ? "#2f6a3d" : "#2c5a33") : "#3a7436"}
+                    roughness={1}
+                    metalness={0}
+                  />
+                </mesh>
+              );
+            })}
 
             {/* Small flowers (subtle) */}
             {[-0.12, 0.0, 0.12].map((fx, i) => (
-              <mesh key={i} position={[fx, 0.28, (i - 1) * 0.08]}>
+              <mesh key={i} position={[fx, 0.32, (i - 1) * 0.08]}>
                 <sphereGeometry args={[0.03, 8, 8]} />
-                <meshStandardMaterial color={side > 0 ? "#ffd6e7" : "#fff1b8"} roughness={0.7} />
+                <meshStandardMaterial
+                  color={side > 0 ? "#ffd6e7" : "#fff1b8"}
+                  roughness={0.7}
+                />
               </mesh>
             ))}
           </group>
