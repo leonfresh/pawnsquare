@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
-export default function StripeReturnPage() {
+function StripeReturnContent() {
   const searchParams = useSearchParams();
   const sessionId = searchParams.get("stripe_session_id");
   const [msg, setMsg] = useState("Verifying payment...");
@@ -77,5 +77,13 @@ export default function StripeReturnPage() {
       <h1 style={{ marginBottom: 16 }}>{msg}</h1>
       <p style={{ color: "#666" }}>You can close this window.</p>
     </div>
+  );
+}
+
+export default function StripeReturnPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <StripeReturnContent />
+    </Suspense>
   );
 }
