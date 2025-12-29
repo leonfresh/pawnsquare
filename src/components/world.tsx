@@ -4,11 +4,46 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Billboard, Plane, Text } from "@react-three/drei";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { usePartyRoom as useP2PRoom, type ChatMessage, type Vec3 } from "@/lib/partyRoom";
+import {
+  usePartyRoom as useP2PRoom,
+  type ChatMessage,
+  type Vec3,
+} from "@/lib/partyRoom";
 import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
 import { OutdoorChess } from "@/components/outdoor-chess";
+
+function makeRadialGlowTexture(size = 64) {
+  const data = new Uint8Array(size * size * 4);
+  const center = (size - 1) / 2;
+  const inv = 1 / center;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x - center) * inv;
+      const dy = (y - center) * inv;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      const a = Math.max(0, 1 - r);
+      const alpha = Math.pow(a, 2.2);
+
+      const i = (y * size + x) * 4;
+      data[i + 0] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = Math.floor(alpha * 255);
+    }
+  }
+
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -19,6 +54,357 @@ function distSq(a: Vec3, b: Vec3) {
   const dy = a[1] - b[1];
   const dz = a[2] - b[2];
   return dx * dx + dy * dy + dz * dz;
+}
+
+function hash2(x: number, y: number, seed: number) {
+  const v = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123;
+  return v - Math.floor(v);
+}
+
+function smoothstep01(t: number) {
+  return t * t * (3 - 2 * t);
+}
+
+function valueNoise2(x: number, y: number, seed: number) {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const xf = x - x0;
+  const yf = y - y0;
+
+  const a = hash2(x0, y0, seed);
+  const b = hash2(x0 + 1, y0, seed);
+  const c = hash2(x0, y0 + 1, seed);
+  const d = hash2(x0 + 1, y0 + 1, seed);
+
+  const ux = smoothstep01(xf);
+  const uy = smoothstep01(yf);
+  const ab = a + (b - a) * ux;
+  const cd = c + (d - c) * ux;
+  return ab + (cd - ab) * uy;
+}
+
+function fbm2(x: number, y: number, seed: number, octaves = 4) {
+  let v = 0;
+  let amp = 0.5;
+  let freq = 1;
+  for (let i = 0; i < octaves; i++) {
+    v += amp * valueNoise2(x * freq, y * freq, seed + i * 19.1);
+    freq *= 2.0;
+    amp *= 0.5;
+  }
+  return v;
+}
+
+function makeGroundGeometry({
+  size = 220,
+  segments = 80,
+  seed = 3.3,
+}: {
+  size?: number;
+  segments?: number;
+  seed?: number;
+}) {
+  const g = new THREE.PlaneGeometry(size, size, segments, segments);
+  g.rotateX(-Math.PI / 2);
+
+  const pos = g.getAttribute("position") as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
+
+  const base = new THREE.Color("#263626");
+  const moss = new THREE.Color("#2f4a35");
+  const dry = new THREE.Color("#3a3a28");
+  const tmp = new THREE.Color();
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+
+    // Two-layer noise for subtle mottling (all in linear space)
+    const n1 = fbm2(x * 0.06, z * 0.06, seed, 4); // 0..1
+    const n2 = fbm2(x * 0.14 + 20.0, z * 0.14 - 13.0, seed + 8.2, 3);
+
+    const t = clamp((n1 - 0.35) * 1.15, 0, 1);
+    const s = clamp((n2 - 0.45) * 1.35, 0, 1);
+
+    tmp
+      .copy(base)
+      .lerp(moss, t)
+      .lerp(dry, s * 0.6);
+
+    const o = i * 3;
+    colors[o + 0] = tmp.r;
+    colors[o + 1] = tmp.g;
+    colors[o + 2] = tmp.b;
+  }
+
+  g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return g;
+}
+
+function makeDirtDiskGeometry({
+  radius = 22,
+  segments = 72,
+  seed = 10.1,
+  baseColor = "#4a4038",
+}: {
+  radius?: number;
+  segments?: number;
+  seed?: number;
+  baseColor?: string;
+}) {
+  const g = new THREE.CircleGeometry(radius, segments);
+  const pos = g.getAttribute("position") as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
+
+  const base = new THREE.Color(baseColor);
+  const warm = new THREE.Color("#5a4c43");
+  const cool = new THREE.Color("#3a3f2b");
+  const tmp = new THREE.Color();
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const r = Math.sqrt(x * x + y * y);
+
+    const n1 = fbm2(x * 0.12, y * 0.12, seed, 4);
+    const n2 = fbm2(x * 0.32 + 9.1, y * 0.32 - 6.4, seed + 4.7, 3);
+    const t = clamp((n1 - 0.38) * 1.25, 0, 1);
+    const s = clamp((n2 - 0.5) * 1.4, 0, 1);
+
+    const centerWear = 1 - clamp(r / radius, 0, 1);
+    const wear = smoothstep01(centerWear);
+
+    tmp
+      .copy(base)
+      .lerp(warm, t * 0.55 + wear * 0.25)
+      .lerp(cool, s * 0.25);
+
+    const o = i * 3;
+    colors[o + 0] = tmp.r;
+    colors[o + 1] = tmp.g;
+    colors[o + 2] = tmp.b;
+  }
+
+  g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return g;
+}
+
+function makeDirtRingGeometry({
+  inner = 26,
+  outer = 30,
+  segments = 80,
+  seed = 12.8,
+  baseColor = "#3b332f",
+}: {
+  inner?: number;
+  outer?: number;
+  segments?: number;
+  seed?: number;
+  baseColor?: string;
+}) {
+  const g = new THREE.RingGeometry(inner, outer, segments);
+  const pos = g.getAttribute("position") as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
+
+  const base = new THREE.Color(baseColor);
+  const warm = new THREE.Color("#4a4038");
+  const cool = new THREE.Color("#2f3527");
+  const tmp = new THREE.Color();
+
+  const mid = (inner + outer) * 0.5;
+  const half = (outer - inner) * 0.5;
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const r = Math.sqrt(x * x + y * y);
+    const band = 1 - clamp(Math.abs(r - mid) / (half + 1e-6), 0, 1);
+
+    const n1 = fbm2(x * 0.16, y * 0.16, seed, 4);
+    const n2 = fbm2(x * 0.42 + 7.2, y * 0.42 - 2.9, seed + 5.1, 3);
+    const t = clamp((n1 - 0.4) * 1.2, 0, 1);
+    const s = clamp((n2 - 0.52) * 1.5, 0, 1);
+
+    tmp
+      .copy(base)
+      .lerp(warm, t * 0.45 + band * 0.12)
+      .lerp(cool, s * 0.25);
+
+    const o = i * 3;
+    colors[o + 0] = tmp.r;
+    colors[o + 1] = tmp.g;
+    colors[o + 2] = tmp.b;
+  }
+
+  g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return g;
+}
+
+function GradientSky({
+  top = "#6b86a8",
+  bottom = "#d6a57d",
+}: {
+  top?: string;
+  bottom?: string;
+}) {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+  const uniforms = useMemo(
+    () => ({
+      topColor: { value: new THREE.Color(top) },
+      bottomColor: { value: new THREE.Color(bottom) },
+      time: { value: 0 },
+      cloudStrength: { value: 0.55 },
+      cloudScale: { value: 5.4 },
+      cloudSpeed: { value: 0.01 },
+      starStrength: { value: 0.9 },
+      starDensity: { value: 240.0 },
+      starThreshold: { value: 0.9976 },
+      starTwinkle: { value: 0.22 },
+    }),
+    [top, bottom]
+  );
+
+  useFrame(({ clock }) => {
+    const m = materialRef.current;
+    if (m) m.uniforms.time.value = clock.getElapsedTime();
+  });
+
+  return (
+    <mesh scale={600} frustumCulled={false}>
+      <sphereGeometry args={[1, 16, 12]} />
+      <shaderMaterial
+        ref={materialRef}
+        uniforms={uniforms}
+        side={THREE.BackSide}
+        depthWrite={false}
+        vertexShader={
+          "varying vec3 vWorldPosition;\n" +
+          "void main() {\n" +
+          "  vec4 worldPosition = modelMatrix * vec4(position, 1.0);\n" +
+          "  vWorldPosition = worldPosition.xyz;\n" +
+          "  gl_Position = projectionMatrix * viewMatrix * worldPosition;\n" +
+          "}\n"
+        }
+        fragmentShader={
+          "uniform float time;\n" +
+          "uniform vec3 topColor;\n" +
+          "uniform vec3 bottomColor;\n" +
+          "uniform float cloudStrength;\n" +
+          "uniform float cloudScale;\n" +
+          "uniform float cloudSpeed;\n" +
+          "uniform float starStrength;\n" +
+          "uniform float starDensity;\n" +
+          "uniform float starThreshold;\n" +
+          "uniform float starTwinkle;\n" +
+          "varying vec3 vWorldPosition;\n" +
+          "\n" +
+          "float hash12(vec2 p) {\n" +
+          "  vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n" +
+          "  p3 += dot(p3, p3.yzx + 33.33);\n" +
+          "  return fract((p3.x + p3.y) * p3.z);\n" +
+          "}\n" +
+          "\n" +
+          "float hash13(vec3 p) {\n" +
+          "  p = fract(p * 0.1031);\n" +
+          "  p += dot(p, p.yzx + 33.33);\n" +
+          "  return fract((p.x + p.y) * p.z);\n" +
+          "}\n" +
+          "\n" +
+          "float noise2(vec2 p) {\n" +
+          "  vec2 i = floor(p);\n" +
+          "  vec2 f = fract(p);\n" +
+          "  float a = hash12(i);\n" +
+          "  float b = hash12(i + vec2(1.0, 0.0));\n" +
+          "  float c = hash12(i + vec2(0.0, 1.0));\n" +
+          "  float d = hash12(i + vec2(1.0, 1.0));\n" +
+          "  vec2 u = f * f * (3.0 - 2.0 * f);\n" +
+          "  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n" +
+          "}\n" +
+          "\n" +
+          "float noise3(vec3 p) {\n" +
+          "  vec3 i = floor(p);\n" +
+          "  vec3 f = fract(p);\n" +
+          "  vec3 u = f * f * (3.0 - 2.0 * f);\n" +
+          "\n" +
+          "  float n000 = hash13(i + vec3(0.0, 0.0, 0.0));\n" +
+          "  float n100 = hash13(i + vec3(1.0, 0.0, 0.0));\n" +
+          "  float n010 = hash13(i + vec3(0.0, 1.0, 0.0));\n" +
+          "  float n110 = hash13(i + vec3(1.0, 1.0, 0.0));\n" +
+          "  float n001 = hash13(i + vec3(0.0, 0.0, 1.0));\n" +
+          "  float n101 = hash13(i + vec3(1.0, 0.0, 1.0));\n" +
+          "  float n011 = hash13(i + vec3(0.0, 1.0, 1.0));\n" +
+          "  float n111 = hash13(i + vec3(1.0, 1.0, 1.0));\n" +
+          "\n" +
+          "  float nx00 = mix(n000, n100, u.x);\n" +
+          "  float nx10 = mix(n010, n110, u.x);\n" +
+          "  float nx01 = mix(n001, n101, u.x);\n" +
+          "  float nx11 = mix(n011, n111, u.x);\n" +
+          "  float nxy0 = mix(nx00, nx10, u.y);\n" +
+          "  float nxy1 = mix(nx01, nx11, u.y);\n" +
+          "  return mix(nxy0, nxy1, u.z);\n" +
+          "}\n" +
+          "\n" +
+          "float fbm(vec2 p) {\n" +
+          "  float v = 0.0;\n" +
+          "  float a = 0.5;\n" +
+          "  mat2 m = mat2(1.6, 1.2, -1.2, 1.6);\n" +
+          "  for (int i = 0; i < 4; i++) {\n" +
+          "    v += a * noise2(p);\n" +
+          "    p = m * p;\n" +
+          "    a *= 0.5;\n" +
+          "  }\n" +
+          "  return v;\n" +
+          "}\n" +
+          "\n" +
+          "float fbm3(vec3 p) {\n" +
+          "  float v = 0.0;\n" +
+          "  float a = 0.5;\n" +
+          "  for (int i = 0; i < 4; i++) {\n" +
+          "    v += a * noise3(p);\n" +
+          "    p = p * 1.95 + vec3(0.7, 0.2, 0.9);\n" +
+          "    a *= 0.5;\n" +
+          "  }\n" +
+          "  return v;\n" +
+          "}\n" +
+          "void main() {\n" +
+          "  vec3 dir = normalize(vWorldPosition);\n" +
+          "  float h = dir.y * 0.5 + 0.5;\n" +
+          "  float t = smoothstep(0.02, 0.98, h);\n" +
+          "  vec3 col = mix(bottomColor, topColor, t);\n" +
+          "\n" +
+          "  // Starfield (procedural, no textures). Fade in toward the zenith.\n" +
+          "  float starMask = smoothstep(0.55, 0.98, h);\n" +
+          "  vec3 sc = floor(dir * starDensity);\n" +
+          "  float sr = hash13(sc);\n" +
+          "  float starOn = step(starThreshold, sr);\n" +
+          "  float sSize = pow(hash13(sc + vec3(7.1, 3.7, 1.9)), 28.0);\n" +
+          "  float sBase = starOn * (0.35 + 1.65 * sSize);\n" +
+          "  float tw = 0.5 + 0.5 * sin(time * (1.5 + 6.0 * hash13(sc + vec3(2.0))) + hash13(sc + vec3(9.0)) * 6.2831853);\n" +
+          "  float s = sBase * mix(1.0, tw, starTwinkle) * starMask;\n" +
+          "  // Slightly cool stars\n" +
+          "  col += vec3(0.85, 0.92, 1.0) * (s * starStrength);\n" +
+          "\n" +
+          "  // Cloud layer: seamless 3D noise in direction space (no UV wrap => no seam)\n" +
+          "  vec2 drift = vec2(time * cloudSpeed, time * cloudSpeed * 0.6);\n" +
+          "  vec3 p3 = dir * (cloudScale * 1.25) + vec3(drift.x, 0.0, drift.y);\n" +
+          "  float n = fbm3(p3 * 1.25);\n" +
+          "  float d = noise3(p3 * 6.0);\n" +
+          "  n = n * 0.85 + d * 0.15;\n" +
+          "  // Keep clouds mostly near the upper sky\n" +
+          "  float heightMask = smoothstep(0.35, 0.9, h);\n" +
+          "  float clouds = smoothstep(0.45, 0.72, n) * heightMask;\n" +
+          "  vec3 cloudCol = mix(col, vec3(1.0, 1.0, 1.0), 0.32) + vec3(0.04, 0.04, 0.05);\n" +
+          "  col = mix(col, cloudCol, clouds * cloudStrength);\n" +
+          "\n" +
+          "  // Gentle horizon haze for depth\n" +
+          "  float haze = (1.0 - smoothstep(0.05, 0.22, h)) * 0.18;\n" +
+          "  col += vec3(0.08, 0.06, 0.04) * haze;\n" +
+          "  gl_FragColor = vec4(col, 1.0);\n" +
+          "}\n"
+        }
+      />
+    </mesh>
+  );
 }
 
 function OrganicPath({
@@ -52,7 +438,10 @@ function OrganicPath({
       side.normalize();
 
       const left = new THREE.Vector3(p.x, y, p.z).addScaledVector(side, halfW);
-      const right = new THREE.Vector3(p.x, y, p.z).addScaledVector(side, -halfW);
+      const right = new THREE.Vector3(p.x, y, p.z).addScaledVector(
+        side,
+        -halfW
+      );
 
       positions.push(left.x, left.y, left.z, right.x, right.y, right.z);
       uvs.push(0, t, 1, t);
@@ -71,13 +460,44 @@ function OrganicPath({
     g.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
     g.setIndex(indices);
     g.computeVertexNormals();
+
+    // Subtle vertex color variation (cheap, no textures)
+    const posAttr = g.getAttribute("position") as THREE.BufferAttribute;
+    const colors = new Float32Array(posAttr.count * 3);
+    const base = new THREE.Color(color);
+    const warm = base.clone().offsetHSL(0.0, -0.02, 0.06);
+    const cool = base.clone().offsetHSL(0.0, 0.02, -0.05);
+    const tmp = new THREE.Color();
+    const seed =
+      Math.abs(points[0]?.[0] ?? 0) * 13.7 +
+      Math.abs(points[0]?.[1] ?? 0) * 7.9 +
+      width * 3.1;
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posAttr.getX(i);
+      const z = posAttr.getZ(i);
+      const n1 = fbm2(x * 0.35, z * 0.35, seed, 3);
+      const n2 = fbm2(x * 0.9 + 2.0, z * 0.9 - 5.0, seed + 17.2, 2);
+      const t = clamp((n1 - 0.45) * 1.1, 0, 1);
+      const s = clamp((n2 - 0.5) * 1.4, 0, 1);
+      tmp
+        .copy(base)
+        .lerp(warm, t * 0.35)
+        .lerp(cool, s * 0.25);
+      const o = i * 3;
+      colors[o + 0] = tmp.r;
+      colors[o + 1] = tmp.g;
+      colors[o + 2] = tmp.b;
+    }
+    g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
     return g;
-  }, [points, y, width]);
+  }, [points, y, width, color]);
 
   return (
     <mesh geometry={geom} receiveShadow>
       <meshStandardMaterial
-        color={color}
+        vertexColors
         roughness={0.96}
         metalness={0.01}
         polygonOffset
@@ -97,7 +517,17 @@ function BoardLamp({
 }) {
   const keyRef = useRef<THREE.SpotLight>(null);
   const fillRef = useRef<THREE.SpotLight>(null);
+  const pointRef = useRef<THREE.PointLight>(null);
+  const bulbMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const glowMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const glowMeshRef = useRef<THREE.Mesh>(null);
   const targetRef = useRef<THREE.Object3D | null>(null);
+
+  const glowTex = useMemo(() => makeRadialGlowTexture(64), []);
+  const pulsePhase = useMemo(() => {
+    const p = lampPos;
+    return (p[0] * 0.37 + p[1] * 1.91 + p[2] * 0.73) % (Math.PI * 2);
+  }, [lampPos]);
 
   useEffect(() => {
     const target = new THREE.Object3D();
@@ -114,20 +544,58 @@ function BoardLamp({
     };
   }, [targetPos]);
 
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    const w = 0.55;
+    const pulse = 0.72 + 0.28 * Math.sin(t * w + pulsePhase);
+    const flicker = 0.97 + 0.03 * Math.sin(t * 3.2 + pulsePhase * 1.7);
+    const k = pulse * flicker;
+
+    const point = pointRef.current;
+    if (point) point.intensity = 0.9 * (0.75 + 0.55 * k);
+
+    const key = keyRef.current;
+    if (key) key.intensity = 1.05 * (0.8 + 0.45 * k);
+
+    const fill = fillRef.current;
+    if (fill) fill.intensity = 0.45 * (0.85 + 0.35 * k);
+
+    const bulbMat = bulbMatRef.current;
+    if (bulbMat) bulbMat.emissiveIntensity = 0.35 * (0.9 + 0.8 * k);
+
+    const glowMat = glowMatRef.current;
+    if (glowMat) glowMat.opacity = 0.22 + 0.38 * k;
+
+    const glowMesh = glowMeshRef.current;
+    if (glowMesh) {
+      const s = 1.65 + 0.55 * k;
+      glowMesh.scale.set(s, s, s);
+    }
+  });
+
   return (
     <>
       <group position={lampPos}>
         <mesh castShadow receiveShadow>
           <cylinderGeometry args={[0.11, 0.13, 3.2, 12]} />
-          <meshStandardMaterial color="#2a2a2a" roughness={0.65} metalness={0.25} />
+          <meshStandardMaterial
+            color="#2a2a2a"
+            roughness={0.65}
+            metalness={0.25}
+          />
         </mesh>
         <mesh castShadow receiveShadow position={[0, 1.65, 0]}>
           <cylinderGeometry args={[0.17, 0.19, 0.18, 12]} />
-          <meshStandardMaterial color="#2a2a2a" roughness={0.65} metalness={0.25} />
+          <meshStandardMaterial
+            color="#2a2a2a"
+            roughness={0.65}
+            metalness={0.25}
+          />
         </mesh>
         <mesh castShadow position={[0, 1.85, 0]}>
           <boxGeometry args={[0.55, 0.55, 0.55]} />
           <meshStandardMaterial
+            ref={bulbMatRef}
             color="#ffe0b8"
             emissive="#ffb45a"
             emissiveIntensity={0.35}
@@ -135,7 +603,23 @@ function BoardLamp({
             metalness={0}
           />
         </mesh>
+        <Billboard position={[0, 1.85, 0]}>
+          <mesh ref={glowMeshRef}>
+            <planeGeometry args={[1, 1]} />
+            <meshBasicMaterial
+              ref={glowMatRef}
+              map={glowTex}
+              color="#ffd1a6"
+              transparent
+              opacity={0.5}
+              depthWrite={false}
+              toneMapped={false}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+        </Billboard>
         <pointLight
+          ref={pointRef}
           position={[0, 1.85, 0]}
           intensity={0.9}
           distance={14}
@@ -153,10 +637,6 @@ function BoardLamp({
         distance={34}
         decay={2}
         color="#fff1d6"
-        castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
-        shadow-bias={-0.0002}
       />
       <spotLight
         ref={fillRef}
@@ -184,10 +664,29 @@ function AvatarBody({
   movingSpeed: number;
   gender?: "male" | "female";
 }) {
-  const { 
-    shirt, shirtDark, pants, pantsDark, skin, skinLight, skinDark, shoes, shoeSole, 
-    hair, hairShine, lips, lipsDark, irisColor, outfitType, skinTone, hairstyleType,
-    accent1, accent2, belt, bodyHeight, bodyBuild
+  const {
+    shirt,
+    shirtDark,
+    pants,
+    pantsDark,
+    skin,
+    skinLight,
+    skinDark,
+    shoes,
+    shoeSole,
+    hair,
+    hairShine,
+    lips,
+    lipsDark,
+    irisColor,
+    outfitType,
+    skinTone,
+    hairstyleType,
+    accent1,
+    accent2,
+    belt,
+    bodyHeight,
+    bodyBuild,
   } = useMemo(() => {
     const base = new THREE.Color(color);
     const hsl = { h: 0, s: 0, l: 0 };
@@ -195,40 +694,56 @@ function AvatarBody({
 
     // Use hue to determine character features for variety
     const hash = Math.floor(hsl.h * 1000);
-    
+
     // Body proportions - height and build variation
-    const heightVariation = ((hash * 3) % 20 - 10) / 100; // -0.1 to +0.1
+    const heightVariation = (((hash * 3) % 20) - 10) / 100; // -0.1 to +0.1
     const bodyHeight = 1 + heightVariation;
     const buildIndex = hash % 3; // 0=slim, 1=average, 2=stocky
     const bodyBuild = buildIndex;
-    
+
     // Diverse realistic skin tones (5 different tones)
     const skinToneIndex = hash % 5;
     const skinTones = [
-      { h: 0.08, s: 0.48, l: 0.72 },  // Light peachy
-      { h: 0.06, s: 0.38, l: 0.65 },  // Medium light
-      { h: 0.07, s: 0.42, l: 0.55 },  // Medium
-      { h: 0.05, s: 0.35, l: 0.42 },  // Medium dark
-      { h: 0.04, s: 0.32, l: 0.32 },  // Dark
+      { h: 0.08, s: 0.48, l: 0.72 }, // Light peachy
+      { h: 0.06, s: 0.38, l: 0.65 }, // Medium light
+      { h: 0.07, s: 0.42, l: 0.55 }, // Medium
+      { h: 0.05, s: 0.35, l: 0.42 }, // Medium dark
+      { h: 0.04, s: 0.32, l: 0.32 }, // Dark
     ];
     const skinTone = skinToneIndex;
     const selectedSkin = skinTones[skinToneIndex];
-    const skin = new THREE.Color().setHSL(selectedSkin.h, selectedSkin.s, selectedSkin.l);
-    const skinLight = new THREE.Color().setHSL(selectedSkin.h, selectedSkin.s * 0.9, selectedSkin.l * 1.08);
-    const skinDark = new THREE.Color().setHSL(selectedSkin.h, selectedSkin.s * 1.05, selectedSkin.l * 0.86);
-    
+    const skin = new THREE.Color().setHSL(
+      selectedSkin.h,
+      selectedSkin.s,
+      selectedSkin.l
+    );
+    const skinLight = new THREE.Color().setHSL(
+      selectedSkin.h,
+      selectedSkin.s * 0.9,
+      selectedSkin.l * 1.08
+    );
+    const skinDark = new THREE.Color().setHSL(
+      selectedSkin.h,
+      selectedSkin.s * 1.05,
+      selectedSkin.l * 0.86
+    );
+
     // Outfit types (casual, formal, dress, suit, sporty)
     const outfitTypeIndex = Math.floor((hash * 7) % 5);
     const outfitType = outfitTypeIndex;
-    
+
     let shirt, shirtDark, pants, pantsDark, accent1, accent2, belt;
-    
+
     if (outfitTypeIndex === 0) {
       // Casual t-shirt and jeans
       const shirtSat = clamp(0.5 + hsl.s * 0.5, 0.5, 0.75);
       const shirtLit = clamp(0.5 + hsl.l * 0.15, 0.5, 0.65);
       shirt = new THREE.Color().setHSL(hsl.h, shirtSat, shirtLit);
-      shirtDark = new THREE.Color().setHSL(hsl.h, shirtSat * 0.9, shirtLit * 0.75);
+      shirtDark = new THREE.Color().setHSL(
+        hsl.h,
+        shirtSat * 0.9,
+        shirtLit * 0.75
+      );
       pants = new THREE.Color().setHSL(0.6, 0.5, 0.35); // Blue jeans
       pantsDark = new THREE.Color().setHSL(0.6, 0.5, 0.25);
       accent1 = shirt;
@@ -249,7 +764,11 @@ function AvatarBody({
       const dressSat = clamp(0.6 + hsl.s * 0.4, 0.6, 0.8);
       const dressLit = clamp(0.45 + hsl.l * 0.2, 0.45, 0.6);
       shirt = new THREE.Color().setHSL(hsl.h, dressSat, dressLit);
-      shirtDark = new THREE.Color().setHSL(hsl.h, dressSat * 0.9, dressLit * 0.75);
+      shirtDark = new THREE.Color().setHSL(
+        hsl.h,
+        dressSat * 0.9,
+        dressLit * 0.75
+      );
       pants = shirt; // Dress continues
       pantsDark = shirtDark;
       accent1 = new THREE.Color().setHSL((hsl.h + 0.1) % 1, 0.5, 0.5);
@@ -275,16 +794,20 @@ function AvatarBody({
       accent2 = new THREE.Color().setHSL(0, 0, 0.95);
       belt = pants;
     }
-    
+
     // Varied shoe colors
-    const shoes = new THREE.Color().setHSL(hsl.h, Math.min(0.2, hsl.s * 0.25), 0.15 + (hash % 30) / 100);
+    const shoes = new THREE.Color().setHSL(
+      hsl.h,
+      Math.min(0.2, hsl.s * 0.25),
+      0.15 + (hash % 30) / 100
+    );
     const shoeSole = new THREE.Color().setHSL(0, 0.05, 0.85);
-    
+
     // Diverse hair colors (natural browns, blacks, blondes, reds, and fantasy colors)
     const hairTypeIndex = Math.floor((hash * 13) % 8);
     const hairstyleType = Math.floor((hash * 17) % 4); // 4 different hairstyles
     let hair, hairShine;
-    
+
     if (hairTypeIndex === 0) {
       // Black hair
       hair = new THREE.Color().setHSL(0.05, 0.25, 0.12);
@@ -314,7 +837,7 @@ function AvatarBody({
       hair = new THREE.Color().setHSL(hsl.h, 0.6, 0.4);
       hairShine = new THREE.Color().setHSL(hsl.h, 0.4, 0.6);
     }
-    
+
     const lips = new THREE.Color().setHSL(0.98, 0.52, 0.65);
     const lipsDark = new THREE.Color().setHSL(0.98, 0.48, 0.55);
     const irisColor = new THREE.Color().setHSL(hsl.h, 0.45, 0.33);
@@ -344,20 +867,22 @@ function AvatarBody({
       bodyBuild,
     };
   }, [color, gender]);
-  
+
   // Calculate body scale factors based on build
   const torsoScale = useMemo((): [number, number, number] => {
-    if (bodyBuild === 0) return gender === "female" ? [0.95, 1, 0.95] : [0.92, 1, 0.92]; // slim
-    if (bodyBuild === 2) return gender === "female" ? [1.08, 1, 1.08] : [1.12, 1, 1.12]; // stocky
+    if (bodyBuild === 0)
+      return gender === "female" ? [0.95, 1, 0.95] : [0.92, 1, 0.92]; // slim
+    if (bodyBuild === 2)
+      return gender === "female" ? [1.08, 1, 1.08] : [1.12, 1, 1.12]; // stocky
     return [1, 1, 1]; // average
   }, [bodyBuild, gender]);
-  
+
   const armScale = useMemo(() => {
     if (bodyBuild === 0) return 0.92; // slim
     if (bodyBuild === 2) return 1.08; // stocky
     return 1; // average
   }, [bodyBuild]);
-  
+
   const legScale = useMemo(() => {
     if (bodyBuild === 0) return 0.94; // slim
     if (bodyBuild === 2) return 1.06; // stocky
@@ -466,20 +991,36 @@ function AvatarBody({
         <group ref={torsoRef} position={[0, 0.35, 0]}>
           {/* Torso - Sims 4 has shorter, more stylized torsos */}
           <mesh castShadow scale={torsoScale}>
-            <capsuleGeometry args={gender === "female" ? [0.16, 0.32, 12, 24] : [0.18, 0.35, 12, 24]} />
-            <meshStandardMaterial color={shirt} roughness={0.75} metalness={0.02} />
+            <capsuleGeometry
+              args={
+                gender === "female"
+                  ? [0.16, 0.32, 12, 24]
+                  : [0.18, 0.35, 12, 24]
+              }
+            />
+            <meshStandardMaterial
+              color={shirt}
+              roughness={0.75}
+              metalness={0.02}
+            />
           </mesh>
-          
+
           {/* Chest/bust area - subtle for female */}
           {gender === "female" ? (
             <mesh position={[0, 0.1, 0.07]} castShadow>
-              <sphereGeometry args={[0.1, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6]} />
+              <sphereGeometry
+                args={[0.1, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6]}
+              />
               <meshStandardMaterial color={shirt} roughness={0.76} />
             </mesh>
           ) : null}
 
           {/* Arms - Sims 4 style shorter and simpler */}
-          <group ref={armLRef} position={gender === "female" ? [-0.22, 0.12, 0] : [-0.24, 0.14, 0]} scale={[armScale, 1, armScale]}>
+          <group
+            ref={armLRef}
+            position={gender === "female" ? [-0.22, 0.12, 0] : [-0.24, 0.14, 0]}
+            scale={[armScale, 1, armScale]}
+          >
             {/* Shoulder */}
             <mesh castShadow>
               <sphereGeometry args={[0.08, 14, 12]} />
@@ -507,7 +1048,11 @@ function AvatarBody({
             </mesh>
           </group>
 
-          <group ref={armRRef} position={gender === "female" ? [0.22, 0.12, 0] : [0.24, 0.14, 0]} scale={[armScale, 1, armScale]}>
+          <group
+            ref={armRRef}
+            position={gender === "female" ? [0.22, 0.12, 0] : [0.24, 0.14, 0]}
+            scale={[armScale, 1, armScale]}
+          >
             {/* Shoulder */}
             <mesh castShadow>
               <sphereGeometry args={[0.08, 14, 12]} />
@@ -545,18 +1090,31 @@ function AvatarBody({
           <group ref={headRef} position={[0, 0.52, 0]}>
             {/* Head - larger, more egg-shaped like Sims */}
             <mesh castShadow>
-              <sphereGeometry args={[0.28, 24, 20]} scale={[0.95, 1.15, 0.92]} />
+              <sphereGeometry
+                args={[0.28, 24, 20]}
+                scale={[0.95, 1.15, 0.92]}
+              />
               <meshStandardMaterial color={skin} roughness={0.65} />
             </mesh>
 
             {/* Cheeks - Sims style rounded */}
             <mesh position={[-0.16, -0.04, 0.2]}>
               <sphereGeometry args={[0.08, 14, 12]} />
-              <meshStandardMaterial color={lips} transparent opacity={0.12} roughness={1} />
+              <meshStandardMaterial
+                color={lips}
+                transparent
+                opacity={0.12}
+                roughness={1}
+              />
             </mesh>
             <mesh position={[0.16, -0.04, 0.2]}>
               <sphereGeometry args={[0.08, 14, 12]} />
-              <meshStandardMaterial color={lips} transparent opacity={0.12} roughness={1} />
+              <meshStandardMaterial
+                color={lips}
+                transparent
+                opacity={0.12}
+                roughness={1}
+              />
             </mesh>
 
             {/* Ears - helps silhouette read more "Sims" */}
@@ -572,9 +1130,14 @@ function AvatarBody({
             {/* Soft jaw shadow */}
             <mesh position={[0, -0.08, 0.12]}>
               <sphereGeometry args={[0.16, 14, 12]} scale={[1.0, 0.7, 0.8]} />
-              <meshStandardMaterial color={skinDark} transparent opacity={0.12} roughness={1} />
+              <meshStandardMaterial
+                color={skinDark}
+                transparent
+                opacity={0.12}
+                roughness={1}
+              />
             </mesh>
-            
+
             {/* Hair - Sims 4 style VOLUMINOUS and stylized */}
             {gender === "female" ? (
               <>
@@ -583,120 +1146,294 @@ function AvatarBody({
                   /* Long flowing hair */
                   <>
                     <mesh position={[0, 0.08, -0.02]} castShadow>
-                      <sphereGeometry args={[0.3, 18, 16]} scale={[1, 0.95, 1.05]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.3, 18, 16]}
+                        scale={[1, 0.95, 1.05]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.22, 0]} castShadow>
-                      <sphereGeometry args={[0.22, 16, 14]} scale={[1.1, 1, 1.1]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.22, 16, 14]}
+                        scale={[1.1, 1, 1.1]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[-0.22, 0.05, 0]} castShadow>
-                      <sphereGeometry args={[0.15, 14, 12]} scale={[1.2, 1.3, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.15, 14, 12]}
+                        scale={[1.2, 1.3, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0.22, 0.05, 0]} castShadow>
-                      <sphereGeometry args={[0.15, 14, 12]} scale={[1.2, 1.3, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.15, 14, 12]}
+                        scale={[1.2, 1.3, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.02, -0.22]} castShadow>
-                      <sphereGeometry args={[0.2, 16, 14]} scale={[1.15, 1.25, 1]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.2, 16, 14]}
+                        scale={[1.15, 1.25, 1]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
-                    <mesh position={[-0.16, -0.32, -0.1]} rotation={[0.12, 0, 0.15]} castShadow>
+                    <mesh
+                      position={[-0.16, -0.32, -0.1]}
+                      rotation={[0.12, 0, 0.15]}
+                      castShadow
+                    >
                       <capsuleGeometry args={[0.05, 0.62, 12, 16]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
-                    <mesh position={[0.16, -0.32, -0.1]} rotation={[0.12, 0, -0.15]} castShadow>
+                    <mesh
+                      position={[0.16, -0.32, -0.1]}
+                      rotation={[0.12, 0, -0.15]}
+                      castShadow
+                    >
                       <capsuleGeometry args={[0.05, 0.62, 12, 16]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
-                    <mesh position={[0, -0.35, -0.18]} rotation={[0.18, 0, 0]} castShadow>
+                    <mesh
+                      position={[0, -0.35, -0.18]}
+                      rotation={[0.18, 0, 0]}
+                      castShadow
+                    >
                       <capsuleGeometry args={[0.06, 0.66, 12, 16]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                   </>
                 ) : hairstyleType === 1 ? (
                   /* Bun/updo */
                   <>
                     <mesh position={[0, 0.08, -0.02]} castShadow>
-                      <sphereGeometry args={[0.29, 18, 16]} scale={[1, 0.92, 1.02]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.29, 18, 16]}
+                        scale={[1, 0.92, 1.02]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.18, -0.24]} castShadow>
-                      <sphereGeometry args={[0.18, 16, 14]} scale={[1.2, 1.1, 1.2]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.18, 16, 14]}
+                        scale={[1.2, 1.1, 1.2]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.26, -0.22]} castShadow>
-                      <sphereGeometry args={[0.14, 14, 12]} scale={[1.15, 1, 1.15]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.14, 14, 12]}
+                        scale={[1.15, 1, 1.15]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[-0.12, 0.15, -0.18]} castShadow>
                       <capsuleGeometry args={[0.05, 0.15, 10, 14]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0.12, 0.15, -0.18]} castShadow>
                       <capsuleGeometry args={[0.05, 0.15, 10, 14]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                   </>
                 ) : hairstyleType === 2 ? (
                   /* Short pixie cut */
                   <>
                     <mesh position={[0, 0.08, -0.01]} castShadow>
-                      <sphereGeometry args={[0.29, 18, 16]} scale={[1, 0.88, 1.06]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.29, 18, 16]}
+                        scale={[1, 0.88, 1.06]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.18, 0.08]} castShadow>
-                      <sphereGeometry args={[0.16, 16, 14]} scale={[1.2, 0.9, 1.1]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.16, 16, 14]}
+                        scale={[1.2, 0.9, 1.1]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[-0.2, 0.08, 0]} castShadow>
-                      <sphereGeometry args={[0.12, 14, 12]} scale={[1.1, 1.05, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.12, 14, 12]}
+                        scale={[1.1, 1.05, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0.2, 0.08, 0]} castShadow>
-                      <sphereGeometry args={[0.12, 14, 12]} scale={[1.1, 1.05, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.12, 14, 12]}
+                        scale={[1.1, 1.05, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                   </>
                 ) : (
                   /* Shoulder-length bob */
                   <>
                     <mesh position={[0, 0.08, -0.02]} castShadow>
-                      <sphereGeometry args={[0.3, 18, 16]} scale={[1, 0.95, 1.05]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.3, 18, 16]}
+                        scale={[1, 0.95, 1.05]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.2, 0]} castShadow>
-                      <sphereGeometry args={[0.2, 16, 14]} scale={[1.1, 1, 1.08]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.2, 16, 14]}
+                        scale={[1.1, 1, 1.08]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[-0.22, -0.02, 0]} castShadow>
-                      <sphereGeometry args={[0.16, 14, 12]} scale={[1.2, 1.4, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.16, 14, 12]}
+                        scale={[1.2, 1.4, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0.22, -0.02, 0]} castShadow>
-                      <sphereGeometry args={[0.16, 14, 12]} scale={[1.2, 1.4, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.16, 14, 12]}
+                        scale={[1.2, 1.4, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, -0.02, -0.22]} castShadow>
-                      <sphereGeometry args={[0.18, 16, 14]} scale={[1.15, 1.3, 1]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.18, 16, 14]}
+                        scale={[1.15, 1.3, 1]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
-                    <mesh position={[-0.14, -0.15, -0.08]} rotation={[0.1, 0, 0.12]} castShadow>
+                    <mesh
+                      position={[-0.14, -0.15, -0.08]}
+                      rotation={[0.1, 0, 0.12]}
+                      castShadow
+                    >
                       <capsuleGeometry args={[0.06, 0.28, 12, 16]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
-                    <mesh position={[0.14, -0.15, -0.08]} rotation={[0.1, 0, -0.12]} castShadow>
+                    <mesh
+                      position={[0.14, -0.15, -0.08]}
+                      rotation={[0.1, 0, -0.12]}
+                      castShadow
+                    >
                       <capsuleGeometry args={[0.06, 0.28, 12, 16]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                   </>
                 )}
 
                 {/* Top tuft - adds volume without looking like glass */}
                 <mesh position={[0, 0.18, 0.12]} castShadow>
-                  <sphereGeometry args={[0.13, 12, 10]} scale={[1.25, 0.9, 0.7]} />
-                  <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                  <sphereGeometry
+                    args={[0.13, 12, 10]}
+                    scale={[1.25, 0.9, 0.7]}
+                  />
+                  <meshStandardMaterial
+                    color={hair}
+                    roughness={0.32}
+                    metalness={0}
+                  />
                 </mesh>
               </>
             ) : (
@@ -706,15 +1443,28 @@ function AvatarBody({
                   /* Classic short */
                   <>
                     <mesh position={[0, 0.08, -0.01]} castShadow>
-                      <sphereGeometry args={[0.28, 18, 16]} scale={[1, 0.85, 1.08]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.28, 18, 16]}
+                        scale={[1, 0.85, 1.08]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.2, 0.04]} castShadow>
-                      <sphereGeometry args={[0.18, 16, 14]} scale={[1.15, 0.95, 1.1]} />
+                      <sphereGeometry
+                        args={[0.18, 16, 14]}
+                        scale={[1.15, 0.95, 1.1]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.9} />
                     </mesh>
                     <mesh position={[0, 0.15, 0.2]} castShadow>
-                      <sphereGeometry args={[0.12, 14, 12]} scale={[1.3, 0.9, 1]} />
+                      <sphereGeometry
+                        args={[0.12, 14, 12]}
+                        scale={[1.3, 0.9, 1]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.89} />
                     </mesh>
                   </>
@@ -722,15 +1472,24 @@ function AvatarBody({
                   /* Slicked back */
                   <>
                     <mesh position={[0, 0.08, -0.02]} castShadow>
-                      <sphereGeometry args={[0.28, 18, 16]} scale={[1, 0.82, 1.15]} />
+                      <sphereGeometry
+                        args={[0.28, 18, 16]}
+                        scale={[1, 0.82, 1.15]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.7} />
                     </mesh>
                     <mesh position={[0, 0.18, -0.08]} castShadow>
-                      <sphereGeometry args={[0.2, 16, 14]} scale={[1.05, 0.9, 1.2]} />
+                      <sphereGeometry
+                        args={[0.2, 16, 14]}
+                        scale={[1.05, 0.9, 1.2]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.65} />
                     </mesh>
                     <mesh position={[0, 0.05, -0.22]} castShadow>
-                      <sphereGeometry args={[0.16, 14, 12]} scale={[1.1, 1.05, 1]} />
+                      <sphereGeometry
+                        args={[0.16, 14, 12]}
+                        scale={[1.1, 1.05, 1]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.68} />
                     </mesh>
                   </>
@@ -738,56 +1497,104 @@ function AvatarBody({
                   /* Mohawk/spiky */
                   <>
                     <mesh position={[0, 0.08, 0]} castShadow>
-                      <sphereGeometry args={[0.27, 18, 16]} scale={[1, 0.8, 1.05]} />
+                      <sphereGeometry
+                        args={[0.27, 18, 16]}
+                        scale={[1, 0.8, 1.05]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.88} />
                     </mesh>
                     <mesh position={[0, 0.26, 0.02]} castShadow>
-                      <sphereGeometry args={[0.095, 16, 14]} scale={[0.8, 1.05, 1]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.095, 16, 14]}
+                        scale={[0.8, 1.05, 1]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.2, 0.08]} castShadow>
-                      <sphereGeometry args={[0.085, 14, 12]} scale={[0.9, 1.05, 0.9]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.085, 14, 12]}
+                        scale={[0.9, 1.05, 0.9]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                     <mesh position={[0, 0.22, -0.06]} castShadow>
-                      <sphereGeometry args={[0.09, 14, 12]} scale={[0.85, 1.05, 0.95]} />
-                      <meshStandardMaterial color={hair} roughness={0.32} metalness={0} />
+                      <sphereGeometry
+                        args={[0.09, 14, 12]}
+                        scale={[0.85, 1.05, 0.95]}
+                      />
+                      <meshStandardMaterial
+                        color={hair}
+                        roughness={0.32}
+                        metalness={0}
+                      />
                     </mesh>
                   </>
                 ) : (
                   /* Longer messy */
                   <>
                     <mesh position={[0, 0.08, -0.01]} castShadow>
-                      <sphereGeometry args={[0.29, 18, 16]} scale={[1, 0.88, 1.08]} />
+                      <sphereGeometry
+                        args={[0.29, 18, 16]}
+                        scale={[1, 0.88, 1.08]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.88} />
                     </mesh>
                     <mesh position={[0, 0.2, 0.04]} castShadow>
-                      <sphereGeometry args={[0.19, 16, 14]} scale={[1.15, 1, 1.15]} />
+                      <sphereGeometry
+                        args={[0.19, 16, 14]}
+                        scale={[1.15, 1, 1.15]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.9} />
                     </mesh>
                     <mesh position={[-0.2, 0.06, 0.02]} castShadow>
-                      <sphereGeometry args={[0.14, 14, 12]} scale={[1.15, 1.15, 0.95]} />
+                      <sphereGeometry
+                        args={[0.14, 14, 12]}
+                        scale={[1.15, 1.15, 0.95]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.88} />
                     </mesh>
                     <mesh position={[0.2, 0.06, 0.02]} castShadow>
-                      <sphereGeometry args={[0.14, 14, 12]} scale={[1.15, 1.15, 0.95]} />
+                      <sphereGeometry
+                        args={[0.14, 14, 12]}
+                        scale={[1.15, 1.15, 0.95]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.88} />
                     </mesh>
                     <mesh position={[0, 0.04, -0.22]} castShadow>
-                      <sphereGeometry args={[0.17, 14, 12]} scale={[1.2, 1.1, 1]} />
+                      <sphereGeometry
+                        args={[0.17, 14, 12]}
+                        scale={[1.2, 1.1, 1]}
+                      />
                       <meshStandardMaterial color={hair} roughness={0.87} />
                     </mesh>
                   </>
                 )}
-                
+
                 {/* Hair shine */}
                 <mesh position={[0, 0.16, 0.14]}>
-                  <sphereGeometry args={[0.12, 12, 10]} scale={[1.2, 0.7, 0.6]} />
-                  <meshStandardMaterial color={hairShine} transparent opacity={0.6} roughness={0.06} metalness={0} />
+                  <sphereGeometry
+                    args={[0.12, 12, 10]}
+                    scale={[1.2, 0.7, 0.6]}
+                  />
+                  <meshStandardMaterial
+                    color={hairShine}
+                    transparent
+                    opacity={0.6}
+                    roughness={0.06}
+                    metalness={0}
+                  />
                 </mesh>
               </>
             )}
-            
+
             {/* Nose - Sims 4 style rounder and cuter */}
             <mesh position={[0, -0.02, 0.24]} castShadow>
               <capsuleGeometry args={[0.022, 0.05, 8, 12]} />
@@ -813,7 +1620,12 @@ function AvatarBody({
               {/* Eye socket depth */}
               <mesh position={[0, 0, -0.01]}>
                 <sphereGeometry args={[0.058, 14, 12]} scale={[1.15, 1, 0.5]} />
-                <meshStandardMaterial color={skinDark} transparent opacity={0.3} roughness={1} />
+                <meshStandardMaterial
+                  color={skinDark}
+                  transparent
+                  opacity={0.3}
+                  roughness={1}
+                />
               </mesh>
               {/* Eye white - larger */}
               <mesh position={[0, 0, 0.02]} castShadow>
@@ -823,7 +1635,12 @@ function AvatarBody({
               {/* Iris outer ring - adds depth */}
               <mesh position={[0, 0, 0.038]}>
                 <sphereGeometry args={[0.035, 18, 16]} scale={[1, 1, 0.35]} />
-                <meshStandardMaterial color={irisColor} roughness={0.25} transparent opacity={0.6} />
+                <meshStandardMaterial
+                  color={irisColor}
+                  roughness={0.25}
+                  transparent
+                  opacity={0.6}
+                />
               </mesh>
               {/* Iris - bigger and more expressive */}
               <mesh position={[0, 0, 0.042]}>
@@ -838,26 +1655,57 @@ function AvatarBody({
               {/* Eye shine - dual highlights for Sims sparkle */}
               <mesh position={[-0.009, 0.014, 0.058]}>
                 <sphereGeometry args={[0.011, 10, 8]} />
-                <meshStandardMaterial color="white" emissive="white" emissiveIntensity={1.2} roughness={0} />
+                <meshStandardMaterial
+                  color="white"
+                  emissive="white"
+                  emissiveIntensity={1.2}
+                  roughness={0}
+                />
               </mesh>
               <mesh position={[0.008, -0.008, 0.056]}>
                 <sphereGeometry args={[0.006, 8, 6]} />
-                <meshStandardMaterial color="white" emissive="white" emissiveIntensity={0.7} roughness={0} transparent opacity={0.8} />
+                <meshStandardMaterial
+                  color="white"
+                  emissive="white"
+                  emissiveIntensity={0.7}
+                  roughness={0}
+                  transparent
+                  opacity={0.8}
+                />
               </mesh>
               {/* Upper eyelid */}
-              <mesh position={[0, 0.028, 0.032]} rotation={[0.15, 0, Math.PI / 2]}>
+              <mesh
+                position={[0, 0.028, 0.032]}
+                rotation={[0.15, 0, Math.PI / 2]}
+              >
                 <capsuleGeometry args={[0.027, 0.064, 8, 12]} />
-                <meshStandardMaterial color={skinDark} transparent opacity={0.55} roughness={0.75} />
+                <meshStandardMaterial
+                  color={skinDark}
+                  transparent
+                  opacity={0.55}
+                  roughness={0.75}
+                />
               </mesh>
               {/* Lower eyelid */}
-              <mesh position={[0, -0.022, 0.028]} rotation={[-0.1, 0, Math.PI / 2]}>
+              <mesh
+                position={[0, -0.022, 0.028]}
+                rotation={[-0.1, 0, Math.PI / 2]}
+              >
                 <capsuleGeometry args={[0.024, 0.058, 8, 12]} />
-                <meshStandardMaterial color={skin} transparent opacity={0.4} roughness={0.8} />
+                <meshStandardMaterial
+                  color={skin}
+                  transparent
+                  opacity={0.4}
+                  roughness={0.8}
+                />
               </mesh>
 
               {/* Eyelashes (female) */}
               {gender === "female" ? (
-                <mesh position={[0.006, 0.028, 0.06]} rotation={[0.1, 0, Math.PI / 2 - 0.25]}>
+                <mesh
+                  position={[0.006, 0.028, 0.06]}
+                  rotation={[0.1, 0, Math.PI / 2 - 0.25]}
+                >
                   <capsuleGeometry args={[0.006, 0.06, 6, 10]} />
                   <meshStandardMaterial color={hair} roughness={0.6} />
                 </mesh>
@@ -869,7 +1717,12 @@ function AvatarBody({
               {/* Eye socket depth */}
               <mesh position={[0, 0, -0.01]}>
                 <sphereGeometry args={[0.058, 14, 12]} scale={[1.15, 1, 0.5]} />
-                <meshStandardMaterial color={skinDark} transparent opacity={0.3} roughness={1} />
+                <meshStandardMaterial
+                  color={skinDark}
+                  transparent
+                  opacity={0.3}
+                  roughness={1}
+                />
               </mesh>
               {/* Eye white - larger */}
               <mesh position={[0, 0, 0.02]} castShadow>
@@ -879,7 +1732,12 @@ function AvatarBody({
               {/* Iris outer ring - adds depth */}
               <mesh position={[0, 0, 0.038]}>
                 <sphereGeometry args={[0.035, 18, 16]} scale={[1, 1, 0.35]} />
-                <meshStandardMaterial color={irisColor} roughness={0.25} transparent opacity={0.6} />
+                <meshStandardMaterial
+                  color={irisColor}
+                  roughness={0.25}
+                  transparent
+                  opacity={0.6}
+                />
               </mesh>
               {/* Iris - bigger and more expressive */}
               <mesh position={[0, 0, 0.042]}>
@@ -894,26 +1752,57 @@ function AvatarBody({
               {/* Eye shine - dual highlights for Sims sparkle */}
               <mesh position={[-0.009, 0.014, 0.058]}>
                 <sphereGeometry args={[0.011, 10, 8]} />
-                <meshStandardMaterial color="white" emissive="white" emissiveIntensity={1.2} roughness={0} />
+                <meshStandardMaterial
+                  color="white"
+                  emissive="white"
+                  emissiveIntensity={1.2}
+                  roughness={0}
+                />
               </mesh>
               <mesh position={[0.008, -0.008, 0.056]}>
                 <sphereGeometry args={[0.006, 8, 6]} />
-                <meshStandardMaterial color="white" emissive="white" emissiveIntensity={0.7} roughness={0} transparent opacity={0.8} />
+                <meshStandardMaterial
+                  color="white"
+                  emissive="white"
+                  emissiveIntensity={0.7}
+                  roughness={0}
+                  transparent
+                  opacity={0.8}
+                />
               </mesh>
               {/* Upper eyelid */}
-              <mesh position={[0, 0.028, 0.032]} rotation={[0.15, 0, Math.PI / 2]}>
+              <mesh
+                position={[0, 0.028, 0.032]}
+                rotation={[0.15, 0, Math.PI / 2]}
+              >
                 <capsuleGeometry args={[0.027, 0.064, 8, 12]} />
-                <meshStandardMaterial color={skinDark} transparent opacity={0.55} roughness={0.75} />
+                <meshStandardMaterial
+                  color={skinDark}
+                  transparent
+                  opacity={0.55}
+                  roughness={0.75}
+                />
               </mesh>
               {/* Lower eyelid */}
-              <mesh position={[0, -0.022, 0.028]} rotation={[-0.1, 0, Math.PI / 2]}>
+              <mesh
+                position={[0, -0.022, 0.028]}
+                rotation={[-0.1, 0, Math.PI / 2]}
+              >
                 <capsuleGeometry args={[0.024, 0.058, 8, 12]} />
-                <meshStandardMaterial color={skin} transparent opacity={0.4} roughness={0.8} />
+                <meshStandardMaterial
+                  color={skin}
+                  transparent
+                  opacity={0.4}
+                  roughness={0.8}
+                />
               </mesh>
 
               {/* Eyelashes (female) */}
               {gender === "female" ? (
-                <mesh position={[0.006, 0.028, 0.06]} rotation={[0.1, 0, Math.PI / 2 - 0.25]}>
+                <mesh
+                  position={[0.006, 0.028, 0.06]}
+                  rotation={[0.1, 0, Math.PI / 2 - 0.25]}
+                >
                   <capsuleGeometry args={[0.006, 0.06, 6, 10]} />
                   <meshStandardMaterial color={hair} roughness={0.6} />
                 </mesh>
@@ -933,33 +1822,58 @@ function AvatarBody({
                 <meshStandardMaterial color={hair} roughness={0.9} />
               </mesh>
             </group>
-            
+
             {/* Lips - Sims style fuller and more defined */}
             <mesh position={[0, -0.14, 0.24]}>
-              <sphereGeometry args={[0.048, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} scale={[1.2, 0.75, 0.8]} />
+              <sphereGeometry
+                args={[0.048, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]}
+                scale={[1.2, 0.75, 0.8]}
+              />
               <meshStandardMaterial color={lips} roughness={0.5} />
             </mesh>
             {/* Lip definition */}
-            <mesh position={[0, -0.132, 0.256]} rotation={[1.35, 0, Math.PI / 2]}>
+            <mesh
+              position={[0, -0.132, 0.256]}
+              rotation={[1.35, 0, Math.PI / 2]}
+            >
               <capsuleGeometry args={[0.006, 0.052, 6, 10]} />
-              <meshStandardMaterial color={lipsDark} transparent opacity={0.6} roughness={0.6} />
+              <meshStandardMaterial
+                color={lipsDark}
+                transparent
+                opacity={0.6}
+                roughness={0.6}
+              />
             </mesh>
             {/* Lip shine */}
             <mesh position={[0, -0.14, 0.26]}>
               <sphereGeometry args={[0.022, 12, 10]} scale={[1.3, 0.6, 0.5]} />
-              <meshStandardMaterial color="white" transparent opacity={0.2} roughness={0.2} />
+              <meshStandardMaterial
+                color="white"
+                transparent
+                opacity={0.2}
+                roughness={0.2}
+              />
             </mesh>
 
             {/* Chin - Sims style rounded */}
             <mesh position={[0, -0.2, 0.2]} castShadow>
               <sphereGeometry args={[0.065, 14, 12]} scale={[1, 1.1, 0.9]} />
-              <meshStandardMaterial color={skin} transparent opacity={0.35} roughness={0.7} />
+              <meshStandardMaterial
+                color={skin}
+                transparent
+                opacity={0.35}
+                roughness={0.7}
+              />
             </mesh>
           </group>
         </group>
 
         {/* Legs - Sims 4 style shorter and more stylized */}
-        <group ref={legLRef} position={[-0.09, 0.02, 0]} scale={[legScale, 1, legScale]}>
+        <group
+          ref={legLRef}
+          position={[-0.09, 0.02, 0]}
+          scale={[legScale, 1, legScale]}
+        >
           {/* Hip joint */}
           <mesh castShadow>
             <sphereGeometry args={[0.08, 14, 12]} />
@@ -986,7 +1900,11 @@ function AvatarBody({
             <meshStandardMaterial color={skin} roughness={0.72} />
           </mesh>
           {/* Foot - simplified Sims style */}
-          <mesh position={[0, -0.69, 0.06]} rotation={[-0.1, 0, Math.PI / 2]} castShadow>
+          <mesh
+            position={[0, -0.69, 0.06]}
+            rotation={[-0.1, 0, Math.PI / 2]}
+            castShadow
+          >
             <capsuleGeometry args={[0.055, 0.11, 10, 14]} />
             <meshStandardMaterial color={shoes} roughness={0.68} />
           </mesh>
@@ -996,7 +1914,11 @@ function AvatarBody({
           </mesh>
         </group>
 
-        <group ref={legRRef} position={[0.09, 0.02, 0]} scale={[legScale, 1, legScale]}>
+        <group
+          ref={legRRef}
+          position={[0.09, 0.02, 0]}
+          scale={[legScale, 1, legScale]}
+        >
           {/* Hip joint */}
           <mesh castShadow>
             <sphereGeometry args={[0.08, 14, 12]} />
@@ -1023,7 +1945,11 @@ function AvatarBody({
             <meshStandardMaterial color={skin} roughness={0.72} />
           </mesh>
           {/* Foot - simplified Sims style */}
-          <mesh position={[0, -0.69, 0.06]} rotation={[-0.1, 0, Math.PI / 2]} castShadow>
+          <mesh
+            position={[0, -0.69, 0.06]}
+            rotation={[-0.1, 0, Math.PI / 2]}
+            castShadow
+          >
             <capsuleGeometry args={[0.055, 0.11, 10, 14]} />
             <meshStandardMaterial color={shoes} roughness={0.68} />
           </mesh>
@@ -1126,7 +2052,11 @@ function RemoteAvatar({
     if (!g) return;
 
     const alpha = 1 - Math.pow(0.001, dt); // frame-rate independent smoothing
-    targetRef.current.set(targetPosition[0], targetPosition[1], targetPosition[2]);
+    targetRef.current.set(
+      targetPosition[0],
+      targetPosition[1],
+      targetPosition[2]
+    );
     posRef.current.lerp(targetRef.current, alpha);
     // shortest angle lerp
     const d =
@@ -1142,9 +2072,13 @@ function RemoteAvatar({
     const dy = posRef.current.y - lastPosRef.current.y;
     const dz = posRef.current.z - lastPosRef.current.z;
     const sp = Math.sqrt(dx * dx + dy * dy + dz * dz) / Math.max(0.0001, dt);
-    speedRef.current = THREE.MathUtils.lerp(speedRef.current, sp, clamp(dt * 8, 0, 1));
+    speedRef.current = THREE.MathUtils.lerp(
+      speedRef.current,
+      sp,
+      clamp(dt * 8, 0, 1)
+    );
     lastPosRef.current.copy(posRef.current);
-    
+
     setMovingSpeed(speedRef.current);
   });
 
@@ -1182,7 +2116,12 @@ function RemoteAvatar({
         </Billboard>
       ) : null}
 
-      <PlayerAvatar id={id} movingSpeed={movingSpeed} gender={gender} url={avatarUrl} />
+      <PlayerAvatar
+        id={id}
+        movingSpeed={movingSpeed}
+        gender={gender}
+        url={avatarUrl}
+      />
     </group>
   );
 }
@@ -1293,14 +2232,11 @@ function SelfSimulation({
   lastSent: React.RefObject<{ t: number; p: Vec3; r: number }>;
   sendSelfState: (position: Vec3, rotY: number) => void;
   speedRef: React.RefObject<number>;
-  moveTargetRef: React.RefObject<
-    | {
-        dest: Vec3;
-        rotY?: number;
-        sit?: boolean;
-      }
-    | null
-  >;
+  moveTargetRef: React.RefObject<{
+    dest: Vec3;
+    rotY?: number;
+    sit?: boolean;
+  } | null>;
   sittingRef: React.RefObject<boolean>;
 }) {
   const vRef = useRef<THREE.Vector3>(new THREE.Vector3());
@@ -1330,7 +2266,11 @@ function SelfSimulation({
 
     // If we're sitting, ignore movement until user provides input or click-to-move sets a target.
     if (sittingRef.current && !hasKeyboardInput && !moveTargetRef.current) {
-      speedRef.current = THREE.MathUtils.lerp(speedRef.current, 0, clamp(dt * 10, 0, 1));
+      speedRef.current = THREE.MathUtils.lerp(
+        speedRef.current,
+        0,
+        clamp(dt * 10, 0, 1)
+      );
       lastPosRef.current.copy(pos.current);
       return;
     }
@@ -1350,7 +2290,9 @@ function SelfSimulation({
 
     v.set(0, 0, 0);
     if (hasKeyboardInput) {
-      v.copy(forward).multiplyScalar(inputForward).addScaledVector(right, inputRight);
+      v.copy(forward)
+        .multiplyScalar(inputForward)
+        .addScaledVector(right, inputRight);
     } else if (moveTargetRef.current) {
       const d = moveTargetRef.current.dest;
       v.set(d[0] - pos.current.x, 0, d[2] - pos.current.z);
@@ -1387,7 +2329,11 @@ function SelfSimulation({
     const dy = pos.current.y - lastPosRef.current.y;
     const dz = pos.current.z - lastPosRef.current.z;
     const sp = Math.sqrt(dx * dx + dy * dy + dz * dz) / Math.max(0.0001, dt);
-    speedRef.current = THREE.MathUtils.lerp(speedRef.current, sp, clamp(dt * 10, 0, 1));
+    speedRef.current = THREE.MathUtils.lerp(
+      speedRef.current,
+      sp,
+      clamp(dt * 10, 0, 1)
+    );
     lastPosRef.current.copy(pos.current);
 
     // keep within a simple bounds box for the demo
@@ -1440,7 +2386,9 @@ export default function World({
 
   const [chatInput, setChatInput] = useState("");
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const [bubbles, setBubbles] = useState<Record<string, { text: string; until: number }>>({});
+  const [bubbles, setBubbles] = useState<
+    Record<string, { text: string; until: number }>
+  >({});
   const lastSeenChatIdRef = useRef<string>("");
 
   useEffect(() => {
@@ -1480,6 +2428,32 @@ export default function World({
   }, []);
 
   const avatarSystem = getAvatarSystem();
+
+  const groundGeom = useMemo(
+    () => makeGroundGeometry({ size: 220, segments: 80, seed: 3.3 }),
+    []
+  );
+  const plazaGeom = useMemo(
+    () =>
+      makeDirtDiskGeometry({
+        radius: 22,
+        segments: 72,
+        seed: 10.1,
+        baseColor: "#4a4038",
+      }),
+    []
+  );
+  const ringGeom = useMemo(
+    () =>
+      makeDirtRingGeometry({
+        inner: 26,
+        outer: 30,
+        segments: 80,
+        seed: 12.8,
+        baseColor: "#3b332f",
+      }),
+    []
+  );
   const [debugAvatarUrl, setDebugAvatarUrl] = useState<string>(
     DEBUG_AVATAR_URLS.vrmV1
   );
@@ -1517,19 +2491,18 @@ export default function World({
   const selfRotRef = useRef<number>(0);
   const selfSpeedRef = useRef<number>(0);
 
-  const moveTargetRef = useRef<
-    | {
-        dest: Vec3;
-        rotY?: number;
-        sit?: boolean;
-      }
-    | null
-  >(null);
+  const moveTargetRef = useRef<{
+    dest: Vec3;
+    rotY?: number;
+    sit?: boolean;
+  } | null>(null);
   const sittingRef = useRef<boolean>(false);
   const sitDebugRef = useRef<{ requested: number }>({ requested: 0 });
 
   const [joinedBoardKey, setJoinedBoardKey] = useState<string | null>(null);
-  const [pendingJoinBoardKey, setPendingJoinBoardKey] = useState<string | null>(null);
+  const [pendingJoinBoardKey, setPendingJoinBoardKey] = useState<string | null>(
+    null
+  );
   const joinLockedBoardKey = joinedBoardKey ?? pendingJoinBoardKey;
 
   useEffect(() => {
@@ -1540,7 +2513,9 @@ export default function World({
     }
 
     const t = window.setTimeout(() => {
-      setPendingJoinBoardKey((cur) => (cur === pendingJoinBoardKey ? null : cur));
+      setPendingJoinBoardKey((cur) =>
+        cur === pendingJoinBoardKey ? null : cur
+      );
     }, 8000);
     return () => window.clearTimeout(t);
   }, [pendingJoinBoardKey, joinedBoardKey]);
@@ -1581,7 +2556,11 @@ export default function World({
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {
       const reason = event.reason;
       if (reason instanceof Error) {
-        console.error("[World] Unhandled rejection:", reason.message, reason.stack);
+        console.error(
+          "[World] Unhandled rejection:",
+          reason.message,
+          reason.stack
+        );
       } else {
         console.error("[World] Unhandled rejection:", reason);
       }
@@ -1670,10 +2649,15 @@ export default function World({
       <Canvas
         dpr={[1, 1]}
         camera={{ position: [0, 5, 8], fov: 60 }}
-        gl={{ antialias: false }}
-        style={{ background: "#b98a63" }}
+        gl={{ antialias: false, powerPreference: "high-performance" }}
+        style={{ background: "#d6a57d" }}
         onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color("#b98a63"), 1);
+          gl.setClearColor(new THREE.Color("#d6a57d"), 1);
+          gl.shadowMap.enabled = false;
+          gl.shadowMap.autoUpdate = false;
+          gl.outputColorSpace = THREE.SRGBColorSpace;
+          gl.toneMapping = THREE.ACESFilmicToneMapping;
+          gl.toneMappingExposure = 1.06;
           canvasElRef.current = gl.domElement;
         }}
       >
@@ -1697,41 +2681,54 @@ export default function World({
           }}
         >
           {/* Cozy garden plaza lighting (sunset) */}
-          <ambientLight intensity={0.28} color="#ffe8c8" />
-          <hemisphereLight intensity={0.35} groundColor="#35513a" color="#ffd1a1" />
+          <ambientLight intensity={0.24} color="#ffe8c8" />
+          <hemisphereLight
+            intensity={0.42}
+            groundColor="#2f4a35"
+            color="#ffd7b3"
+          />
+
+          {/* Lightweight gradient sky (no textures/particles) */}
+          <GradientSky top="#1e2a44" bottom="#d6a57d" />
 
           {/* Low-angle golden sun */}
           <directionalLight
-            intensity={1.05}
+            intensity={1.15}
             position={[10, 16, 6]}
             color="#ffd5ab"
-            castShadow
-            shadow-mapSize-width={1024}
-            shadow-mapSize-height={1024}
-            shadow-camera-far={70}
-            shadow-camera-left={-28}
-            shadow-camera-right={28}
-            shadow-camera-top={28}
-            shadow-camera-bottom={-28}
-            shadow-bias={-0.00015}
           />
 
           {/* Cool fill to keep silhouettes readable */}
-          <directionalLight intensity={0.25} position={[-18, 18, -12]} color="#b9d6ff" />
+          <directionalLight
+            intensity={0.3}
+            position={[-18, 18, -12]}
+            color="#b9d6ff"
+          />
+
+          {/* Gentle rim to separate avatars/boards from the background */}
+          <directionalLight
+            intensity={0.18}
+            position={[0, 10, -24]}
+            color="#fff0e3"
+          />
 
           {/* Warm haze */}
-          <fog attach="fog" args={["#d6a57d", 30, 120]} />
+          <fog attach="fog" args={["#d6a57d", 28, 105]} />
 
           {/* Ground: grass base */}
-          <Plane args={[220, 220]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-            <meshStandardMaterial color="#263626" roughness={1} metalness={0} />
-          </Plane>
+          <mesh geometry={groundGeom} receiveShadow>
+            <meshStandardMaterial vertexColors roughness={1} metalness={0} />
+          </mesh>
 
           {/* Main plaza path (stone-ish) */}
-          <mesh position={[0, 0.016, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-            <circleGeometry args={[22, 72]} />
+          <mesh
+            geometry={plazaGeom}
+            position={[0, 0.016, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            receiveShadow
+          >
             <meshStandardMaterial
-              color="#4a4038"
+              vertexColors
               roughness={0.95}
               metalness={0.02}
               polygonOffset
@@ -1740,285 +2737,346 @@ export default function World({
             />
           </mesh>
 
-        {/* Subtle ring path near the edge for depth */}
-        <mesh position={[0, 0.015, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <ringGeometry args={[26, 30, 80]} />
-          <meshStandardMaterial
-            color="#3b332f"
-            roughness={0.98}
-            metalness={0.01}
-            polygonOffset
-            polygonOffsetFactor={-1}
-            polygonOffsetUnits={-1}
+          {/* Subtle ring path near the edge for depth */}
+          <mesh
+            geometry={ringGeom}
+            position={[0, 0.015, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            receiveShadow
+          >
+            <meshStandardMaterial
+              vertexColors
+              roughness={0.98}
+              metalness={0.01}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
+          </mesh>
+
+          {/* Organic pathways (curved ribbons) */}
+          <OrganicPath
+            points={[
+              [-18, -8],
+              [-12, -14],
+              [-4, -16],
+              [6, -14],
+              [16, -10],
+            ]}
+            width={2.5}
+            color="#4a4038"
           />
-        </mesh>
+          <OrganicPath
+            points={[
+              [-16, 10],
+              [-10, 14],
+              [-2, 16],
+              [8, 14],
+              [14, 10],
+            ]}
+            width={2.1}
+            color="#463d36"
+          />
+          <OrganicPath
+            points={[
+              [18, -14],
+              [14, -10],
+              [12, -4],
+              [14, 4],
+              [18, 10],
+            ]}
+            width={1.8}
+            color="#3f3832"
+          />
 
-        {/* Organic pathways (curved ribbons) */}
-        <OrganicPath
-          points={[
-            [-18, -8],
-            [-12, -14],
-            [-4, -16],
-            [6, -14],
-            [16, -10],
-          ]}
-          width={2.5}
-          color="#4a4038"
-        />
-        <OrganicPath
-          points={[
-            [-16, 10],
-            [-10, 14],
-            [-2, 16],
-            [8, 14],
-            [14, 10],
-          ]}
-          width={2.1}
-          color="#463d36"
-        />
-        <OrganicPath
-          points={[
-            [18, -14],
-            [14, -10],
-            [12, -4],
-            [14, 4],
-            [18, 10],
-          ]}
-          width={1.8}
-          color="#3f3832"
-        />
-
-        {/* Small grass variation patches (subtle, helps the ground feel less flat) */}
-        {Array.from({ length: 18 }).map((_, i) => {
-          const x = ((i * 37) % 34) - 17;
-          const z = (((i * 61) % 34) - 17);
-          const r = 0.9 + (i % 5) * 0.22;
-          const c = i % 3 === 0 ? "#223222" : i % 3 === 1 ? "#2a3b2a" : "#1f2f22";
-          return (
-            <mesh
-              key={i}
-              position={[x, 0.003, z]}
-              rotation={[-Math.PI / 2, 0, 0]}
-              receiveShadow
-            >
-              <circleGeometry args={[r, 24]} />
-              <meshStandardMaterial
-                color={c}
-                roughness={1}
-                metalness={0}
-                polygonOffset
-                polygonOffsetFactor={-1}
-                polygonOffsetUnits={-1}
-              />
-            </mesh>
-          );
-        })}
-
-        {/* Low planters / seating blocks (kept inside movement bounds) */}
-        {Array.from({ length: 6 }).map((_, i) => {
-          const angle = (i / 6) * Math.PI * 2;
-          const radius = 16.5;
-          const x = Math.cos(angle) * radius;
-          const z = Math.sin(angle) * radius;
-          return (
-            <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[4.6, 0.55, 1.3]} />
-                <meshStandardMaterial color="#2b2a26" roughness={0.95} metalness={0.02} />
-              </mesh>
-              {/* Soil bed */}
-              <mesh position={[0, 0.44, 0]} castShadow receiveShadow>
-                <boxGeometry args={[4.2, 0.32, 0.95]} />
-                <meshStandardMaterial color="#1f2f22" roughness={1} metalness={0} />
-              </mesh>
-
-              {/* Bush clusters */}
-              {[-1.55, -0.55, 0.55, 1.55].map((bx, bi) => (
-                <group key={bi} position={[bx, 0.62, (bi % 2 === 0 ? -0.18 : 0.16)]}>
-                  <mesh castShadow>
-                    <sphereGeometry args={[0.32 + (bi % 2) * 0.06, 12, 10]} />
-                    <meshStandardMaterial color={bi % 2 === 0 ? "#2c5a33" : "#3a7436"} roughness={1} />
-                  </mesh>
-                  <mesh castShadow position={[0.18, 0.06, 0.12]}>
-                    <sphereGeometry args={[0.24, 12, 10]} />
-                    <meshStandardMaterial color="#2a4f2a" roughness={1} />
-                  </mesh>
-                </group>
-              ))}
-
-              {/* Tiny flowers along the front edge */}
-              {Array.from({ length: 7 }).map((__, fi) => (
-                <mesh key={fi} position={[-1.8 + fi * 0.6, 0.61, 0.42]}>
-                  <sphereGeometry args={[0.04, 8, 8]} />
-                  <meshStandardMaterial
-                    color={i % 2 === 0 ? (fi % 2 === 0 ? "#ffd6e7" : "#fff1b8") : (fi % 2 === 0 ? "#cfe8ff" : "#ffe1bf")}
-                    roughness={0.75}
-                  />
-                </mesh>
-              ))}
-            </group>
-          );
-        })}
-
-        {/* Lantern posts (subtle in daylight, still cozy)
-            Rotated/expanded so they don't line up behind the chess join pads. */}
-        {Array.from({ length: 8 }).map((_, i) => {
-          const angle = ((i + 0.5) / 8) * Math.PI * 2;
-          const radius = 14.6;
-          const x = Math.cos(angle) * radius;
-          const z = Math.sin(angle) * radius;
-          const warm = i % 2 === 0;
-          return (
-            <group key={i} position={[x, 0, z]}>
-              <mesh castShadow receiveShadow>
-                <cylinderGeometry args={[0.08, 0.1, 2.5, 10]} />
-                <meshStandardMaterial color="#232323" roughness={0.7} metalness={0.2} />
-              </mesh>
-              <mesh position={[0, 1.35, 0]} castShadow>
-                <boxGeometry args={[0.35, 0.35, 0.35]} />
+          {/* Small grass variation patches (subtle, helps the ground feel less flat) */}
+          {Array.from({ length: 18 }).map((_, i) => {
+            const x = ((i * 37) % 34) - 17;
+            const z = ((i * 61) % 34) - 17;
+            const r = 0.9 + (i % 5) * 0.22;
+            const c =
+              i % 3 === 0 ? "#223222" : i % 3 === 1 ? "#2a3b2a" : "#1f2f22";
+            return (
+              <mesh
+                key={i}
+                position={[x, 0.003, z]}
+                rotation={[-Math.PI / 2, 0, 0]}
+                receiveShadow
+              >
+                <circleGeometry args={[r, 24]} />
                 <meshStandardMaterial
-                  color={warm ? "#ffd9a6" : "#d4e4ff"}
-                  emissive={warm ? "#ffb45a" : "#7fb6ff"}
-                  emissiveIntensity={0.25}
-                  roughness={0.35}
+                  color={c}
+                  roughness={1}
                   metalness={0}
+                  polygonOffset
+                  polygonOffsetFactor={-1}
+                  polygonOffsetUnits={-1}
                 />
               </mesh>
-              <pointLight
-                position={[0, 1.35, 0]}
-                intensity={warm ? 0.25 : 0.18}
-                color={warm ? "#ffbd73" : "#98c4ff"}
-                distance={7}
-                decay={2}
+            );
+          })}
+
+          {/* Low planters / seating blocks (kept inside movement bounds) */}
+          {Array.from({ length: 6 }).map((_, i) => {
+            const angle = (i / 6) * Math.PI * 2;
+            const radius = 16.5;
+            const x = Math.cos(angle) * radius;
+            const z = Math.sin(angle) * radius;
+            return (
+              <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[4.6, 0.55, 1.3]} />
+                  <meshStandardMaterial
+                    color="#2b2a26"
+                    roughness={0.95}
+                    metalness={0.02}
+                  />
+                </mesh>
+                {/* Soil bed */}
+                <mesh position={[0, 0.44, 0]} castShadow receiveShadow>
+                  <boxGeometry args={[4.2, 0.32, 0.95]} />
+                  <meshStandardMaterial
+                    color="#1f2f22"
+                    roughness={1}
+                    metalness={0}
+                  />
+                </mesh>
+
+                {/* Bush clusters */}
+                {[-1.55, -0.55, 0.55, 1.55].map((bx, bi) => (
+                  <group
+                    key={bi}
+                    position={[bx, 0.62, bi % 2 === 0 ? -0.18 : 0.16]}
+                  >
+                    <mesh castShadow>
+                      <sphereGeometry args={[0.32 + (bi % 2) * 0.06, 12, 10]} />
+                      <meshStandardMaterial
+                        color={bi % 2 === 0 ? "#2c5a33" : "#3a7436"}
+                        roughness={1}
+                      />
+                    </mesh>
+                    <mesh castShadow position={[0.18, 0.06, 0.12]}>
+                      <sphereGeometry args={[0.24, 12, 10]} />
+                      <meshStandardMaterial color="#2a4f2a" roughness={1} />
+                    </mesh>
+                  </group>
+                ))}
+
+                {/* Tiny flowers along the front edge */}
+                {Array.from({ length: 7 }).map((__, fi) => (
+                  <mesh key={fi} position={[-1.8 + fi * 0.6, 0.61, 0.42]}>
+                    <sphereGeometry args={[0.04, 8, 8]} />
+                    <meshStandardMaterial
+                      color={
+                        i % 2 === 0
+                          ? fi % 2 === 0
+                            ? "#ffd6e7"
+                            : "#fff1b8"
+                          : fi % 2 === 0
+                          ? "#cfe8ff"
+                          : "#ffe1bf"
+                      }
+                      roughness={0.75}
+                    />
+                  </mesh>
+                ))}
+              </group>
+            );
+          })}
+
+          {/* Lantern posts (subtle in daylight, still cozy)
+            Rotated/expanded so they don't line up behind the chess join pads. */}
+          {Array.from({ length: 8 }).map((_, i) => {
+            const angle = ((i + 0.5) / 8) * Math.PI * 2;
+            const radius = 14.6;
+            const x = Math.cos(angle) * radius;
+            const z = Math.sin(angle) * radius;
+            const warm = i % 2 === 0;
+            return (
+              <group key={i} position={[x, 0, z]}>
+                <mesh castShadow receiveShadow>
+                  <cylinderGeometry args={[0.08, 0.1, 2.5, 10]} />
+                  <meshStandardMaterial
+                    color="#232323"
+                    roughness={0.7}
+                    metalness={0.2}
+                  />
+                </mesh>
+                <mesh position={[0, 1.35, 0]} castShadow>
+                  <boxGeometry args={[0.35, 0.35, 0.35]} />
+                  <meshStandardMaterial
+                    color={warm ? "#ffd9a6" : "#d4e4ff"}
+                    emissive={warm ? "#ffb45a" : "#7fb6ff"}
+                    emissiveIntensity={0.25}
+                    roughness={0.35}
+                    metalness={0}
+                  />
+                </mesh>
+                <pointLight
+                  position={[0, 1.35, 0]}
+                  intensity={warm ? 0.25 : 0.18}
+                  color={warm ? "#ffbd73" : "#98c4ff"}
+                  distance={7}
+                  decay={2}
+                />
+              </group>
+            );
+          })}
+
+          {/* Background trees (outside bounds for atmosphere) */}
+          {Array.from({ length: 10 }).map((_, i) => {
+            const angle = (i / 10) * Math.PI * 2;
+            const radius = 28;
+            const x = Math.cos(angle) * radius;
+            const z = Math.sin(angle) * radius;
+            const h = 3.2 + (i % 3) * 0.4;
+            return (
+              <group key={i} position={[x, 0, z]}>
+                <mesh castShadow receiveShadow>
+                  <cylinderGeometry args={[0.25, 0.32, h, 10]} />
+                  <meshStandardMaterial
+                    color="#2a1f17"
+                    roughness={1}
+                    metalness={0}
+                  />
+                </mesh>
+                <mesh position={[0, h * 0.65, 0]} castShadow>
+                  <sphereGeometry args={[1.4 + (i % 2) * 0.2, 14, 12]} />
+                  <meshStandardMaterial
+                    color="#1f3a25"
+                    roughness={1}
+                    metalness={0}
+                  />
+                </mesh>
+                <mesh position={[0.65, h * 0.62, 0.2]} castShadow>
+                  <sphereGeometry args={[1.05, 14, 12]} />
+                  <meshStandardMaterial
+                    color="#214028"
+                    roughness={1}
+                    metalness={0}
+                  />
+                </mesh>
+                <mesh position={[-0.6, h * 0.6, -0.1]} castShadow>
+                  <sphereGeometry args={[1.1, 14, 12]} />
+                  <meshStandardMaterial
+                    color="#1b341f"
+                    roughness={1}
+                    metalness={0}
+                  />
+                </mesh>
+              </group>
+            );
+          })}
+
+          {boards.map((b) => (
+            <group key={b.key}>
+              <BoardLamp
+                lampPos={[
+                  b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
+                  0,
+                  b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
+                ]}
+                targetPos={[b.origin[0], 0.2, b.origin[2]]}
               />
-            </group>
-          );
-        })}
-
-        {/* Background trees (outside bounds for atmosphere) */}
-        {Array.from({ length: 10 }).map((_, i) => {
-          const angle = (i / 10) * Math.PI * 2;
-          const radius = 28;
-          const x = Math.cos(angle) * radius;
-          const z = Math.sin(angle) * radius;
-          const h = 3.2 + (i % 3) * 0.4;
-          return (
-            <group key={i} position={[x, 0, z]}>
-              <mesh castShadow receiveShadow>
-                <cylinderGeometry args={[0.25, 0.32, h, 10]} />
-                <meshStandardMaterial color="#2a1f17" roughness={1} metalness={0} />
-              </mesh>
-              <mesh position={[0, h * 0.65, 0]} castShadow>
-                <sphereGeometry args={[1.4 + (i % 2) * 0.2, 14, 12]} />
-                <meshStandardMaterial color="#1f3a25" roughness={1} metalness={0} />
-              </mesh>
-              <mesh position={[0.65, h * 0.62, 0.2]} castShadow>
-                <sphereGeometry args={[1.05, 14, 12]} />
-                <meshStandardMaterial color="#214028" roughness={1} metalness={0} />
-              </mesh>
-              <mesh position={[-0.6, h * 0.6, -0.1]} castShadow>
-                <sphereGeometry args={[1.1, 14, 12]} />
-                <meshStandardMaterial color="#1b341f" roughness={1} metalness={0} />
-              </mesh>
-            </group>
-          );
-        })}
-
-        {boards.map((b) => (
-          <group key={b.key}>
-            <BoardLamp
-              lampPos={[
-                b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
-                0,
-                b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
-              ]}
-              targetPos={[b.origin[0], 0.2, b.origin[2]]}
-            />
-            <Suspense fallback={null}>
-              <OutdoorChess
-                roomId={roomId}
-                boardKey={b.key}
-                origin={b.origin}
-                selfPositionRef={selfPosRef}
-                selfId={self?.id || ""}
-                selfName={self?.name || ""}
-                joinLockedBoardKey={joinLockedBoardKey}
-                onJoinIntent={(boardKey) => {
-                  // Lock immediately to prevent starting a second join elsewhere.
-                  setPendingJoinBoardKey((prev) => prev ?? boardKey);
-                }}
-                onSelfSeatChange={(boardKey, side) => {
-                  setJoinedBoardKey((prev) => {
-                    if (side) return boardKey;
-                    // Only clear if this board was the one we were locked to.
-                    if (prev === boardKey) return null;
-                    return prev;
-                  });
-                  // If we successfully joined (or cleared) this board, clear pending lock.
-                  setPendingJoinBoardKey((prev) => (prev === boardKey ? null : prev));
-                }}
-                onRequestMove={(dest, opts) => {
-                  moveTargetRef.current = { dest, rotY: opts?.rotY, sit: opts?.sit };
-                  if (opts?.sit) {
-                    if (!sittingRef.current && process.env.NODE_ENV !== "production") {
-                      sitDebugRef.current.requested++;
-                      // eslint-disable-next-line no-console
-                      console.log("[sit] requested", sitDebugRef.current.requested);
+              <Suspense fallback={null}>
+                <OutdoorChess
+                  roomId={roomId}
+                  boardKey={b.key}
+                  origin={b.origin}
+                  selfPositionRef={selfPosRef}
+                  selfId={self?.id || ""}
+                  selfName={self?.name || ""}
+                  joinLockedBoardKey={joinLockedBoardKey}
+                  onJoinIntent={(boardKey) => {
+                    // Lock immediately to prevent starting a second join elsewhere.
+                    setPendingJoinBoardKey((prev) => prev ?? boardKey);
+                  }}
+                  onSelfSeatChange={(boardKey, side) => {
+                    setJoinedBoardKey((prev) => {
+                      if (side) return boardKey;
+                      // Only clear if this board was the one we were locked to.
+                      if (prev === boardKey) return null;
+                      return prev;
+                    });
+                    // If we successfully joined (or cleared) this board, clear pending lock.
+                    setPendingJoinBoardKey((prev) =>
+                      prev === boardKey ? null : prev
+                    );
+                  }}
+                  onRequestMove={(dest, opts) => {
+                    moveTargetRef.current = {
+                      dest,
+                      rotY: opts?.rotY,
+                      sit: opts?.sit,
+                    };
+                    if (opts?.sit) {
+                      if (
+                        !sittingRef.current &&
+                        process.env.NODE_ENV !== "production"
+                      ) {
+                        sitDebugRef.current.requested++;
+                        // eslint-disable-next-line no-console
+                        console.log(
+                          "[sit] requested",
+                          sitDebugRef.current.requested
+                        );
+                      }
+                      sittingRef.current = true;
+                    } else {
+                      sittingRef.current = false;
                     }
-                    sittingRef.current = true;
-                  } else {
-                    sittingRef.current = false;
-                  }
-                }}
+                  }}
+                />
+              </Suspense>
+            </group>
+          ))}
+
+          <FollowCamera target={selfPosRef} />
+
+          <SelfSimulation
+            enabled={!!self}
+            keysRef={keysRef}
+            pos={selfPosRef}
+            rotY={selfRotRef}
+            lastSent={lastSentRef}
+            sendSelfState={sendSelfState}
+            speedRef={selfSpeedRef}
+            moveTargetRef={moveTargetRef}
+            sittingRef={sittingRef}
+          />
+
+          {self ? (
+            <Suspense fallback={null}>
+              <SelfAvatar
+                color={self.color}
+                name={self.name}
+                pos={selfPosRef}
+                rotY={selfRotRef}
+                speed={selfSpeedRef}
+                gender={self.gender}
+                avatarUrl={
+                  avatarSystem === "three-avatar" ? debugAvatarUrl : undefined
+                }
+                sittingRef={sittingRef}
               />
             </Suspense>
-          </group>
-        ))}
+          ) : null}
 
-        <FollowCamera target={selfPosRef} />
-
-        <SelfSimulation
-          enabled={!!self}
-          keysRef={keysRef}
-          pos={selfPosRef}
-          rotY={selfRotRef}
-          lastSent={lastSentRef}
-          sendSelfState={sendSelfState}
-          speedRef={selfSpeedRef}
-          moveTargetRef={moveTargetRef}
-          sittingRef={sittingRef}
-        />
-
-        {self ? (
           <Suspense fallback={null}>
-            <SelfAvatar
-              color={self.color}
-              name={self.name}
-              pos={selfPosRef}
-              rotY={selfRotRef}
-              speed={selfSpeedRef}
-              gender={self.gender}
-              avatarUrl={avatarSystem === "three-avatar" ? debugAvatarUrl : undefined}
-              sittingRef={sittingRef}
-            />
+            {remotePlayers.map((p) => (
+              <RemoteAvatar
+                key={p.id}
+                id={p.id}
+                name={p.name}
+                color={p.color}
+                targetPosition={p.position}
+                targetRotY={p.rotY}
+                gender={p.gender}
+                avatarUrl={p.avatarUrl}
+                bubbleText={bubbles[p.id]?.text}
+              />
+            ))}
           </Suspense>
-        ) : null}
-
-        <Suspense fallback={null}>
-          {remotePlayers.map((p) => (
-            <RemoteAvatar
-              key={p.id}
-              id={p.id}
-              name={p.name}
-              color={p.color}
-              targetPosition={p.position}
-              targetRotY={p.rotY}
-              gender={p.gender}
-              avatarUrl={p.avatarUrl}
-              bubbleText={bubbles[p.id]?.text}
-            />
-          ))}
-        </Suspense>
         </group>
       </Canvas>
 
@@ -2048,7 +3106,8 @@ export default function World({
             <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
               Try reloading the page. If it keeps happening, we can reduce GPU
               load (shadows/off) or tweak renderer settings.
-            </div>            <button
+            </div>{" "}
+            <button
               onClick={() => window.location.reload()}
               style={{
                 marginTop: 12,
@@ -2124,15 +3183,9 @@ export default function World({
                 <option value={DEBUG_AVATAR_URLS.renOptimized7mb}>
                   Ren (optimized ~7MB)
                 </option>
-                <option value={DEBUG_AVATAR_URLS.vrmV1}>
-                  VRM v1
-                </option>
-                <option value={DEBUG_AVATAR_URLS.vrmV0}>
-                  VRM v0
-                </option>
-                <option value={DEBUG_AVATAR_URLS.rpm}>
-                  Ready Player Me
-                </option>
+                <option value={DEBUG_AVATAR_URLS.vrmV1}>VRM v1</option>
+                <option value={DEBUG_AVATAR_URLS.vrmV0}>VRM v0</option>
+                <option value={DEBUG_AVATAR_URLS.rpm}>Ready Player Me</option>
               </select>
             </label>
           ) : null}
@@ -2159,7 +3212,8 @@ export default function World({
                   }}
                 />
                 <div style={{ whiteSpace: "nowrap" }}>
-                  {p.name || p.id.slice(0, 4)}{self?.id === p.id ? " (you)" : ""}
+                  {p.name || p.id.slice(0, 4)}
+                  {self?.id === p.id ? " (you)" : ""}
                 </div>
               </div>
             ))}
@@ -2275,7 +3329,9 @@ export default function World({
         >
           {chat.slice(-30).map((m: ChatMessage) => (
             <div key={m.id} style={{ lineHeight: 1.25 }}>
-              <span style={{ opacity: 0.9, fontWeight: 600 }}>{m.fromName}:</span>{" "}
+              <span style={{ opacity: 0.9, fontWeight: 600 }}>
+                {m.fromName}:
+              </span>{" "}
               <span style={{ opacity: 0.95 }}>{m.text}</span>
             </div>
           ))}
