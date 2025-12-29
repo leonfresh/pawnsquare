@@ -2588,42 +2588,59 @@ export default function World({
     };
   }, []);
 
-  // Load shop state.
+  // Load shop state (Supabase only).
   useEffect(() => {
     if (isDuplicateSession) return;
-    try {
-      const storedCoins = safeParseJson<number>(
-        window.localStorage.getItem("pawnsquare:coins")
-      );
-      const storedOwned = safeParseJson<string[]>(
-        window.localStorage.getItem("pawnsquare:ownedAvatars")
-      );
-      if (typeof storedCoins === "number" && Number.isFinite(storedCoins)) {
-        setCoins(Math.max(0, Math.floor(storedCoins)));
-      }
-      if (Array.isArray(storedOwned) && storedOwned.length) {
-        const uniq = Array.from(
-          new Set([DEBUG_AVATAR_URLS.male, ...storedOwned])
-        );
-        setOwnedAvatarUrls(uniq);
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
 
-  // Persist shop state.
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("pawnsquare:coins", JSON.stringify(coins));
-      window.localStorage.setItem(
-        "pawnsquare:ownedAvatars",
-        JSON.stringify(ownedAvatarUrls)
-      );
-    } catch {
-      // ignore
+    if (supabaseUser) {
+      const supabase = getSupabaseBrowserClient();
+
+      // Fetch initial profile
+      supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", supabaseUser.id)
+        .single()
+        .then(({ data }) => {
+          if (data) {
+            setCoins(data.coins ?? 0);
+            setOwnedAvatarUrls((data.owned_avatars as string[]) ?? []);
+          }
+        });
+
+      // Subscribe to changes
+      const channel = supabase
+        .channel("profile-changes")
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "profiles",
+            filter: `id=eq.${supabaseUser.id}`,
+          },
+          (payload) => {
+            const newRow = payload.new as { coins: number; owned_avatars: any };
+            setCoins(newRow.coins ?? 0);
+            setOwnedAvatarUrls((newRow.owned_avatars as string[]) ?? []);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    } else {
+      // Guest: No coins, only default avatars.
+      setCoins(0);
+      setOwnedAvatarUrls([DEBUG_AVATAR_URLS.male]);
     }
-  }, [coins, ownedAvatarUrls]);
+  }, [supabaseUser, isDuplicateSession]);
+
+  // Persist shop state (Supabase handles this, no localStorage fallback).
+  useEffect(() => {
+    // No-op
+  }, [coins, ownedAvatarUrls, supabaseUser]);
 
   // Listen for Stripe payment success from popup.
   useEffect(() => {
@@ -3876,19 +3893,44 @@ export default function World({
                                 border: "1px solid rgba(127,127,127,0.25)",
                                 background: "transparent",
                                 color: "inherit",
-                                cursor: canBuy ? "pointer" : "not-allowed",
-                                opacity: canBuy ? 1 : 0.55,
+                                cursor:
+                                  canBuy && supabaseUser
+                                    ? "pointer"
+                                    : "not-allowed",
+                                opacity: canBuy && supabaseUser ? 1 : 0.55,
                                 fontSize: 12,
                               }}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                if (!supabaseUser) {
+                                  setAuthMsg("Sign in to buy avatars.");
+                                  return;
+                                }
                                 if (!canBuy) return;
-                                setCoins((c) => Math.max(0, c - item.price));
-                                setOwnedAvatarUrls((prev) =>
-                                  prev.includes(item.url)
-                                    ? prev
-                                    : [...prev, item.url]
+
+                                const newCoins = Math.max(
+                                  0,
+                                  coins - item.price
                                 );
+                                const newOwned = ownedAvatarUrls.includes(
+                                  item.url
+                                )
+                                  ? ownedAvatarUrls
+                                  : [...ownedAvatarUrls, item.url];
+
+                                const supabase = getSupabaseBrowserClient();
+                                supabase
+                                  .from("profiles")
+                                  .update({
+                                    coins: newCoins,
+                                    owned_avatars: newOwned,
+                                  })
+                                  .eq("id", supabaseUser.id)
+                                  .then(({ error }) => {
+                                    if (error) {
+                                      setAuthMsg("Purchase failed.");
+                                    }
+                                  });
                               }}
                             >
                               Buy
@@ -3922,7 +3964,9 @@ export default function World({
                 </div>
 
                 <div style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.25 }}>
-                  Purchases are stored locally (no backend yet).
+                  {supabaseUser
+                    ? "Purchases are saved to your account."
+                    : "Sign in to save your purchases."}
                 </div>
               </div>
             </div>
