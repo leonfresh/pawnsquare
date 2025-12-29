@@ -3396,7 +3396,8 @@ export default function World({
             Players: {peerCount + 1}/20 • Move: WASD / arrows
           </div>
 
-          {avatarSystem === "three-avatar" ? (
+          {avatarSystem === "three-avatar" &&
+          supabaseUser?.email === "kittystudioscom@gmail.com" ? (
             <label
               style={{
                 display: "flex",
@@ -3918,6 +3919,10 @@ export default function World({
                                   ? ownedAvatarUrls
                                   : [...ownedAvatarUrls, item.url];
 
+                                // Optimistic update
+                                setCoins(newCoins);
+                                setOwnedAvatarUrls(newOwned);
+
                                 const supabase = getSupabaseBrowserClient();
                                 supabase
                                   .from("profiles")
@@ -3932,6 +3937,9 @@ export default function World({
                                       setAuthMsg(
                                         `Purchase failed: ${error.message}`
                                       );
+                                      // Revert on error
+                                      setCoins(coins);
+                                      setOwnedAvatarUrls(ownedAvatarUrls);
                                     }
                                   });
                               }}
