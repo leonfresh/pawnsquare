@@ -20,7 +20,6 @@ export function OAuthPopupGuard() {
 
   const shouldRun = useMemo(() => {
     if (typeof window === "undefined") return false;
-    if (window.name !== "pawnsquare-oauth") return false;
 
     const u = new URL(window.location.href);
     const hasParams =
@@ -30,7 +29,15 @@ export function OAuthPopupGuard() {
       (u.hash || "").includes("refresh_token=") ||
       (u.hash || "").includes("error=");
 
-    return hasParams || isRecentOAuthPopup();
+    // Run if:
+    // 1. Window name matches our popup
+    // 2. OR we have OAuth params and this was recently opened as a popup
+    // 3. OR we have OAuth params and window.opener exists
+    return (
+      window.name === "pawnsquare-oauth" ||
+      (hasParams && isRecentOAuthPopup()) ||
+      (hasParams && Boolean(window.opener))
+    );
   }, []);
 
   useEffect(() => {
