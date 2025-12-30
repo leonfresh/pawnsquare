@@ -374,6 +374,123 @@ function JoinPad({
   );
 }
 
+function PlantMaterial(props: any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+
+  const onBeforeCompile = (shader: any) => {
+    shader.vertexShader = `
+      varying vec3 vPos;
+      
+      vec3 hash33(vec3 p3) {
+          p3 = fract(p3 * vec3(.1031, .1030, .0973));
+          p3 += dot(p3, p3.yxz + 33.33);
+          return fract((p3.xxy + p3.yxx) * p3.zyx);
+      }
+
+      float voronoi(vec3 x) {
+          vec3 p = floor(x);
+          vec3 f = fract(x);
+          float res = 100.0;
+          for(int k=-1; k<=1; k++)
+          for(int j=-1; j<=1; j++)
+          for(int i=-1; i<=1; i++) {
+              vec3 b = vec3(float(i), float(j), float(k));
+              vec3 r = vec3(b) - f + hash33(p + b);
+              float d = dot(r, r);
+              res = min(res, d);
+          }
+          return sqrt(res);
+      }
+
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    ).replace(
+      "#include <begin_vertex>",
+      `
+      #include <begin_vertex>
+      
+      // Vertex Displacement for Bushes
+      float disp = voronoi(position * 3.5); 
+      float strength = 0.25; 
+      transformed += normal * (1.0 - disp) * strength;
+      `
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      
+      // Bush colors from reference
+      #define COLOR_BUSH1 (0.8*vec3(0.07,0.3,0.05))
+      #define COLOR_BUSH2 (0.55*vec3(0.12,0.6,0.2))
+      #define COLOR_BUSH3 (0.55*vec3(0.1,0.35,0.09))
+      #define COLOR_BUSH4 (0.82*vec3(0.18,0.39,0.06))
+      #define COLOR_BUSH5 vec3(0.1,0.3,0.01)
+
+      // Voronoi / Cellular Noise for leaves
+      vec3 hash33(vec3 p3) {
+          p3 = fract(p3 * vec3(.1031, .1030, .0973));
+          p3 += dot(p3, p3.yxz + 33.33);
+          return fract((p3.xxy + p3.yxx) * p3.zyx);
+      }
+
+      float voronoi(vec3 x) {
+          vec3 p = floor(x);
+          vec3 f = fract(x);
+          float res = 100.0;
+          for(int k=-1; k<=1; k++)
+          for(int j=-1; j<=1; j++)
+          for(int i=-1; i<=1; i++) {
+              vec3 b = vec3(float(i), float(j), float(k));
+              vec3 r = vec3(b) - f + hash33(p + b);
+              float d = dot(r, r);
+              res = min(res, d);
+          }
+          return sqrt(res); // Distance to center
+      }
+
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+      
+      // Leafy Voronoi Pattern
+      float v = voronoi(vPos * 12.0);
+      float leaf = 1.0 - smoothstep(0.0, 0.7, v);
+      vec3 col = mix(COLOR_BUSH1, COLOR_BUSH2, leaf);
+      float largeNoise = voronoi(vPos * 2.0);
+      col = mix(col, COLOR_BUSH3, largeNoise);
+      if (largeNoise > 0.8) {
+         col = mix(col, COLOR_BUSH5, 0.5);
+      }
+      float ao = smoothstep(0.0, 0.5, 1.0 - v);
+      diffuseColor.rgb = col * (0.4 + 0.6 * ao);
+      
+      // Silhouette breakup
+      // Use gl_FrontFacing or similar if needed, but for now just discard based on noise
+      // to avoid vNormal issues
+      if (v > 0.65) {
+          // discard; // Optional: can look messy on small plants without proper depth sorting
+      }
+      `
+    );
+  };
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      side={THREE.DoubleSide}
+      {...props}
+    />
+  );
+}
+
 function WoodMaterial({ color, ...props }: any) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
 
@@ -449,6 +566,83 @@ function WoodMaterial({ color, ...props }: any) {
   );
 }
 
+function Bench({ position, rotation, onClick }: { position: [number, number, number], rotation?: [number, number, number], onClick?: (e: any) => void }) {
+  const legColor = "#222222";
+  const woodColor = "#8b5a2b";
+
+  return (
+    <group 
+      position={position} 
+      rotation={rotation} 
+      onPointerDown={(e) => { 
+        e.stopPropagation(); 
+        onClick && onClick(e); 
+      }}
+      onPointerEnter={(e) => { 
+        e.stopPropagation(); 
+        document.body.style.cursor = "pointer"; 
+      }}
+      onPointerLeave={(e) => { 
+        e.stopPropagation(); 
+        document.body.style.cursor = "default"; 
+      }}
+    >
+      {/* Cast Iron Legs (Ornate style simplified) */}
+      <group position={[-0.9, 0, 0]}>
+        {/* Front Leg */}
+        <mesh castShadow position={[0, 0.2, 0.25]}>
+           <boxGeometry args={[0.1, 0.4, 0.1]} />
+           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+        </mesh>
+        {/* Back Leg + Backrest Support */}
+        <mesh castShadow position={[0, 0.45, -0.25]} rotation={[-0.2, 0, 0]}>
+           <boxGeometry args={[0.1, 0.9, 0.1]} />
+           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+        </mesh>
+        {/* Base Connector */}
+        <mesh castShadow position={[0, 0.1, 0]}>
+           <boxGeometry args={[0.08, 0.1, 0.6]} />
+           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+        </mesh>
+      </group>
+
+      <group position={[0.9, 0, 0]}>
+        {/* Front Leg */}
+        <mesh castShadow position={[0, 0.2, 0.25]}>
+           <boxGeometry args={[0.1, 0.4, 0.1]} />
+           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+        </mesh>
+        {/* Back Leg + Backrest Support */}
+        <mesh castShadow position={[0, 0.45, -0.25]} rotation={[-0.2, 0, 0]}>
+           <boxGeometry args={[0.1, 0.9, 0.1]} />
+           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+        </mesh>
+        {/* Base Connector */}
+        <mesh castShadow position={[0, 0.1, 0]}>
+           <boxGeometry args={[0.08, 0.1, 0.6]} />
+           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+        </mesh>
+      </group>
+
+      {/* Seat Slats */}
+      {[0.2, 0.0, -0.2].map((z, i) => (
+        <mesh key={`seat-${i}`} castShadow receiveShadow position={[0, 0.42, z]}>
+          <boxGeometry args={[2.0, 0.05, 0.15]} />
+          <WoodMaterial color={woodColor} roughness={0.8} />
+        </mesh>
+      ))}
+
+      {/* Backrest Slats */}
+      {[0.6, 0.8].map((y, i) => (
+        <mesh key={`back-${i}`} castShadow receiveShadow position={[0, y, -0.32 + i * 0.05]} rotation={[-0.2, 0, 0]}>
+          <boxGeometry args={[2.0, 0.15, 0.05]} />
+          <WoodMaterial color={woodColor} roughness={0.8} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 export function OutdoorChess({
   roomId,
   boardKey,
@@ -470,7 +664,10 @@ export function OutdoorChess({
   joinLockedBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
   onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
-  onRequestMove?: (dest: Vec3, opts?: { rotY?: number; sit?: boolean }) => void;
+  onRequestMove?: (
+    dest: Vec3,
+    opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3 }
+  ) => void;
 }) {
   const originVec = useMemo(
     () => new THREE.Vector3(origin[0], origin[1], origin[2]),
@@ -776,7 +973,20 @@ export function OutdoorChess({
     const dx = originVec.x - seatX;
     const dz = originVec.z - seatZ;
     const face = Math.atan2(dx, dz);
-    onRequestMove([seatX, 0.36, seatZ], { rotY: face, sit: true });
+
+    // Calculate approach point (0.5m in front of the seat, towards the table)
+    const len = Math.sqrt(dx * dx + dz * dz);
+    const ux = dx / len;
+    const uz = dz / len;
+    const approachDist = 0.5;
+    const approachX = seatX + ux * approachDist;
+    const approachZ = seatZ + uz * approachDist;
+
+    onRequestMove([approachX, 0, approachZ], {
+      rotY: face,
+      sit: true,
+      sitDest: [seatX, 0.36, seatZ],
+    });
   };
 
   const clocks = useMemo(() => {
@@ -853,135 +1063,30 @@ export function OutdoorChess({
         </Text>
       ) : null}
 
-      {/* Decorative stone benches */}
-      {/* White side benches */}
-      <group position={[originVec.x - 3.5, 0.2, originVec.z + padOffset + 1.5]}>
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 0.95);
-          }}
-        >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
-          />
-        </mesh>
-        {/* Bench legs */}
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-      </group>
-      <group position={[originVec.x + 3.5, 0.2, originVec.z + padOffset + 1.5]}>
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 0.95);
-          }}
-        >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
-          />
-        </mesh>
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-      </group>
+      {/* Decorative benches */}
+      {/* White side benches (facing board -> -Z) */}
+      <Bench 
+        position={[originVec.x - 3.5, 0, originVec.z + padOffset + 1.5]} 
+        rotation={[0, Math.PI, 0]}
+        onClick={() => requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 1.35)}
+      />
+      <Bench 
+        position={[originVec.x + 3.5, 0, originVec.z + padOffset + 1.5]} 
+        rotation={[0, Math.PI, 0]}
+        onClick={() => requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 1.35)}
+      />
 
-      {/* Black side benches */}
-      <group position={[originVec.x - 3.5, 0.2, originVec.z - padOffset - 1.5]}>
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 0.95);
-          }}
-        >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
-          />
-        </mesh>
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-      </group>
-      <group position={[originVec.x + 3.5, 0.2, originVec.z - padOffset - 1.5]}>
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 0.95);
-          }}
-        >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
-          <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
-          />
-        </mesh>
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
-        </mesh>
-      </group>
+      {/* Black side benches (facing board -> +Z) */}
+      <Bench 
+        position={[originVec.x - 3.5, 0, originVec.z - padOffset - 1.5]} 
+        rotation={[0, 0, 0]}
+        onClick={() => requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 1.35)}
+      />
+      <Bench 
+        position={[originVec.x + 3.5, 0, originVec.z - padOffset - 1.5]} 
+        rotation={[0, 0, 0]}
+        onClick={() => requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 1.35)}
+      />
 
       {/* Decorative potted plants */}
       {[-1, 1].map((side) => (
@@ -1022,16 +1127,11 @@ export function OutdoorChess({
               />
             </mesh>
 
-            {/* Leaf clumps */}
+            {/* Leaf clumps - Procedural */}
             <group position={[0, 0.22, 0]}>
               <mesh castShadow scale={[1.25, 0.92, 1.2]}>
-                <dodecahedronGeometry args={[0.22, 0]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#2f6a3d" : "#2c5a33"}
-                  roughness={1}
-                  metalness={0}
-                  flatShading
-                />
+                <sphereGeometry args={[0.22, 12, 10]} />
+                <PlantMaterial roughness={1} />
               </mesh>
               <mesh
                 castShadow
@@ -1039,13 +1139,8 @@ export function OutdoorChess({
                 rotation={[0, 0.6, 0]}
                 scale={[1.05, 0.8, 1.0]}
               >
-                <dodecahedronGeometry args={[0.18, 0]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#3a7a44" : "#3a7436"}
-                  roughness={1}
-                  metalness={0}
-                  flatShading
-                />
+                <sphereGeometry args={[0.18, 12, 10]} />
+                <PlantMaterial roughness={1} />
               </mesh>
               <mesh
                 castShadow
@@ -1053,44 +1148,10 @@ export function OutdoorChess({
                 rotation={[0, -0.35, 0]}
                 scale={[1.0, 0.78, 1.05]}
               >
-                <dodecahedronGeometry args={[0.17, 0]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#285a34" : "#2a4f2a"}
-                  roughness={1}
-                  metalness={0}
-                  flatShading
-                />
+                <sphereGeometry args={[0.17, 12, 10]} />
+                <PlantMaterial roughness={1} />
               </mesh>
             </group>
-
-            {/* Leaf blades around the rim (adds detail, breaks silhouette) */}
-            {Array.from({ length: 6 }).map((_, li) => {
-              const a = (li / 6) * Math.PI * 2;
-              const r = 0.17;
-              const lx = Math.cos(a) * r;
-              const lz = Math.sin(a) * r;
-              return (
-                <mesh
-                  key={li}
-                  castShadow
-                  position={[lx, 0.17, lz]}
-                  rotation={[0.55, a + (side > 0 ? 0.12 : -0.08), 0.15]}
-                >
-                  <coneGeometry args={[0.035, 0.16, 6]} />
-                  <meshStandardMaterial
-                    color={
-                      li % 2 === 0
-                        ? side > 0
-                          ? "#2f6a3d"
-                          : "#2c5a33"
-                        : "#3a7436"
-                    }
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-              );
-            })}
 
             {/* Small flowers (subtle) */}
             {[-0.12, 0.0, 0.12].map((fx, i) => (

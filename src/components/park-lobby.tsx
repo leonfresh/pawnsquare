@@ -4,6 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef, useState } from "react";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
+import { BoardLamp } from "./world";
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -563,9 +564,18 @@ function WallMaterial(props: any) {
 
 function BushMaterial(props: any) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const uniforms = useRef({ uTime: { value: 0 } });
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      uniforms.current.uTime.value = state.clock.elapsedTime;
+    }
+  });
 
   const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = uniforms.current.uTime;
     shader.vertexShader = `
+      uniform float uTime;
       varying vec3 vPos;
       
       vec3 hash33(vec3 p3) {
@@ -605,7 +615,11 @@ function BushMaterial(props: any) {
       // Vertex Displacement for Bushes
       float disp = voronoi(position * 3.5); 
       float strength = 0.25; 
-      transformed += normal * (1.0 - disp) * strength;
+      
+      // Wind Rustle
+      float rustle = sin(uTime * 5.0 + position.x * 8.0 + position.z * 8.0) * 0.02;
+      
+      transformed += normal * ((1.0 - disp) * strength + rustle);
       `
     );
 
@@ -725,9 +739,18 @@ function BushMaterial(props: any) {
 
 function TreeMaterial(props: any) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const uniforms = useRef({ uTime: { value: 0 } });
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      uniforms.current.uTime.value = state.clock.elapsedTime;
+    }
+  });
 
   const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = uniforms.current.uTime;
     shader.vertexShader = `
+      uniform float uTime;
       varying vec3 vPos;
       
       // Voronoi for vertex displacement
@@ -770,8 +793,16 @@ function TreeMaterial(props: any) {
       float disp = voronoi(position * 2.5); // Local position for consistent shape
       float strength = 0.4; // Displacement amount
       
+      // Wind Rustle
+      // Animate the displacement strength slightly
+      float rustle = sin(uTime * 4.0 + position.x * 5.0 + position.y * 5.0) * 0.03;
+      
+      // Global Sway (approximate based on world position would be better, but local is okay for subtle effect)
+      float sway = sin(uTime * 1.5 + position.y) * 0.05;
+      transformed.x += sway;
+
       // Push out based on noise (inverted voronoi gives bumps)
-      transformed += normal * (1.0 - disp) * strength;
+      transformed += normal * ((1.0 - disp) * strength + rustle);
       `
     );
 
@@ -849,9 +880,18 @@ function TreeMaterial(props: any) {
 
 function TallTreeMaterial(props: any) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const uniforms = useRef({ uTime: { value: 0 } });
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      uniforms.current.uTime.value = state.clock.elapsedTime;
+    }
+  });
 
   const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = uniforms.current.uTime;
     shader.vertexShader = `
+      uniform float uTime;
       varying vec3 vPos;
       
       // Voronoi for vertex displacement
@@ -891,7 +931,15 @@ function TallTreeMaterial(props: any) {
       // Vertex Displacement
       float disp = voronoi(position * 2.5); 
       float strength = 0.4; 
-      transformed += normal * (1.0 - disp) * strength;
+      
+      // Wind Sway for Tall Trees
+      float sway = sin(uTime * 1.2 + position.y * 0.5) * max(0.0, position.y) * 0.05;
+      transformed.x += sway;
+      
+      // Rustle
+      float rustle = sin(uTime * 6.0 + position.y * 10.0) * 0.02;
+      
+      transformed += normal * ((1.0 - disp) * strength + rustle);
       `
     );
 
@@ -970,8 +1018,16 @@ function TallTreeMaterial(props: any) {
 
 function GrassMaterial(props: any) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const uniforms = useRef({ uTime: { value: 0 } });
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      uniforms.current.uTime.value = state.clock.elapsedTime;
+    }
+  });
 
   const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = uniforms.current.uTime;
     shader.vertexShader = `
       varying vec3 vPos;
       ${shader.vertexShader}
@@ -984,6 +1040,7 @@ function GrassMaterial(props: any) {
     );
 
     shader.fragmentShader = `
+      uniform float uTime;
       varying vec3 vPos;
 
       // Grass colors from reference
@@ -1046,6 +1103,16 @@ function GrassMaterial(props: any) {
       grassColor = mix(grassColor, COLOR_MOWED, stripePattern * 0.3 + n * 0.2);
       
       float intensity = 0.8 + 0.4 * detail;
+      
+      // Wind effect (ripples)
+      float wind = sin(vPos.x * 0.5 + vPos.z * 0.3 + uTime * 1.5 + fbm(vPos.xz) * 2.0);
+      intensity += wind * 0.05; // Subtle brightness variation
+
+      // Cloud shadows (large scale moving noise)
+      float cloudNoise = fbm(vPos.xz * 0.03 + vec2(uTime * 0.2, uTime * 0.1));
+      float cloudShadow = smoothstep(0.3, 0.7, cloudNoise);
+      intensity *= 0.7 + 0.3 * (1.0 - cloudShadow); // Darken areas under clouds
+
       vec3 finalGrass = grassColor * intensity;
       
       // Flowers
@@ -1060,7 +1127,9 @@ function GrassMaterial(props: any) {
           
           // Simple circle shape within grid cell
           vec2 cellUV = fract(vPos.xz * 15.0) - 0.5;
-          if (length(cellUV) < 0.3) {
+          // Animate flowers swaying in wind
+          float sway = sin(uTime * 3.0 + vPos.x * 10.0) * 0.1;
+          if (length(cellUV + vec2(sway, 0.0)) < 0.3) {
              finalGrass = flowerColor;
           }
       }
@@ -1073,6 +1142,77 @@ function GrassMaterial(props: any) {
 
       // Mix based on isDirt
       diffuseColor.rgb = mix(finalGrass, dirtColor, isDirt);
+      `
+    );
+  };
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      {...props}
+    />
+  );
+}
+
+function TrunkMaterial(props: any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+
+  const onBeforeCompile = (shader: any) => {
+    shader.vertexShader = `
+      varying vec3 vPos;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      
+      float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+      }
+      float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+                    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+      }
+      float fbm(vec2 p) {
+          float f = 0.0;
+          f += 0.5000 * noise(p); p *= 2.02;
+          f += 0.2500 * noise(p); p *= 2.03;
+          f += 0.1250 * noise(p); p *= 2.01;
+          f += 0.0625 * noise(p);
+          return f;
+      }
+
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+      
+      // Bark texture
+      // Vertical stretching for bark
+      float bark = fbm(vPos.xz * 2.0 + vec2(0.0, vPos.y * 8.0));
+      
+      // Deep cracks
+      float cracks = smoothstep(0.4, 0.7, bark);
+      
+      vec3 barkColor = diffuseColor.rgb;
+      vec3 crackColor = barkColor * 0.3;
+      
+      diffuseColor.rgb = mix(barkColor, crackColor, cracks * 0.6);
+      
+      // Add some moss at the bottom
+      float moss = smoothstep(0.5, 0.0, vPos.y) * fbm(vPos.xz * 5.0);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.4, 0.1), moss * 0.7);
       `
     );
   };
@@ -1142,7 +1282,7 @@ function ProceduralTallTree({
       {/* Trunk */}
       <mesh castShadow receiveShadow position={[0, height * 0.4, 0]}>
         <cylinderGeometry args={[0.3, 0.5, height * 0.8, 8]} />
-        <meshStandardMaterial color="#3a2a1a" roughness={1} />
+        <TrunkMaterial color="#3a2a1a" roughness={1} />
       </mesh>
       
       {/* Leaf Clusters */}
@@ -1200,7 +1340,7 @@ function ProceduralTree({
       {/* Trunk */}
       <mesh castShadow receiveShadow position={[0, height * 0.4, 0]}>
         <cylinderGeometry args={[0.2, 0.35, height * 0.8, 8]} />
-        <meshStandardMaterial color="#3a2a1a" roughness={1} />
+        <TrunkMaterial color="#3a2a1a" roughness={1} />
       </mesh>
       
       {/* Leaf Clusters */}
@@ -1247,6 +1387,456 @@ function ProceduralBush({ scale = 1, seed = 0 }: { scale?: number; seed?: number
           <BushMaterial roughness={1} />
         </mesh>
       ))}
+    </group>
+  );
+}
+
+function RockMaterial(props: any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const onBeforeCompile = (shader: any) => {
+    shader.vertexShader = `
+      varying vec3 vPos;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    ).replace(
+      "#include <begin_vertex>",
+      `
+      #include <begin_vertex>
+      // Rock displacement
+      float noise = sin(position.x * 5.0) * sin(position.y * 5.0) * sin(position.z * 5.0);
+      transformed += normal * noise * 0.1;
+      `
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      
+      float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+      }
+      float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+                    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+      }
+      float fbm(vec2 p) {
+          float f = 0.0;
+          f += 0.5000 * noise(p); p *= 2.02;
+          f += 0.2500 * noise(p); p *= 2.03;
+          return f;
+      }
+
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+      
+      float n = fbm(vPos.xz * 4.0);
+      vec3 rockColor1 = vec3(0.4, 0.4, 0.42);
+      vec3 rockColor2 = vec3(0.25, 0.25, 0.28);
+      vec3 mossColor = vec3(0.2, 0.35, 0.1);
+      
+      vec3 col = mix(rockColor1, rockColor2, n);
+      
+      // Moss on top
+      float up = dot(vNormal, vec3(0, 1, 0));
+      float moss = smoothstep(0.6, 0.9, up + n * 0.2);
+      col = mix(col, mossColor, moss);
+      
+      diffuseColor.rgb = col;
+      `
+    );
+  };
+  return <meshStandardMaterial ref={materialRef} onBeforeCompile={onBeforeCompile} {...props} />;
+}
+
+function ProceduralRock({ scale = 1, seed = 0 }: { scale?: number; seed?: number }) {
+  const rand = (offset: number) => {
+    const s = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  
+  // Random shape parameters
+  const deform = useMemo(() => {
+    return [rand(1), rand(2), rand(3)].map(v => 0.8 + v * 0.4);
+  }, [seed]);
+
+  return (
+    <group scale={[scale, scale, scale]}>
+      <mesh castShadow receiveShadow rotation={[rand(4), rand(5), rand(6)]}>
+        <dodecahedronGeometry args={[0.6, 0]} />
+        <RockMaterial roughness={0.9} />
+      </mesh>
+      <mesh castShadow receiveShadow position={[0.4, -0.2, 0.3]} rotation={[rand(7), rand(8), rand(9)]} scale={0.6}>
+        <dodecahedronGeometry args={[0.5, 0]} />
+        <RockMaterial roughness={0.9} />
+      </mesh>
+    </group>
+  );
+}
+
+function ProceduralStatue({ scale = 1, seed = 0 }: { scale?: number; seed?: number }) {
+  const rand = (offset: number) => {
+    const s = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
+    return s - Math.floor(s);
+  };
+
+  const shapeType = Math.floor(rand(1) * 3); // 0: Sphere stack, 1: Abstract Torus, 2: Obelisk
+
+  return (
+    <group scale={[scale, scale, scale]}>
+      {/* Pedestal */}
+      <mesh castShadow receiveShadow position={[0, 0.4, 0]}>
+        <boxGeometry args={[0.8, 0.8, 0.8]} />
+        <WallMaterial roughness={0.8} color="#8a8a8a" />
+      </mesh>
+      
+      {/* Statue Body */}
+      <group position={[0, 0.8, 0]}>
+        {shapeType === 0 && (
+          <>
+            <mesh castShadow position={[0, 0.4, 0]}>
+              <sphereGeometry args={[0.4, 16, 16]} />
+              <meshStandardMaterial color="#e0e0e0" roughness={0.4} metalness={0.1} />
+            </mesh>
+            <mesh castShadow position={[0, 1.0, 0]}>
+              <sphereGeometry args={[0.3, 16, 16]} />
+              <meshStandardMaterial color="#e0e0e0" roughness={0.4} metalness={0.1} />
+            </mesh>
+          </>
+        )}
+        {shapeType === 1 && (
+          <group position={[0, 0.5, 0]}>
+            <mesh castShadow position={[0, 0, 0]} rotation={[rand(2), rand(3), rand(4)]}>
+              <torusKnotGeometry args={[0.3, 0.1, 64, 8]} />
+              <meshStandardMaterial color="#d4af37" roughness={0.3} metalness={0.8} />
+            </mesh>
+            {/* Small stand for the knot */}
+            <mesh position={[0, -0.3, 0]}>
+               <cylinderGeometry args={[0.05, 0.1, 0.6, 8]} />
+               <meshStandardMaterial color="#4a4a4a" roughness={0.8} />
+            </mesh>
+          </group>
+        )}
+        {shapeType === 2 && (
+          <mesh castShadow position={[0, 1.0, 0]}>
+            <coneGeometry args={[0.3, 2.0, 4]} />
+            <meshStandardMaterial color="#a0a0a0" roughness={0.6} />
+          </mesh>
+        )}
+      </group>
+    </group>
+  );
+}
+
+function ProceduralDuck({ 
+  position = [0, 0, 0], 
+  radius = 5, 
+  speed = 0.8, 
+  seed = 0 
+}: { 
+  position?: [number, number, number]; 
+  radius?: number; 
+  speed?: number; 
+  seed?: number; 
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const stateRef = useRef({
+    mode: 'idle' as 'idle' | 'moving',
+    timer: Math.random() * 2,
+    target: new THREE.Vector3(position[0], position[1], position[2]),
+    currentPos: new THREE.Vector3(position[0], position[1], position[2]),
+  });
+
+  useFrame((state, dt) => {
+    if (!groupRef.current) return;
+    const s = stateRef.current;
+
+    if (s.mode === 'idle') {
+      s.timer -= dt;
+      if (s.timer <= 0) {
+        s.mode = 'moving';
+        // Pick random point in circle
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * radius;
+        s.target.set(
+            position[0] + Math.cos(angle) * r,
+            position[1],
+            position[2] + Math.sin(angle) * r
+        );
+      }
+    } else {
+      // Move towards target
+      const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
+      const dist = diff.length();
+
+      if (dist < 0.1) {
+        s.mode = 'idle';
+        s.timer = 2 + Math.random() * 4; // Pause for 2-6 seconds
+      } else {
+        const moveSpeed = (speed * 0.5) * dt; // Slower speed
+        if (dist > moveSpeed) {
+            diff.normalize().multiplyScalar(moveSpeed);
+            s.currentPos.add(diff);
+        } else {
+            s.currentPos.copy(s.target);
+        }
+
+        // Smooth rotation
+        const targetRot = Math.atan2(diff.x, diff.z);
+        let rotDiff = targetRot - groupRef.current.rotation.y;
+        while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+        while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+        groupRef.current.rotation.y += rotDiff * 3 * dt;
+      }
+    }
+
+    // Bobbing
+    const bob = Math.sin(state.clock.elapsedTime * 3) * 0.015;
+    groupRef.current.position.set(s.currentPos.x, s.currentPos.y + bob, s.currentPos.z);
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* Body */}
+      <mesh castShadow position={[0, 0.15, 0]}>
+        <sphereGeometry args={[0.2, 12, 12]} scale={[1, 0.7, 1.3]} />
+        <meshStandardMaterial color="#ffffff" roughness={0.5} />
+      </mesh>
+      {/* Neck */}
+      <mesh castShadow position={[0, 0.3, 0.15]} rotation={[0.2, 0, 0]}>
+        <cylinderGeometry args={[0.06, 0.08, 0.25, 8]} />
+        <meshStandardMaterial color="#ffffff" roughness={0.5} />
+      </mesh>
+      {/* Head */}
+      <mesh castShadow position={[0, 0.45, 0.2]}>
+        <sphereGeometry args={[0.1, 12, 12]} />
+        <meshStandardMaterial color="#004400" roughness={0.3} /> {/* Mallard green head */}
+      </mesh>
+      {/* Beak */}
+      <mesh castShadow position={[0, 0.43, 0.3]}>
+        <coneGeometry args={[0.04, 0.1, 8]} rotation={[Math.PI/2, 0, 0]} />
+        <meshStandardMaterial color="#ffaa00" roughness={0.5} />
+      </mesh>
+      {/* Wings (folded) */}
+      <mesh position={[0.18, 0.2, 0]} rotation={[0, 0, -0.2]}>
+        <sphereGeometry args={[0.15, 8, 8]} scale={[0.3, 1, 1.5]} />
+        <meshStandardMaterial color="#554433" roughness={0.8} />
+      </mesh>
+      <mesh position={[-0.18, 0.2, 0]} rotation={[0, 0, 0.2]}>
+        <sphereGeometry args={[0.15, 8, 8]} scale={[0.3, 1, 1.5]} />
+        <meshStandardMaterial color="#554433" roughness={0.8} />
+      </mesh>
+    </group>
+  );
+}
+
+function ProceduralSwan({ 
+  position = [0, 0, 0], 
+  radius = 5, 
+  speed = 0.5, 
+  seed = 0 
+}: { 
+  position?: [number, number, number]; 
+  radius?: number; 
+  speed?: number; 
+  seed?: number; 
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const stateRef = useRef({
+    mode: 'idle' as 'idle' | 'moving',
+    timer: Math.random() * 2,
+    target: new THREE.Vector3(position[0], position[1], position[2]),
+    currentPos: new THREE.Vector3(position[0], position[1], position[2]),
+  });
+
+  useFrame((state, dt) => {
+    if (!groupRef.current) return;
+    const s = stateRef.current;
+
+    if (s.mode === 'idle') {
+      s.timer -= dt;
+      if (s.timer <= 0) {
+        s.mode = 'moving';
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * radius;
+        s.target.set(
+            position[0] + Math.cos(angle) * r,
+            position[1],
+            position[2] + Math.sin(angle) * r
+        );
+      }
+    } else {
+      const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
+      const dist = diff.length();
+
+      if (dist < 0.1) {
+        s.mode = 'idle';
+        s.timer = 3 + Math.random() * 5; // Longer pause for swans
+      } else {
+        const moveSpeed = (speed * 0.4) * dt; // Slower than ducks
+        if (dist > moveSpeed) {
+            diff.normalize().multiplyScalar(moveSpeed);
+            s.currentPos.add(diff);
+        } else {
+            s.currentPos.copy(s.target);
+        }
+
+        const targetRot = Math.atan2(diff.x, diff.z);
+        let rotDiff = targetRot - groupRef.current.rotation.y;
+        while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+        while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+        groupRef.current.rotation.y += rotDiff * 2 * dt;
+      }
+    }
+
+    const bob = Math.sin(state.clock.elapsedTime * 2) * 0.01;
+    groupRef.current.position.set(s.currentPos.x, s.currentPos.y + bob, s.currentPos.z);
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* Body */}
+      <mesh castShadow position={[0, 0.2, 0]}>
+        <sphereGeometry args={[0.25, 12, 12]} scale={[1, 0.7, 1.4]} />
+        <meshStandardMaterial color="#ffffff" roughness={0.4} />
+      </mesh>
+      {/* Neck (S-curve approximation) */}
+      <group position={[0, 0.35, 0.25]}>
+         <mesh castShadow position={[0, 0, 0]} rotation={[0.4, 0, 0]}>
+            <cylinderGeometry args={[0.07, 0.09, 0.3, 8]} />
+            <meshStandardMaterial color="#ffffff" roughness={0.4} />
+         </mesh>
+         <mesh castShadow position={[0, 0.25, 0.05]} rotation={[-0.2, 0, 0]}>
+            <cylinderGeometry args={[0.06, 0.07, 0.25, 8]} />
+            <meshStandardMaterial color="#ffffff" roughness={0.4} />
+         </mesh>
+      </group>
+      {/* Head */}
+      <mesh castShadow position={[0, 0.75, 0.35]}>
+        <sphereGeometry args={[0.09, 12, 12]} />
+        <meshStandardMaterial color="#ffffff" roughness={0.4} />
+      </mesh>
+      {/* Beak */}
+      <mesh castShadow position={[0, 0.73, 0.42]}>
+        <coneGeometry args={[0.04, 0.12, 8]} rotation={[Math.PI/2, 0, 0]} />
+        <meshStandardMaterial color="#ff9900" roughness={0.5} />
+      </mesh>
+    </group>
+  );
+}
+
+function ProceduralRabbit({ 
+  position = [0, 0, 0], 
+  radius = 5, 
+  seed = 0 
+}: { 
+  position?: [number, number, number]; 
+  radius?: number; 
+  seed?: number; 
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const stateRef = useRef({
+    mode: 'idle' as 'idle' | 'moving',
+    timer: Math.random() * 2,
+    target: new THREE.Vector3(position[0], position[1], position[2]),
+    currentPos: new THREE.Vector3(position[0], position[1], position[2]),
+    hopPhase: 0
+  });
+
+  useFrame((state, dt) => {
+    if (!groupRef.current) return;
+    const s = stateRef.current;
+
+    if (s.mode === 'idle') {
+      s.timer -= dt;
+      if (s.timer <= 0) {
+        s.mode = 'moving';
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * radius;
+        s.target.set(
+            position[0] + Math.cos(angle) * r,
+            position[1],
+            position[2] + Math.sin(angle) * r
+        );
+      }
+      // Idle animation: occasional twitch
+      if (Math.random() < 0.02) {
+         groupRef.current.rotation.z = (Math.random() - 0.5) * 0.1;
+      } else {
+         groupRef.current.rotation.z *= 0.9;
+      }
+    } else {
+      const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
+      const dist = diff.length();
+
+      if (dist < 0.1) {
+        s.mode = 'idle';
+        s.timer = 1 + Math.random() * 4;
+        s.hopPhase = 0;
+        groupRef.current.position.y = position[1];
+      } else {
+        const speed = 1.5; // Fast hops
+        const moveSpeed = speed * dt;
+        
+        if (dist > moveSpeed) {
+            diff.normalize().multiplyScalar(moveSpeed);
+            s.currentPos.add(diff);
+            
+            // Hop animation
+            s.hopPhase += dt * 15;
+            const hopHeight = Math.abs(Math.sin(s.hopPhase)) * 0.15;
+            groupRef.current.position.y = position[1] + hopHeight;
+        } else {
+            s.currentPos.copy(s.target);
+        }
+
+        const targetRot = Math.atan2(diff.x, diff.z);
+        let rotDiff = targetRot - groupRef.current.rotation.y;
+        while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+        while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+        groupRef.current.rotation.y += rotDiff * 10 * dt;
+      }
+    }
+    
+    groupRef.current.position.x = s.currentPos.x;
+    groupRef.current.position.z = s.currentPos.z;
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* Body */}
+      <mesh castShadow position={[0, 0.12, 0]}>
+        <sphereGeometry args={[0.15, 12, 12]} scale={[1, 0.8, 1.3]} />
+        <meshStandardMaterial color="#dcdcdc" roughness={0.9} />
+      </mesh>
+      {/* Head */}
+      <mesh castShadow position={[0, 0.25, 0.12]}>
+        <sphereGeometry args={[0.09, 12, 12]} />
+        <meshStandardMaterial color="#dcdcdc" roughness={0.9} />
+      </mesh>
+      {/* Ears */}
+      <mesh castShadow position={[0.04, 0.4, 0.1]} rotation={[0.2, 0, 0]}>
+        <capsuleGeometry args={[0.025, 0.15, 4, 8]} />
+        <meshStandardMaterial color="#dcdcdc" roughness={0.9} />
+      </mesh>
+      <mesh castShadow position={[-0.04, 0.4, 0.1]} rotation={[0.2, 0, 0]}>
+        <capsuleGeometry args={[0.025, 0.15, 4, 8]} />
+        <meshStandardMaterial color="#dcdcdc" roughness={0.9} />
+      </mesh>
+      {/* Tail */}
+      <mesh castShadow position={[0, 0.1, -0.15]}>
+        <sphereGeometry args={[0.04, 8, 8]} />
+        <meshStandardMaterial color="#ffffff" roughness={1} />
+      </mesh>
     </group>
   );
 }
@@ -1322,6 +1912,11 @@ export function ParkLobby() {
           emissiveIntensity={0.2}
         />
       </mesh>
+      {/* Ducks in Lake 1 */}
+      {Array.from({ length: 3 }).map((_, i) => (
+        <ProceduralDuck key={`duck1-${i}`} position={[30, 0, -35]} radius={8} seed={i} />
+      ))}
+      <ProceduralSwan position={[30, 0, -35]} radius={5} seed={100} />
       
       {/* Lake 2 - Southwest */}
       <mesh position={[-40, 0.02, 30]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
@@ -1334,6 +1929,13 @@ export function ParkLobby() {
           emissiveIntensity={0.2}
         />
       </mesh>
+      {/* Swans in Lake 2 */}
+      {Array.from({ length: 2 }).map((_, i) => (
+        <ProceduralSwan key={`swan2-${i}`} position={[-40, 0, 30]} radius={10} seed={i + 20} />
+      ))}
+      {Array.from({ length: 4 }).map((_, i) => (
+        <ProceduralDuck key={`duck2-${i}`} position={[-40, 0, 30]} radius={14} seed={i + 50} />
+      ))}
 
       {/* Lake 3 - Southeast (smaller pond) */}
       <mesh position={[38, 0.02, 42]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
@@ -1346,6 +1948,21 @@ export function ParkLobby() {
           emissiveIntensity={0.2}
         />
       </mesh>
+      {/* Ducks in Lake 3 */}
+      {Array.from({ length: 2 }).map((_, i) => (
+        <ProceduralDuck key={`duck3-${i}`} position={[38, 0, 42]} radius={6} seed={i + 80} />
+      ))}
+
+      {/* Rabbits in the grass */}
+      {Array.from({ length: 5 }).map((_, i) => {
+        const angle = (i / 5) * Math.PI * 2;
+        const r = 20 + (i % 3) * 5;
+        const x = Math.cos(angle) * r;
+        const z = Math.sin(angle) * r;
+        return (
+          <ProceduralRabbit key={`rabbit-${i}`} position={[x, 0, z]} radius={4} seed={i + 200} />
+        );
+      })}
 
       {/* Fantasy Castle - Northwest (polar opposite to lakes) */}
       <group position={[-50, 0, -45]}>
@@ -1699,51 +2316,65 @@ export function ParkLobby() {
         );
       })}
 
-      {/* Lantern posts (subtle in daylight, still cozy)
-        Rotated/expanded so they don't line up behind the chess join pads. */}
+      {/* Artistic Statues (replacing inner lamps) */}
       {Array.from({ length: 8 }).map((_, i) => {
         const angle = ((i + 0.5) / 8) * Math.PI * 2;
         const radius = 14.6;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
-        const warm = i % 2 === 0;
         return (
-          <group key={i} position={[x, 0, z]}>
-            <mesh castShadow receiveShadow>
-              <cylinderGeometry args={[0.08, 0.1, 2.5, 10]} />
-              <meshStandardMaterial
-                color="#232323"
-                roughness={0.7}
-                metalness={0.2}
-              />
-            </mesh>
-            <mesh position={[0, 1.35, 0]} castShadow>
-              <boxGeometry args={[0.35, 0.35, 0.35]} />
-              <meshStandardMaterial
-                color={warm ? "#ffd9a6" : "#d4e4ff"}
-                emissive={warm ? "#ffb45a" : "#7fb6ff"}
-                emissiveIntensity={0.25}
-                roughness={0.35}
-                metalness={0}
-              />
-            </mesh>
-            <pointLight
-              position={[0, 1.35, 0]}
-              intensity={warm ? 0.25 : 0.18}
-              color={warm ? "#ffbd73" : "#98c4ff"}
-              distance={7}
-              decay={2}
-            />
+          <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
+             <ProceduralStatue scale={1.2} seed={i * 123} />
+          </group>
+        );
+      })}
+
+      {/* Scattered Rocks */}
+      {Array.from({ length: 20 }).map((_, i) => {
+        const angle = (i / 20) * Math.PI * 2 + (i % 3);
+        const r = 25 + (i % 5) * 5;
+        const x = Math.cos(angle) * r;
+        const z = Math.sin(angle) * r;
+        
+        // Avoid buildings
+        const distToVillage = Math.sqrt(Math.pow(x - (-50), 2) + Math.pow(z - (-45), 2));
+        if (distToVillage < 42) return null;
+        
+        return (
+          <group key={`rock${i}`} position={[x, 0.3, z]}>
+            <ProceduralRock scale={0.8 + (i % 3) * 0.4} seed={i + 500} />
           </group>
         );
       })}
 
       {/* Background trees (outside bounds for atmosphere) */}
-      {Array.from({ length: 32 }).map((_, i) => {
-        const angle = (i / 32) * Math.PI * 2 + (i % 2) * 0.1;
-        const radius = 28 + (i % 3) * 4;
+      {Array.from({ length: 48 }).map((_, i) => {
+        const angle = (i / 48) * Math.PI * 2 + (i % 2) * 0.1;
+        // Push trees further out to avoid buildings
+        // Village is at [-50, -45], radius 35 -> extends to ~85 distance from origin
+        // We need to be careful.
+        // Let's use a larger radius range and filter out bad spots.
+        const radius = 45 + (i % 5) * 8; 
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
+        
+        // Check for collisions with major landmarks
+        // Village center [-50, -45], radius ~40
+        const distToVillage = Math.sqrt(Math.pow(x - (-50), 2) + Math.pow(z - (-45), 2));
+        if (distToVillage < 42) return null;
+        
+        // Windmill [-45, 35], radius ~15
+        const distToWindmill = Math.sqrt(Math.pow(x - (-45), 2) + Math.pow(z - 35, 2));
+        if (distToWindmill < 18) return null;
+        
+        // Chapel [48, 8], radius ~15
+        const distToChapel = Math.sqrt(Math.pow(x - 48, 2) + Math.pow(z - 8, 2));
+        if (distToChapel < 18) return null;
+        
+        // Lighthouse [70, 0], radius ~15
+        const distToLighthouse = Math.sqrt(Math.pow(x - 70, 2) + Math.pow(z - 0, 2));
+        if (distToLighthouse < 18) return null;
+
         const h = 3.2 + (i % 5) * 0.6;
         const scale = 0.8 + (i % 4) * 0.1;
         

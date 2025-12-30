@@ -525,12 +525,85 @@ function OrganicPath({
   );
 }
 
-function BoardLamp({
+function LampPostMaterial(props: any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const onBeforeCompile = (shader: any) => {
+    shader.vertexShader = `
+      varying vec3 vPos;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    );
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+      // Cast iron noise
+      float noise = fract(sin(dot(vPos.xy, vec2(12.9898, 78.233))) * 43758.5453);
+      float fbm = noise * 0.5 + fract(sin(dot(vPos.yz * 2.0, vec2(39.786, 57.012))) * 43758.5453) * 0.25;
+      
+      vec3 ironColor = vec3(0.15, 0.15, 0.18);
+      vec3 rustColor = vec3(0.22, 0.18, 0.16);
+      
+      diffuseColor.rgb = mix(ironColor, rustColor, fbm * 0.4);
+      `
+    );
+  };
+  return <meshStandardMaterial ref={materialRef} onBeforeCompile={onBeforeCompile} {...props} />;
+}
+
+function LampGlassMaterial(props: any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const onBeforeCompile = (shader: any) => {
+    shader.vertexShader = `
+      varying vec3 vPos;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    );
+    shader.fragmentShader = `
+      uniform float emissiveIntensity;
+      varying vec3 vPos;
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+      // Frosted glass noise
+      float noise = fract(sin(dot(vPos.xz * 10.0, vec2(12.9898, 78.233))) * 43758.5453);
+      
+      // Emissive variation
+      vec3 glowColor = vec3(1.0, 0.9, 0.7);
+      vec3 hotColor = vec3(1.0, 1.0, 0.9);
+      
+      vec3 finalColor = mix(glowColor, hotColor, noise * 0.2);
+      totalEmissiveRadiance = finalColor * emissiveIntensity;
+      
+      // Glass tint
+      diffuseColor.rgb = mix(diffuseColor.rgb, finalColor, 0.5);
+      `
+    );
+  };
+  return <meshStandardMaterial ref={materialRef} onBeforeCompile={onBeforeCompile} transparent {...props} />;
+}
+
+export function BoardLamp({
   lampPos,
   targetPos,
 }: {
   lampPos: [number, number, number];
-  targetPos: [number, number, number];
+  targetPos?: [number, number, number];
 }) {
   const keyRef = useRef<THREE.SpotLight>(null);
   const fillRef = useRef<THREE.SpotLight>(null);
@@ -547,8 +620,9 @@ function BoardLamp({
   }, [lampPos]);
 
   useEffect(() => {
+    const tPos = targetPos || [lampPos[0], 0, lampPos[2]];
     const target = new THREE.Object3D();
-    target.position.set(targetPos[0], targetPos[1], targetPos[2]);
+    target.position.set(tPos[0], tPos[1], tPos[2]);
     targetRef.current = target;
 
     const key = keyRef.current;
@@ -559,7 +633,7 @@ function BoardLamp({
     return () => {
       targetRef.current = null;
     };
-  }, [targetPos]);
+  }, [targetPos, lampPos]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
@@ -593,36 +667,56 @@ function BoardLamp({
   return (
     <>
       <group position={lampPos}>
-        <mesh castShadow receiveShadow>
-          <cylinderGeometry args={[0.11, 0.13, 3.2, 12]} />
-          <meshStandardMaterial
-            color="#2a2a2a"
-            roughness={0.65}
-            metalness={0.25}
+        {/* Base */}
+        <mesh castShadow receiveShadow position={[0, 0.2, 0]}>
+           <cylinderGeometry args={[0.25, 0.3, 0.4, 8]} />
+           <LampPostMaterial roughness={0.8} metalness={0.5} />
+        </mesh>
+        {/* Post */}
+        <mesh castShadow receiveShadow position={[0, 1.7, 0]}>
+          <cylinderGeometry args={[0.08, 0.12, 2.6, 8]} />
+          <LampPostMaterial roughness={0.8} metalness={0.5} />
+        </mesh>
+        {/* Lamp Head Holder */}
+        <mesh castShadow receiveShadow position={[0, 3.05, 0]}>
+           <cylinderGeometry args={[0.2, 0.08, 0.1, 8]} />
+           <LampPostMaterial roughness={0.8} metalness={0.5} />
+        </mesh>
+        
+        {/* Inner Bulb */}
+        <mesh position={[0, 3.25, 0]}>
+          <sphereGeometry args={[0.08, 16, 16]} />
+          <meshStandardMaterial 
+            color="#ffaa00" 
+            emissive="#ffaa00" 
+            emissiveIntensity={2.0} 
+            toneMapped={false}
           />
         </mesh>
-        <mesh castShadow receiveShadow position={[0, 1.65, 0]}>
-          <cylinderGeometry args={[0.17, 0.19, 0.18, 12]} />
-          <meshStandardMaterial
-            color="#2a2a2a"
-            roughness={0.65}
-            metalness={0.25}
+
+        {/* Lamp Glass (Lantern shape) */}
+        <mesh castShadow position={[0, 3.3, 0]}>
+          <cylinderGeometry args={[0.25, 0.15, 0.5, 6]} />
+          <LampGlassMaterial 
+            ref={bulbMatRef} 
+            emissiveIntensity={0.2} 
+            roughness={0.2} 
+            metalness={0.1} 
+            transparent
+            opacity={0.6}
+            side={THREE.DoubleSide}
+            color="#ffeedd"
           />
         </mesh>
-        <mesh castShadow position={[0, 1.85, 0]}>
-          <boxGeometry args={[0.55, 0.55, 0.55]} />
-          <meshStandardMaterial
-            ref={bulbMatRef}
-            color="#ffe0b8"
-            emissive="#ffb45a"
-            emissiveIntensity={0.35}
-            roughness={0.35}
-            metalness={0}
-          />
+        {/* Cap */}
+        <mesh castShadow position={[0, 3.6, 0]}>
+           <coneGeometry args={[0.35, 0.15, 6]} />
+           <LampPostMaterial roughness={0.8} metalness={0.5} />
         </mesh>
-        <Billboard position={[0, 1.85, 0]}>
+        
+        <Billboard position={[0, 3.3, 0]}>
           <mesh ref={glowMeshRef}>
-            <planeGeometry args={[1, 1]} />
+            <planeGeometry args={[1.5, 1.5]} />
             <meshBasicMaterial
               ref={glowMatRef}
               map={glowTex}
@@ -637,7 +731,7 @@ function BoardLamp({
         </Billboard>
         <pointLight
           ref={pointRef}
-          position={[0, 1.85, 0]}
+          position={[0, 3.3, 0]}
           intensity={0.9}
           distance={14}
           decay={2}
@@ -2009,8 +2103,14 @@ function SelfAvatar({
     const p = pos.current;
     if (!g || !p) return;
     g.position.set(p.x, p.y, p.z);
-    // Smooth rotation with lerp
-    g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, rotY.current, 0.15);
+    
+    // Smooth rotation with shortest path interpolation
+    let diff = rotY.current - g.rotation.y;
+    // Normalize to -PI...PI
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    g.rotation.y += diff * 0.15;
+
     setMovingSpeed(speed.current);
 
     const nextPose = sittingRef?.current ? "sit" : "stand";
@@ -2075,9 +2175,12 @@ function RemoteAvatar({
       targetPosition[2]
     );
     posRef.current.lerp(targetRef.current, alpha);
+    
     // shortest angle lerp
-    const d =
-      ((targetRotY - rotRef.current + Math.PI) % (Math.PI * 2)) - Math.PI;
+    let d = targetRotY - rotRef.current;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    
     rotRef.current = rotRef.current + d * alpha;
 
     g.position.set(posRef.current.x, posRef.current.y, posRef.current.z);
@@ -2147,6 +2250,7 @@ function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
   const { gl } = useThree();
   const draggingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
+  const pinchRef = useRef<{ dist: number; radius: number } | null>(null);
 
   // Camera orbit state (spherical)
   const thetaRef = useRef(0); // azimuth around Y
@@ -2155,6 +2259,22 @@ function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
 
   useEffect(() => {
     const el = gl.domElement;
+
+    const prevTouchAction = el.style.touchAction;
+    // Allows us to preventDefault() reliably for pinch/scroll gestures.
+    el.style.touchAction = "none";
+
+    const MIN_RADIUS = 3.5;
+    const MAX_RADIUS = 18;
+
+    const clampRadius = (r: number) => clamp(r, MIN_RADIUS, MAX_RADIUS);
+
+    const getTouchDist = (t0: Touch, t1: Touch) => {
+      const dx = t0.clientX - t1.clientX;
+      const dy = t0.clientY - t1.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
     const onContextMenu = (e: MouseEvent) => e.preventDefault();
     const onDown = (e: PointerEvent) => {
       // Right mouse button only
@@ -2190,11 +2310,55 @@ function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
       phiRef.current = clamp(phiRef.current + dy * rotSpeed, 0.45, 1.45);
     };
 
+    const wheelOptions: AddEventListenerOptions = { passive: false };
+    const onWheel = (e: WheelEvent) => {
+      // Keep the page from scrolling while zooming over the canvas.
+      e.preventDefault();
+
+      // Trackpads and wheels vary; an exponential scale feels consistent.
+      const zoomSpeed = 0.0015;
+      const factor = Math.exp(e.deltaY * zoomSpeed);
+      radiusRef.current = clampRadius(radiusRef.current * factor);
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      // Prevent browser pinch-zoom on the page.
+      e.preventDefault();
+      pinchRef.current = {
+        dist: getTouchDist(e.touches[0], e.touches[1]),
+        radius: radiusRef.current,
+      };
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      const pinch = pinchRef.current;
+      if (!pinch) return;
+      e.preventDefault();
+
+      const nextDist = getTouchDist(e.touches[0], e.touches[1]);
+      if (pinch.dist <= 0) return;
+
+      // Pinch out (bigger dist) => zoom in (smaller radius)
+      const scale = nextDist / pinch.dist;
+      radiusRef.current = clampRadius(pinch.radius / scale);
+    };
+
+    const onTouchEnd = () => {
+      pinchRef.current = null;
+    };
+
     el.addEventListener("contextmenu", onContextMenu);
     el.addEventListener("pointerdown", onDown);
     el.addEventListener("pointerup", onUp);
     el.addEventListener("pointercancel", onUp);
     el.addEventListener("pointermove", onMove);
+    el.addEventListener("wheel", onWheel, wheelOptions);
+    el.addEventListener("touchstart", onTouchStart, wheelOptions);
+    el.addEventListener("touchmove", onTouchMove, wheelOptions);
+    el.addEventListener("touchend", onTouchEnd);
+    el.addEventListener("touchcancel", onTouchEnd);
 
     return () => {
       el.removeEventListener("contextmenu", onContextMenu);
@@ -2202,6 +2366,13 @@ function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
       el.removeEventListener("pointerup", onUp);
       el.removeEventListener("pointercancel", onUp);
       el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("wheel", onWheel, wheelOptions as any);
+      el.removeEventListener("touchstart", onTouchStart, wheelOptions as any);
+      el.removeEventListener("touchmove", onTouchMove, wheelOptions as any);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+
+      el.style.touchAction = prevTouchAction;
     };
   }, [gl]);
 
@@ -2299,6 +2470,7 @@ function SelfSimulation({
     dest: Vec3;
     rotY?: number;
     sit?: boolean;
+    sitDest?: Vec3;
   } | null>;
   sittingRef: React.RefObject<boolean>;
 }) {
@@ -2308,6 +2480,8 @@ function SelfSimulation({
   const rightRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const upRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 1, 0));
   const lastPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const aligningToSitStartRef = useRef<number | null>(null);
+
   useFrame((state, dt) => {
     if (!enabled) return;
 
@@ -2320,6 +2494,7 @@ function SelfSimulation({
     if (hasKeyboardInput) {
       // Keyboard input always cancels click-to-move and standing up from sitting.
       moveTargetRef.current = null;
+      aligningToSitStartRef.current = null;
       if (sittingRef.current && process.env.NODE_ENV !== "production") {
         // eslint-disable-next-line no-console
         console.log("[sit] canceled via keyboard");
@@ -2360,21 +2535,43 @@ function SelfSimulation({
       const d = moveTargetRef.current.dest;
       v.set(d[0] - pos.current.x, 0, d[2] - pos.current.z);
       const dist = v.length();
-      if (dist < 0.25) {
-        // Snap to target and optionally sit.
+      
+      // Check if we are in the "aligning" phase of sitting
+      if (aligningToSitStartRef.current !== null) {
+        // Force position to target while turning
         pos.current.set(d[0], pos.current.y, d[2]);
-        if (typeof moveTargetRef.current.rotY === "number") {
-          rotY.current = moveTargetRef.current.rotY;
-        }
-        if (moveTargetRef.current.sit) {
-          if (!sittingRef.current && process.env.NODE_ENV !== "production") {
-            // eslint-disable-next-line no-console
-            console.log("[sit] entered (arrived)");
-          }
-          sittingRef.current = true;
-        }
-        moveTargetRef.current = null;
         v.set(0, 0, 0);
+        
+        // Wait for turn to complete (approx 0.5s)
+        if (state.clock.elapsedTime - aligningToSitStartRef.current > 0.5) {
+           // Snap to sitDest if available
+           if (moveTargetRef.current?.sitDest) {
+             const sd = moveTargetRef.current.sitDest;
+             pos.current.set(sd[0], pos.current.y, sd[2]);
+           }
+
+           sittingRef.current = true;
+           moveTargetRef.current = null;
+           aligningToSitStartRef.current = null;
+        }
+      } else if (dist < 0.25) {
+        // Arrived at destination.
+        pos.current.set(d[0], pos.current.y, d[2]);
+        v.set(0, 0, 0);
+        
+        if (moveTargetRef.current.sit) {
+          // Start aligning phase
+          if (typeof moveTargetRef.current.rotY === "number") {
+            rotY.current = moveTargetRef.current.rotY;
+          }
+          aligningToSitStartRef.current = state.clock.elapsedTime;
+        } else {
+          // Normal move end
+          if (typeof moveTargetRef.current.rotY === "number") {
+            rotY.current = moveTargetRef.current.rotY;
+          }
+          moveTargetRef.current = null;
+        }
       }
     }
 
@@ -2989,23 +3186,9 @@ export default function World({
                         dest,
                         rotY: opts?.rotY,
                         sit: opts?.sit,
+                        sitDest: opts?.sitDest,
                       };
-                      if (opts?.sit) {
-                        if (
-                          !sittingRef.current &&
-                          process.env.NODE_ENV !== "production"
-                        ) {
-                          sitDebugRef.current.requested++;
-                          // eslint-disable-next-line no-console
-                          console.log(
-                            "[sit] requested",
-                            sitDebugRef.current.requested
-                          );
-                        }
-                        sittingRef.current = true;
-                      } else {
-                        sittingRef.current = false;
-                      }
+                      sittingRef.current = false;
                     }}
                   />
                 ) : (
@@ -3038,23 +3221,9 @@ export default function World({
                         dest,
                         rotY: opts?.rotY,
                         sit: opts?.sit,
+                        sitDest: opts?.sitDest,
                       };
-                      if (opts?.sit) {
-                        if (
-                          !sittingRef.current &&
-                          process.env.NODE_ENV !== "production"
-                        ) {
-                          sitDebugRef.current.requested++;
-                          // eslint-disable-next-line no-console
-                          console.log(
-                            "[sit] requested",
-                            sitDebugRef.current.requested
-                          );
-                        }
-                        sittingRef.current = true;
-                      } else {
-                        sittingRef.current = false;
-                      }
+                      sittingRef.current = false;
                     }}
                   />
                 )}

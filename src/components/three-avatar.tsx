@@ -371,111 +371,153 @@ export function ThreeAvatar({
     };
   }, [gl, url]);
 
-  useFrame((_state, dt) => {
+    const sitWeight = useRef(0);
+
+    // Fidget state
+    const fidgetTargetRef = useRef({
+      neck: new THREE.Vector2(),
+      spine: new THREE.Vector2(),
+      leftArm: new THREE.Vector2(),
+      rightArm: new THREE.Vector2(),
+      leftLeg: new THREE.Vector2(),
+      rightLeg: new THREE.Vector2(),
+    });
+    const fidgetCurrentRef = useRef({
+      neck: new THREE.Vector2(),
+      spine: new THREE.Vector2(),
+      leftArm: new THREE.Vector2(),
+      rightArm: new THREE.Vector2(),
+      leftLeg: new THREE.Vector2(),
+      rightLeg: new THREE.Vector2(),
+    });
+    const nextFidgetTimeRef = useRef(0);
+
+    useFrame((state, dt) => {
     const a = avatarRef.current;
     if (!a) return;
     a.tick(dt);
 
-    // Procedural sit pose (best-effort) for VRM avatars.
-    // This avoids needing external tooling/authoring for a sit.fbx.
+    // Procedural sit pose using Normalized Bones (VRM Humanoid).
+    // This ensures consistent behavior across different VRM models (VRM 0.0 vs 1.0).
     const vrm = a.vrm;
     const humanoid = vrm?.humanoid;
 
-    const BONE_ALIASES: Record<string, string[]> = {
-      hips: ["Hips", "mixamorigHips", "hips"],
-      spine: ["Spine", "mixamorigSpine", "spine"],
-      chest: ["Chest", "Spine1", "mixamorigSpine1", "chest"],
-      leftUpperLeg: ["LeftUpLeg", "mixamorigLeftUpLeg", "leftUpperLeg"],
-      rightUpperLeg: ["RightUpLeg", "mixamorigRightUpLeg", "rightUpperLeg"],
-      leftLowerLeg: ["LeftLeg", "mixamorigLeftLeg", "leftLowerLeg"],
-      rightLowerLeg: ["RightLeg", "mixamorigRightLeg", "rightLowerLeg"],
-      leftFoot: ["LeftFoot", "mixamorigLeftFoot", "leftFoot"],
-      rightFoot: ["RightFoot", "mixamorigRightFoot", "rightFoot"],
-      leftUpperArm: ["LeftArm", "mixamorigLeftArm", "leftUpperArm"],
-      rightUpperArm: ["RightArm", "mixamorigRightArm", "rightUpperArm"],
-      leftLowerArm: ["LeftForeArm", "mixamorigLeftForeArm", "leftLowerArm"],
-      rightLowerArm: ["RightForeArm", "mixamorigRightForeArm", "rightLowerArm"],
+    // Smoothly transition sit weight
+    const targetWeight = pose === "sit" ? 1 : 0;
+    const diff = targetWeight - sitWeight.current;
+    sitWeight.current += diff * Math.min(1, dt * 4); // Speed of transition
+
+    // If fully standing, don't override animations
+    if (sitWeight.current < 0.001) return;
+
+    // Helper to apply rotation to a normalized bone
+    const applyNormalized = (boneName: string, x: number, y: number, z: number) => {
+      if (!humanoid) return;
+      const node = (humanoid.getNormalizedBoneNode as any)?.(boneName);
+      if (!node) return;
+
+      const targetQ = tmpTargetQuatRef.current;
+      targetQ.setFromEuler(new THREE.Euler(x, y, z));
+      
+      // Slerp from current animation state (or rest) to target
+      node.quaternion.slerp(targetQ, sitWeight.current);
     };
 
-    const getBone = (boneName: BoneKey | string): THREE.Object3D | null => {
-      if (humanoid) {
-        return (
-          (humanoid.getNormalizedBoneNode as any)?.(boneName) ||
-          (humanoid.getBoneNode as any)?.(boneName) ||
-          (humanoid.getRawBoneNode as any)?.(boneName) ||
-          null
+    // Apply Sit Pose (Normalized)
+    if (humanoid) {
+      // Procedural breathing/idle noise
+      const t = state.clock.elapsedTime;
+      const breathe = Math.sin(t * 1.5) * 0.04; // Chest rise/fall
+      const sway = Math.sin(t * 0.8) * 0.02;    // Slight body sway
+
+      // Fidget logic
+      if (t > nextFidgetTimeRef.current) {
+        fidgetTargetRef.current.neck.set(
+          (Math.random() - 0.5) * 0.8, // Increased range
+          (Math.random() - 0.5) * 0.5
+        );
+        fidgetTargetRef.current.spine.set((Math.random() - 0.5) * 0.3, 0); // Increased range
+        
+        // Random arm movements (scratching leg, adjusting position)
+        fidgetTargetRef.current.leftArm.set(
+          (Math.random() - 0.5) * 0.2, 
+          (Math.random() - 0.5) * 0.2
+        );
+        fidgetTargetRef.current.rightArm.set(
+          (Math.random() - 0.5) * 0.2, 
+          (Math.random() - 0.5) * 0.2
+        );
+
+        // Random leg shifts (crossing/uncrossing slightly or tapping foot)
+        fidgetTargetRef.current.leftLeg.set(
+          (Math.random() - 0.5) * 0.1, 
+          (Math.random() - 0.5) * 0.1
+        );
+        fidgetTargetRef.current.rightLeg.set(
+          (Math.random() - 0.5) * 0.1, 
+          (Math.random() - 0.5) * 0.1
+        );
+
+        nextFidgetTimeRef.current = t + 1 + Math.random() * 3; // More frequent
+      }
+      const lerpFactor = dt * 3; // Faster transition
+      fidgetCurrentRef.current.neck.lerp(
+        fidgetTargetRef.current.neck,
+        lerpFactor
+      );
+      fidgetCurrentRef.current.spine.lerp(
+        fidgetTargetRef.current.spine,
+        lerpFactor
+      );
+      fidgetCurrentRef.current.leftArm.lerp(fidgetTargetRef.current.leftArm, lerpFactor);
+      fidgetCurrentRef.current.rightArm.lerp(fidgetTargetRef.current.rightArm, lerpFactor);
+      fidgetCurrentRef.current.leftLeg.lerp(fidgetTargetRef.current.leftLeg, lerpFactor);
+      fidgetCurrentRef.current.rightLeg.lerp(fidgetTargetRef.current.rightLeg, lerpFactor);
+
+      const fNeck = fidgetCurrentRef.current.neck;
+      const fSpine = fidgetCurrentRef.current.spine;
+      const fLArm = fidgetCurrentRef.current.leftArm;
+      const fRArm = fidgetCurrentRef.current.rightArm;
+      const fLLeg = fidgetCurrentRef.current.leftLeg;
+      const fRLeg = fidgetCurrentRef.current.rightLeg;
+
+      // Hips - adjust position to sit on bench
+      const hips = (humanoid.getNormalizedBoneNode as any)?.("hips");
+      if (hips) {
+        // Lower the hips visually.
+        hips.position.y = THREE.MathUtils.lerp(
+          hips.position.y,
+          0.55,
+          sitWeight.current * 0.1
         );
       }
 
-      const heuristic = heuristicHumanoidRef.current;
-      if (heuristic && heuristic.has(boneName as BoneKey)) {
-        return heuristic.get(boneName as BoneKey) ?? null;
-      }
-
-      const index = boneNameIndexRef.current;
-      const aliases = BONE_ALIASES[boneName] ?? [boneName];
-      for (const alias of aliases) {
-        const found = index.get(alias.toLowerCase());
-        if (found) return found;
-      }
-      return null;
-    };
-
-    const lerpAlpha = 1 - Math.pow(0.0001, dt * 6);
-    const sitQ = tmpQuatRef.current;
-    const targetQ = tmpTargetQuatRef.current;
-    const restByNode = restQuatsByNodeRef.current;
-
-    let appliedAny = false;
-
-    const apply = (boneName: string, sitEuler: THREE.Euler) => {
-      const node = getBone(boneName);
-      if (!node) return;
-      appliedAny = true;
-      let restQ = restByNode.get(node);
-      if (!restQ) {
-        restQ = node.quaternion.clone();
-        restByNode.set(node, restQ);
-      }
-      if (pose === "sit") {
-        sitQ.setFromEuler(sitEuler);
-        targetQ.multiplyQuaternions(restQ, sitQ);
-        node.quaternion.slerp(targetQ, lerpAlpha);
-      } else {
-        node.quaternion.slerp(restQ, lerpAlpha);
-      }
-    };
-
-    // Values are conservative and may vary across VRMs, but should read as seated.
-    apply("hips", new THREE.Euler(-0.35, 0, 0));
-    apply("spine", new THREE.Euler(0.18, 0, 0));
-    apply("chest", new THREE.Euler(0.12, 0, 0));
-
-    apply("leftUpperLeg", new THREE.Euler(1.1, 0.05, 0));
-    apply("rightUpperLeg", new THREE.Euler(1.1, -0.05, 0));
-    apply("leftLowerLeg", new THREE.Euler(-1.25, 0, 0));
-    apply("rightLowerLeg", new THREE.Euler(-1.25, 0, 0));
-    apply("leftFoot", new THREE.Euler(0.25, 0, 0));
-    apply("rightFoot", new THREE.Euler(0.25, 0, 0));
-
-    apply("leftUpperArm", new THREE.Euler(0.25, 0.15, 0));
-    apply("rightUpperArm", new THREE.Euler(0.25, -0.15, 0));
-    apply("leftLowerArm", new THREE.Euler(-0.25, 0, 0));
-    apply("rightLowerArm", new THREE.Euler(-0.25, 0, 0));
-
-    if (pose === "sit" && !appliedAny && !warnedNoBonesRef.current) {
-      warnedNoBonesRef.current = true;
-      // eslint-disable-next-line no-console
-      console.warn(
-        "Sit pose requested, but no humanoid bones were found. " +
-          "If you are using a non-VRM avatar/rig, its bone names may not match the fallback list."
-      );
-
-      // eslint-disable-next-line no-console
-      console.info(
-        "Heuristic map keys:",
-        Array.from(heuristicHumanoidRef.current.keys())
-      );
+      applyNormalized("hips", -0.1, 0, 0);
+      applyNormalized("spine", 0.1 + sway + fSpine.x, 0, 0);
+      applyNormalized("chest", 0.05 + breathe, 0, 0);
+      applyNormalized("neck", fNeck.y, fNeck.x, 0); // Swapped x/y for neck rotation (yaw is Y)
+      
+      // Legs: Lifted up (~80 deg) and Knees bent down (~90 deg)
+      applyNormalized("leftUpperLeg", -1.4 + fLLeg.x, 0.1 + fLLeg.y, 0); 
+      applyNormalized("rightUpperLeg", -1.4 + fRLeg.x, -0.1 + fRLeg.y, 0);
+      
+      applyNormalized("leftLowerLeg", 1.5, 0, 0); 
+      applyNormalized("rightLowerLeg", 1.5, 0, 0);
+      
+      applyNormalized("leftFoot", -0.2, 0, 0); 
+      applyNormalized("rightFoot", -0.2, 0, 0);
+      
+      // Arms - relaxed on lap
+      // Inverted Z rotation to bring arms DOWN instead of UP.
+      applyNormalized("leftUpperArm", 0.3 + fLArm.x, 0, -1.3 + fLArm.y); 
+      applyNormalized("rightUpperArm", 0.3 + fRArm.x, 0, 1.3 + fRArm.y);
+      
+      // Bend elbows slightly to rest hands on thighs
+      applyNormalized("leftLowerArm", -0.3, 0, 0);
+      applyNormalized("rightLowerArm", -0.3, 0, 0);
+      
+      // Force update to apply normalized bone changes to actual mesh
+      vrm.update(0);
     }
   });
 
@@ -484,10 +526,9 @@ export function ThreeAvatar({
     if (!a) return;
 
     if (pose === "sit") {
-      if (lastClipRef.current !== "idle") {
-        a.playClip("idle");
-        lastClipRef.current = "idle";
-      }
+      // Stop animation so our procedural pose takes full effect without fighting
+      a.stopClip();
+      lastClipRef.current = null; // Reset so we can resume later
       return;
     }
 
