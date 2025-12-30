@@ -13,6 +13,7 @@ import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
 import { OutdoorChess } from "@/components/outdoor-chess";
+import { ScifiChess } from "@/components/scifi-chess";
 import { VrmPreview } from "@/components/vrm-preview";
 import { CoinIcon } from "@/components/coin-icon";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
@@ -2422,16 +2423,23 @@ function SelfSimulation({
   return null;
 }
 
+import { ParkLobby } from "@/components/park-lobby";
+import { SciFiLobby, SciFiLamp } from "@/components/scifi-lobby";
+
 export default function World({
   roomId,
   onExit,
   initialName,
   initialGender = "male",
+  lobbyType = "park",
+  onLobbyChange,
 }: {
   roomId: string;
   onExit: () => void;
   initialName?: string;
   initialGender?: "male" | "female";
+  lobbyType?: "park" | "scifi";
+  onLobbyChange?: (type: "park" | "scifi") => void;
 }) {
   const [isDuplicateSession, setIsDuplicateSession] = useState(false);
 
@@ -2901,9 +2909,9 @@ export default function World({
         dpr={[1, 1]}
         camera={{ position: [0, 5, 8], fov: 60 }}
         gl={{ antialias: false, powerPreference: "high-performance" }}
-        style={{ background: "#d6a57d" }}
+        style={{ background: lobbyType === "scifi" ? "#1a0033" : "#d6a57d" }}
         onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color("#d6a57d"), 1);
+          gl.setClearColor(new THREE.Color(lobbyType === "scifi" ? "#1a0033" : "#d6a57d"), 1);
           gl.shadowMap.enabled = false;
           gl.shadowMap.autoUpdate = false;
           gl.outputColorSpace = THREE.SRGBColorSpace;
@@ -2931,349 +2939,125 @@ export default function World({
             sittingRef.current = false;
           }}
         >
-          {/* Cozy garden plaza lighting (sunset) */}
-          <ambientLight intensity={0.24} color="#ffe8c8" />
-          <hemisphereLight
-            intensity={0.42}
-            groundColor="#2f4a35"
-            color="#ffd7b3"
-          />
-
-          {/* Lightweight gradient sky (no textures/particles) */}
-          <GradientSky top="#1e2a44" bottom="#d6a57d" />
-
-          {/* Low-angle golden sun */}
-          <directionalLight
-            intensity={1.15}
-            position={[10, 16, 6]}
-            color="#ffd5ab"
-          />
-
-          {/* Cool fill to keep silhouettes readable */}
-          <directionalLight
-            intensity={0.3}
-            position={[-18, 18, -12]}
-            color="#b9d6ff"
-          />
-
-          {/* Gentle rim to separate avatars/boards from the background */}
-          <directionalLight
-            intensity={0.18}
-            position={[0, 10, -24]}
-            color="#fff0e3"
-          />
-
-          {/* Warm haze */}
-          <fog attach="fog" args={["#d6a57d", 28, 105]} />
-
-          {/* Ground: grass base */}
-          <mesh geometry={groundGeom} receiveShadow>
-            <meshStandardMaterial vertexColors roughness={1} metalness={0} />
-          </mesh>
-
-          {/* Main plaza path (stone-ish) */}
-          <mesh
-            geometry={plazaGeom}
-            position={[0, 0.028, 0]}
-            rotation={[-Math.PI / 2, 0, 0]}
-            receiveShadow
-            renderOrder={2}
-          >
-            <meshStandardMaterial
-              vertexColors
-              roughness={0.95}
-              metalness={0.02}
-            />
-          </mesh>
-
-          {/* Subtle ring path near the edge for depth */}
-          <mesh
-            geometry={ringGeom}
-            position={[0, 0.027, 0]}
-            rotation={[-Math.PI / 2, 0, 0]}
-            receiveShadow
-            renderOrder={1}
-          >
-            <meshStandardMaterial
-              vertexColors
-              roughness={0.98}
-              metalness={0.01}
-            />
-          </mesh>
-
-          {/* Organic pathways (curved ribbons) */}
-          <OrganicPath
-            points={[
-              [-18, -8],
-              [-12, -14],
-              [-4, -16],
-              [6, -14],
-              [16, -10],
-            ]}
-            width={2.5}
-            color="#c9c1b2"
-          />
-          <OrganicPath
-            points={[
-              [-16, 10],
-              [-10, 14],
-              [-2, 16],
-              [8, 14],
-              [14, 10],
-            ]}
-            width={2.1}
-            color="#b7afa1"
-          />
-          <OrganicPath
-            points={[
-              [18, -14],
-              [14, -10],
-              [12, -4],
-              [14, 4],
-              [18, 10],
-            ]}
-            width={1.8}
-            color="#a59d90"
-          />
-
-          {/* Small grass variation patches (subtle, helps the ground feel less flat) */}
-          {Array.from({ length: 18 }).map((_, i) => {
-            const x = ((i * 37) % 34) - 17;
-            const z = ((i * 61) % 34) - 17;
-            const r = 0.9 + (i % 5) * 0.22;
-            const c =
-              i % 3 === 0 ? "#223222" : i % 3 === 1 ? "#2a3b2a" : "#1f2f22";
-            return (
-              <mesh
-                key={i}
-                position={[x, 0.003, z]}
-                rotation={[-Math.PI / 2, 0, 0]}
-                receiveShadow
-              >
-                <circleGeometry args={[r, 24]} />
-                <meshStandardMaterial
-                  color={c}
-                  roughness={1}
-                  metalness={0}
-                  polygonOffset
-                  polygonOffsetFactor={-1}
-                  polygonOffsetUnits={-1}
-                />
-              </mesh>
-            );
-          })}
-
-          {/* Low planters / seating blocks (kept inside movement bounds) */}
-          {Array.from({ length: 6 }).map((_, i) => {
-            const angle = (i / 6) * Math.PI * 2;
-            const radius = 16.5;
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-            return (
-              <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
-                <mesh castShadow receiveShadow>
-                  <boxGeometry args={[4.6, 0.55, 1.3]} />
-                  <meshStandardMaterial
-                    color="#2b2a26"
-                    roughness={0.95}
-                    metalness={0.02}
-                  />
-                </mesh>
-                {/* Soil bed */}
-                <mesh position={[0, 0.44, 0]} castShadow receiveShadow>
-                  <boxGeometry args={[4.2, 0.32, 0.95]} />
-                  <meshStandardMaterial
-                    color="#1f2f22"
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-
-                {/* Bush clusters */}
-                {[-1.55, -0.55, 0.55, 1.55].map((bx, bi) => (
-                  <group
-                    key={bi}
-                    position={[bx, 0.62, bi % 2 === 0 ? -0.18 : 0.16]}
-                  >
-                    <mesh castShadow>
-                      <sphereGeometry args={[0.32 + (bi % 2) * 0.06, 12, 10]} />
-                      <meshStandardMaterial
-                        color={bi % 2 === 0 ? "#2c5a33" : "#3a7436"}
-                        roughness={1}
-                      />
-                    </mesh>
-                    <mesh castShadow position={[0.18, 0.06, 0.12]}>
-                      <sphereGeometry args={[0.24, 12, 10]} />
-                      <meshStandardMaterial color="#2a4f2a" roughness={1} />
-                    </mesh>
-                  </group>
-                ))}
-
-                {/* Tiny flowers along the front edge */}
-                {Array.from({ length: 7 }).map((__, fi) => (
-                  <mesh key={fi} position={[-1.8 + fi * 0.6, 0.61, 0.42]}>
-                    <sphereGeometry args={[0.04, 8, 8]} />
-                    <meshStandardMaterial
-                      color={
-                        i % 2 === 0
-                          ? fi % 2 === 0
-                            ? "#ffd6e7"
-                            : "#fff1b8"
-                          : fi % 2 === 0
-                          ? "#cfe8ff"
-                          : "#ffe1bf"
-                      }
-                      roughness={0.75}
-                    />
-                  </mesh>
-                ))}
-              </group>
-            );
-          })}
-
-          {/* Lantern posts (subtle in daylight, still cozy)
-            Rotated/expanded so they don't line up behind the chess join pads. */}
-          {Array.from({ length: 8 }).map((_, i) => {
-            const angle = ((i + 0.5) / 8) * Math.PI * 2;
-            const radius = 14.6;
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-            const warm = i % 2 === 0;
-            return (
-              <group key={i} position={[x, 0, z]}>
-                <mesh castShadow receiveShadow>
-                  <cylinderGeometry args={[0.08, 0.1, 2.5, 10]} />
-                  <meshStandardMaterial
-                    color="#232323"
-                    roughness={0.7}
-                    metalness={0.2}
-                  />
-                </mesh>
-                <mesh position={[0, 1.35, 0]} castShadow>
-                  <boxGeometry args={[0.35, 0.35, 0.35]} />
-                  <meshStandardMaterial
-                    color={warm ? "#ffd9a6" : "#d4e4ff"}
-                    emissive={warm ? "#ffb45a" : "#7fb6ff"}
-                    emissiveIntensity={0.25}
-                    roughness={0.35}
-                    metalness={0}
-                  />
-                </mesh>
-                <pointLight
-                  position={[0, 1.35, 0]}
-                  intensity={warm ? 0.25 : 0.18}
-                  color={warm ? "#ffbd73" : "#98c4ff"}
-                  distance={7}
-                  decay={2}
-                />
-              </group>
-            );
-          })}
-
-          {/* Background trees (outside bounds for atmosphere) */}
-          {Array.from({ length: 10 }).map((_, i) => {
-            const angle = (i / 10) * Math.PI * 2;
-            const radius = 28;
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-            const h = 3.2 + (i % 3) * 0.4;
-            return (
-              <group key={i} position={[x, 0, z]}>
-                <mesh castShadow receiveShadow>
-                  <cylinderGeometry args={[0.25, 0.32, h, 10]} />
-                  <meshStandardMaterial
-                    color="#2a1f17"
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-                <mesh position={[0, h * 0.65, 0]} castShadow>
-                  <sphereGeometry args={[1.4 + (i % 2) * 0.2, 14, 12]} />
-                  <meshStandardMaterial
-                    color="#1f3a25"
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-                <mesh position={[0.65, h * 0.62, 0.2]} castShadow>
-                  <sphereGeometry args={[1.05, 14, 12]} />
-                  <meshStandardMaterial
-                    color="#214028"
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-                <mesh position={[-0.6, h * 0.6, -0.1]} castShadow>
-                  <sphereGeometry args={[1.1, 14, 12]} />
-                  <meshStandardMaterial
-                    color="#1b341f"
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-              </group>
-            );
-          })}
+          {lobbyType === "scifi" ? <SciFiLobby /> : <ParkLobby />}
 
           {boards.map((b) => (
             <group key={b.key}>
-              <BoardLamp
-                lampPos={[
-                  b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
-                  0,
-                  b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
-                ]}
-                targetPos={[b.origin[0], 0.2, b.origin[2]]}
-              />
-              <Suspense fallback={null}>
-                <OutdoorChess
-                  roomId={roomId}
-                  boardKey={b.key}
-                  origin={b.origin}
-                  selfPositionRef={selfPosRef}
-                  selfId={self?.id || ""}
-                  selfName={self?.name || ""}
-                  joinLockedBoardKey={joinLockedBoardKey}
-                  onJoinIntent={(boardKey) => {
-                    // Lock immediately to prevent starting a second join elsewhere.
-                    setPendingJoinBoardKey((prev) => prev ?? boardKey);
-                  }}
-                  onSelfSeatChange={(boardKey, side) => {
-                    setJoinedBoardKey((prev) => {
-                      if (side) return boardKey;
-                      // Only clear if this board was the one we were locked to.
-                      if (prev === boardKey) return null;
-                      return prev;
-                    });
-                    // If we successfully joined (or cleared) this board, clear pending lock.
-                    setPendingJoinBoardKey((prev) =>
-                      prev === boardKey ? null : prev
-                    );
-                  }}
-                  onRequestMove={(dest, opts) => {
-                    moveTargetRef.current = {
-                      dest,
-                      rotY: opts?.rotY,
-                      sit: opts?.sit,
-                    };
-                    if (opts?.sit) {
-                      if (
-                        !sittingRef.current &&
-                        process.env.NODE_ENV !== "production"
-                      ) {
-                        sitDebugRef.current.requested++;
-                        // eslint-disable-next-line no-console
-                        console.log(
-                          "[sit] requested",
-                          sitDebugRef.current.requested
-                        );
-                      }
-                      sittingRef.current = true;
-                    } else {
-                      sittingRef.current = false;
-                    }
-                  }}
+              {lobbyType === "scifi" ? (
+                <SciFiLamp
+                  lampPos={[
+                    b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
+                    0,
+                    b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
+                  ]}
                 />
+              ) : (
+                <BoardLamp
+                  lampPos={[
+                    b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
+                    0,
+                    b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
+                  ]}
+                  targetPos={[b.origin[0], 0.2, b.origin[2]]}
+                />
+              )}
+              <Suspense fallback={null}>
+                {lobbyType === "scifi" ? (
+                  <ScifiChess
+                    roomId={roomId}
+                    boardKey={b.key}
+                    origin={b.origin}
+                    selfPositionRef={selfPosRef}
+                    selfId={self?.id || ""}
+                    selfName={self?.name || ""}
+                    joinLockedBoardKey={joinLockedBoardKey}
+                    onJoinIntent={(boardKey) => {
+                      setPendingJoinBoardKey((prev) => prev ?? boardKey);
+                    }}
+                    onSelfSeatChange={(boardKey, side) => {
+                      setJoinedBoardKey((prev) => {
+                        if (side) return boardKey;
+                        if (prev === boardKey) return null;
+                        return prev;
+                      });
+                      setPendingJoinBoardKey((prev) =>
+                        prev === boardKey ? null : prev
+                      );
+                    }}
+                    onRequestMove={(dest, opts) => {
+                      moveTargetRef.current = {
+                        dest,
+                        rotY: opts?.rotY,
+                        sit: opts?.sit,
+                      };
+                      if (opts?.sit) {
+                        if (
+                          !sittingRef.current &&
+                          process.env.NODE_ENV !== "production"
+                        ) {
+                          sitDebugRef.current.requested++;
+                          // eslint-disable-next-line no-console
+                          console.log(
+                            "[sit] requested",
+                            sitDebugRef.current.requested
+                          );
+                        }
+                        sittingRef.current = true;
+                      } else {
+                        sittingRef.current = false;
+                      }
+                    }}
+                  />
+                ) : (
+                  <OutdoorChess
+                    roomId={roomId}
+                    boardKey={b.key}
+                    origin={b.origin}
+                    selfPositionRef={selfPosRef}
+                    selfId={self?.id || ""}
+                    selfName={self?.name || ""}
+                    joinLockedBoardKey={joinLockedBoardKey}
+                    onJoinIntent={(boardKey) => {
+                      // Lock immediately to prevent starting a second join elsewhere.
+                      setPendingJoinBoardKey((prev) => prev ?? boardKey);
+                    }}
+                    onSelfSeatChange={(boardKey, side) => {
+                      setJoinedBoardKey((prev) => {
+                        if (side) return boardKey;
+                        // Only clear if this board was the one we were locked to.
+                        if (prev === boardKey) return null;
+                        return prev;
+                      });
+                      // If we successfully joined (or cleared) this board, clear pending lock.
+                      setPendingJoinBoardKey((prev) =>
+                        prev === boardKey ? null : prev
+                      );
+                    }}
+                    onRequestMove={(dest, opts) => {
+                      moveTargetRef.current = {
+                        dest,
+                        rotY: opts?.rotY,
+                        sit: opts?.sit,
+                      };
+                      if (opts?.sit) {
+                        if (
+                          !sittingRef.current &&
+                          process.env.NODE_ENV !== "production"
+                        ) {
+                          sitDebugRef.current.requested++;
+                          // eslint-disable-next-line no-console
+                          console.log(
+                            "[sit] requested",
+                            sitDebugRef.current.requested
+                          );
+                        }
+                        sittingRef.current = true;
+                      } else {
+                        sittingRef.current = false;
+                      }
+                    }}
+                  />
+                )}
               </Suspense>
             </group>
           ))}
@@ -3395,6 +3179,39 @@ export default function World({
           <div style={{ fontSize: 12, opacity: 0.75 }}>
             Players: {peerCount + 1}/20 • Move: WASD / arrows
           </div>
+
+          {onLobbyChange ? (
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button
+                onClick={() => onLobbyChange("park")}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  background: lobbyType === "park" ? "rgba(255,255,255,0.2)" : "transparent",
+                  color: "white",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                Park
+              </button>
+              <button
+                onClick={() => onLobbyChange("scifi")}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  background: lobbyType === "scifi" ? "rgba(255,255,255,0.2)" : "transparent",
+                  color: "white",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                Sci-Fi
+              </button>
+            </div>
+          ) : null}
 
           {avatarSystem === "three-avatar" &&
           supabaseUser?.email === "kittystudioscom@gmail.com" ? (

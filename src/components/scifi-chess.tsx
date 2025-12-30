@@ -141,9 +141,13 @@ function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
           clonedMat.color = clonedMat.color.clone();
           clonedMat.color.copy(tint);
         }
-        // Metallic material for pieces
-        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.7;
-        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.3;
+        // Matte metallic look - more readable, less neon
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.6;
+        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.4;
+        if (typeof clonedMat.emissive === "object") {
+            clonedMat.emissive = tint.clone().multiplyScalar(0.05);
+            clonedMat.emissiveIntensity = 0.5;
+        }
       }
     });
 
@@ -319,44 +323,43 @@ function JoinPad({
         document.body.style.cursor = "default";
       }}
     >
-      {/* Stone pillar base */}
+      {/* Tech base */}
       <mesh receiveShadow castShadow onPointerDown={handleClick}>
-        <boxGeometry args={[w, 0.3, d]} />
+        <boxGeometry args={[w, 0.1, d]} />
         <meshStandardMaterial
-          color={disabled ? "#4a4a4a" : active ? "#d4af37" : "#8b7355"}
-          roughness={0.6}
-          metalness={active ? 0.3 : 0.1}
+          color={disabled ? "#222" : active ? "#0044aa" : "#111"}
+          roughness={0.2}
+          metalness={0.9}
+          emissive={active ? "#0044aa" : "#000"}
+          emissiveIntensity={0.5}
         />
       </mesh>
-      {/* Decorative top cap */}
+      {/* Holographic top */}
       <mesh
-        receiveShadow
-        castShadow
-        position={[0, 0.18, 0]}
+        position={[0, 0.1, 0]}
         onPointerDown={handleClick}
       >
-        <boxGeometry args={[w * 1.1, 0.06, d * 1.1]} />
-        <meshStandardMaterial
-          color={disabled ? "#3a3a3a" : active ? "#ffd700" : "#a0826d"}
-          roughness={0.5}
-          metalness={active ? 0.4 : 0.15}
+        <boxGeometry args={[w * 0.95, 0.02, d * 0.95]} />
+        <meshBasicMaterial
+          color={disabled ? "#444" : active ? "#00ffff" : "#0088ff"}
+          transparent
+          opacity={0.6}
         />
       </mesh>
       {/* Text on top */}
       <Text
-        position={[0, 0.235, 0]}
+        position={[0, 0.15, 0]}
         rotation={[-Math.PI / 2, 0, 0]}
         fontSize={0.2}
         lineHeight={0.9}
         maxWidth={w * 0.98}
         textAlign="center"
-        color={disabled ? "#888" : active ? "#fff" : "#1a1a1a"}
+        color={disabled ? "#888" : "#fff"}
         anchorX="center"
         anchorY="middle"
         outlineWidth={0.008}
-        outlineColor={active ? "#000" : "transparent"}
+        outlineColor={active ? "#00ffff" : "transparent"}
         fontWeight="bold"
-        depthOffset={-1}
         onPointerDown={handleClick}
       >
         {label}
@@ -365,7 +368,7 @@ function JoinPad({
       {active && (
         <pointLight
           position={[0, 0.5, 0]}
-          color="#ffd700"
+          color="#00ffff"
           intensity={2}
           distance={3}
         />
@@ -374,82 +377,7 @@ function JoinPad({
   );
 }
 
-function WoodMaterial({ color, ...props }: any) {
-  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
-
-  const onBeforeCompile = (shader: any) => {
-    shader.vertexShader = `
-      varying vec3 vPos;
-      ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
-      `
-      #include <worldpos_vertex>
-      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      `
-    );
-
-    shader.fragmentShader = `
-      varying vec3 vPos;
-      
-      float hash(vec2 p) {
-          return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-      }
-      float noise(vec2 p) {
-          vec2 i = floor(p);
-          vec2 f = fract(p);
-          vec2 u = f * f * (3.0 - 2.0 * f);
-          return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
-                    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-      }
-      float fbm(vec2 p) {
-          float f = 0.0;
-          f += 0.5000 * noise(p); p *= 2.02;
-          f += 0.2500 * noise(p); p *= 2.03;
-          f += 0.1250 * noise(p); p *= 2.01;
-          f += 0.0625 * noise(p);
-          return f;
-      }
-
-      ${shader.fragmentShader}
-    `.replace(
-      "#include <color_fragment>",
-      `
-      #include <color_fragment>
-      
-      // Wood grain logic
-      // Stretch noise along one axis to simulate grain
-      // Use world position for continuity across squares if desired, or local if we want them distinct.
-      // vPos is world position.
-      
-      float grain = fbm(vPos.xz * vec2(1.0, 12.0)); // Stretched z-axis grain
-      
-      // Add some ring-like patterns (turbulence)
-      float rings = noise(vPos.xz * 1.5 + grain * 0.3);
-      
-      // Mix base color with darker/lighter variations
-      vec3 baseColor = diffuseColor.rgb;
-      vec3 darkGrain = baseColor * 0.75;
-      vec3 lightGrain = baseColor * 1.15;
-      
-      // Combine
-      float pattern = smoothstep(0.2, 0.8, grain * 0.7 + rings * 0.3);
-      diffuseColor.rgb = mix(darkGrain, lightGrain, pattern);
-      `
-    );
-  };
-
-  return (
-    <meshStandardMaterial
-      ref={materialRef}
-      color={color}
-      onBeforeCompile={onBeforeCompile}
-      {...props}
-    />
-  );
-}
-
-export function OutdoorChess({
+export function ScifiChess({
   roomId,
   boardKey,
   origin,
@@ -479,9 +407,9 @@ export function OutdoorChess({
   const squareSize = 0.6;
   const boardSize = squareSize * 8;
 
-  const whiteTint = useMemo(() => new THREE.Color("#e8e8e8"), []);
-  // Dark gold instead of near-black: keeps contrast, reads premium, avoids disappearing in warm lighting.
-  const blackTint = useMemo(() => new THREE.Color("#8a6a1b"), []);
+  // Brighter, more readable colors - Chrome silver vs Deep blue
+  const whiteTint = useMemo(() => new THREE.Color("#d0d8e8"), []);
+  const blackTint = useMemo(() => new THREE.Color("#2a4a7a"), []);
 
   const socketRef = useRef<PartySocket | null>(null);
   const [chessSelfId, setChessSelfId] = useState<string>("");
@@ -842,7 +770,7 @@ export function OutdoorChess({
         <Text
           position={[originVec.x, originVec.y + 1.5, originVec.z]}
           fontSize={0.32}
-          color="#ffffff"
+          color="#00ffff"
           anchorX="center"
           anchorY="middle"
           outlineWidth={0.02}
@@ -853,8 +781,8 @@ export function OutdoorChess({
         </Text>
       ) : null}
 
-      {/* Decorative stone benches */}
-      {/* White side benches */}
+      {/* Sci-fi Seats */}
+      {/* White side seats */}
       <group position={[originVec.x - 3.5, 0.2, originVec.z + padOffset + 1.5]}>
         <mesh
           castShadow
@@ -870,21 +798,22 @@ export function OutdoorChess({
             requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 0.95);
           }}
         >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
+          <boxGeometry args={[2.5, 0.1, 0.6]} />
           <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
+            color="#111"
+            roughness={0.2}
+            metalness={0.9}
           />
         </mesh>
-        {/* Bench legs */}
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        {/* Glowing edge */}
+        <mesh position={[0, 0.055, 0.3]}>
+            <boxGeometry args={[2.5, 0.01, 0.02]} />
+            <meshBasicMaterial color="#00ffff" />
         </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        {/* Floating effect base */}
+        <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
         </mesh>
       </group>
       <group position={[originVec.x + 3.5, 0.2, originVec.z + padOffset + 1.5]}>
@@ -902,24 +831,24 @@ export function OutdoorChess({
             requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 0.95);
           }}
         >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
+          <boxGeometry args={[2.5, 0.1, 0.6]} />
           <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
+            color="#111"
+            roughness={0.2}
+            metalness={0.9}
           />
         </mesh>
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        <mesh position={[0, 0.055, 0.3]}>
+            <boxGeometry args={[2.5, 0.01, 0.02]} />
+            <meshBasicMaterial color="#00ffff" />
         </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
         </mesh>
       </group>
 
-      {/* Black side benches */}
+      {/* Black side seats */}
       <group position={[originVec.x - 3.5, 0.2, originVec.z - padOffset - 1.5]}>
         <mesh
           castShadow
@@ -935,20 +864,20 @@ export function OutdoorChess({
             requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 0.95);
           }}
         >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
+          <boxGeometry args={[2.5, 0.1, 0.6]} />
           <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
+            color="#111"
+            roughness={0.2}
+            metalness={0.9}
           />
         </mesh>
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        <mesh position={[0, 0.055, -0.3]}>
+            <boxGeometry args={[2.5, 0.01, 0.02]} />
+            <meshBasicMaterial color="#ff00ff" />
         </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
         </mesh>
       </group>
       <group position={[originVec.x + 3.5, 0.2, originVec.z - padOffset - 1.5]}>
@@ -966,148 +895,79 @@ export function OutdoorChess({
             requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 0.95);
           }}
         >
-          <boxGeometry args={[2.5, 0.15, 0.6]} />
+          <boxGeometry args={[2.5, 0.1, 0.6]} />
           <meshStandardMaterial
-            color="#a0826d"
-            roughness={0.7}
-            metalness={0.1}
+            color="#111"
+            roughness={0.2}
+            metalness={0.9}
           />
         </mesh>
-        <mesh castShadow position={[-1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        <mesh position={[0, 0.055, -0.3]}>
+            <boxGeometry args={[2.5, 0.01, 0.02]} />
+            <meshBasicMaterial color="#ff00ff" />
         </mesh>
-        <mesh castShadow position={[1, -0.15, 0]}>
-          <boxGeometry args={[0.15, 0.25, 0.5]} />
-          <meshStandardMaterial color="#8b7355" roughness={0.6} />
+        <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
         </mesh>
       </group>
 
-      {/* Decorative potted plants */}
+      {/* Sci-fi Props (Data Pylons) */}
       {[-1, 1].map((side) => (
         <group
-          key={`plant-${side}`}
+          key={`pylon-${side}`}
           position={[originVec.x + side * 5, 0, originVec.z]}
         >
-          {/* Pot (rim + body + soil) */}
-          <mesh castShadow receiveShadow position={[0, 0.12, 0]}>
-            <cylinderGeometry args={[0.34, 0.38, 0.26, 14]} />
+          {/* Base */}
+          <mesh castShadow receiveShadow position={[0, 0.1, 0]}>
+            <cylinderGeometry args={[0.4, 0.5, 0.2, 6]} />
             <meshStandardMaterial
-              color="#6f3b22"
-              roughness={0.85}
-              metalness={0.02}
+              color="#222"
+              roughness={0.3}
+              metalness={0.8}
             />
           </mesh>
-          <mesh castShadow receiveShadow position={[0, 0.26, 0]}>
-            <cylinderGeometry args={[0.4, 0.4, 0.06, 14]} />
-            <meshStandardMaterial color="#4c2414" roughness={0.9} />
+          
+          {/* Floating Crystal/Core */}
+          <mesh position={[0, 1.2, 0]} rotation={[0, 0, 0]}>
+            <octahedronGeometry args={[0.3, 0]} />
+            <meshBasicMaterial color={side > 0 ? "#00ffff" : "#ff00ff"} wireframe />
           </mesh>
-          <mesh receiveShadow position={[0, 0.285, 0]}>
-            <cylinderGeometry args={[0.33, 0.33, 0.02, 14]} />
-            <meshStandardMaterial color="#2a1b12" roughness={1} />
+          <mesh position={[0, 1.2, 0]} rotation={[0, Math.PI/4, 0]}>
+            <octahedronGeometry args={[0.2, 0]} />
+            <meshBasicMaterial color={side > 0 ? "#00ffff" : "#ff00ff"} />
           </mesh>
 
-          {/* Plant: leafy shrub (more organic than stacked cones) */}
-          <group
-            position={[0, 0.32, 0]}
-            rotation={[0, side > 0 ? 0.35 : -0.25, 0]}
-          >
-            {/* Stem */}
-            <mesh castShadow position={[0, 0.12, 0]}>
-              <cylinderGeometry args={[0.03, 0.045, 0.26, 8]} />
-              <meshStandardMaterial
-                color="#2a1f17"
-                roughness={1}
-                metalness={0}
-              />
-            </mesh>
+          {/* Energy Beam */}
+          <mesh position={[0, 1.0, 0]}>
+             <cylinderGeometry args={[0.05, 0.05, 2, 8]} />
+             <meshBasicMaterial color={side > 0 ? "#00ffff" : "#ff00ff"} transparent opacity={0.3} />
+          </mesh>
 
-            {/* Leaf clumps */}
-            <group position={[0, 0.22, 0]}>
-              <mesh castShadow scale={[1.25, 0.92, 1.2]}>
-                <dodecahedronGeometry args={[0.22, 0]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#2f6a3d" : "#2c5a33"}
-                  roughness={1}
-                  metalness={0}
-                  flatShading
-                />
-              </mesh>
-              <mesh
-                castShadow
-                position={[0.16, -0.02, 0.1]}
-                rotation={[0, 0.6, 0]}
-                scale={[1.05, 0.8, 1.0]}
-              >
-                <dodecahedronGeometry args={[0.18, 0]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#3a7a44" : "#3a7436"}
-                  roughness={1}
-                  metalness={0}
-                  flatShading
-                />
-              </mesh>
-              <mesh
-                castShadow
-                position={[-0.15, -0.03, -0.12]}
-                rotation={[0, -0.35, 0]}
-                scale={[1.0, 0.78, 1.05]}
-              >
-                <dodecahedronGeometry args={[0.17, 0]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#285a34" : "#2a4f2a"}
-                  roughness={1}
-                  metalness={0}
-                  flatShading
-                />
-              </mesh>
-            </group>
-
-            {/* Leaf blades around the rim (adds detail, breaks silhouette) */}
-            {Array.from({ length: 6 }).map((_, li) => {
-              const a = (li / 6) * Math.PI * 2;
-              const r = 0.17;
-              const lx = Math.cos(a) * r;
-              const lz = Math.sin(a) * r;
-              return (
-                <mesh
-                  key={li}
-                  castShadow
-                  position={[lx, 0.17, lz]}
-                  rotation={[0.55, a + (side > 0 ? 0.12 : -0.08), 0.15]}
-                >
-                  <coneGeometry args={[0.035, 0.16, 6]} />
-                  <meshStandardMaterial
-                    color={
-                      li % 2 === 0
-                        ? side > 0
-                          ? "#2f6a3d"
-                          : "#2c5a33"
-                        : "#3a7436"
-                    }
-                    roughness={1}
-                    metalness={0}
-                  />
-                </mesh>
-              );
-            })}
-
-            {/* Small flowers (subtle) */}
-            {[-0.12, 0.0, 0.12].map((fx, i) => (
-              <mesh key={i} position={[fx, 0.32, (i - 1) * 0.08]}>
-                <sphereGeometry args={[0.03, 8, 8]} />
-                <meshStandardMaterial
-                  color={side > 0 ? "#ffd6e7" : "#fff1b8"}
-                  roughness={0.7}
-                />
-              </mesh>
-            ))}
-          </group>
+          {/* Rings */}
+          <mesh position={[0, 0.5, 0]} rotation={[0.1, 0, 0]}>
+            <torusGeometry args={[0.3, 0.02, 8, 32]} />
+            <meshStandardMaterial color="#444" metalness={1} roughness={0} />
+          </mesh>
+           <mesh position={[0, 1.8, 0]} rotation={[-0.1, 0, 0]}>
+            <torusGeometry args={[0.3, 0.02, 8, 32]} />
+            <meshStandardMaterial color="#444" metalness={1} roughness={0} />
+          </mesh>
         </group>
       ))}
 
+      {/* Board overhead lighting */}
+      <pointLight position={[originVec.x, originVec.y + 8, originVec.z]} intensity={4} color="#ffffff" distance={15} decay={2} />
+      <pointLight position={[originVec.x, originVec.y + 3, originVec.z]} intensity={2} color="#8899ff" distance={10} decay={2} />
+
       {/* Board */}
       <group position={[originVec.x, originVec.y, originVec.z]}>
+        {/* Board Base - brighter */}
+        <mesh position={[0, -0.05, 0]} receiveShadow castShadow>
+            <boxGeometry args={[boardSize + 0.2, 0.1, boardSize + 0.2]} />
+            <meshStandardMaterial color="#2a3a4a" roughness={0.3} metalness={0.7} emissive="#1a2a3a" emissiveIntensity={0.2} />
+        </mesh>
+
         {Array.from({ length: 64 }).map((_, idx) => {
           const file = idx % 8;
           const rankFromTop = Math.floor(idx / 8);
@@ -1144,13 +1004,21 @@ export function OutdoorChess({
                 document.body.style.cursor = "default";
               }}
             >
-              <mesh receiveShadow>
+              <mesh receiveShadow castShadow>
                 <boxGeometry args={[squareSize, 0.08, squareSize]} />
-                <WoodMaterial
-                  color={isDark ? "#8b4513" : "#deb887"}
-                  roughness={0.7}
-                  metalness={0.1}
+                <meshStandardMaterial
+                  color={isDark ? "#1a2a3a" : "#4a5a6a"}
+                  roughness={0.4}
+                  metalness={0.6}
+                  emissive={isDark ? "#0a1a2a" : "#2a3a4a"}
+                  emissiveIntensity={0.15}
                 />
+              </mesh>
+              
+              {/* Subtle grid lines on squares */}
+              <mesh position={[0, 0.041, 0]} rotation={[-Math.PI/2, 0, 0]}>
+                  <planeGeometry args={[squareSize * 0.98, squareSize * 0.98]} />
+                  <meshBasicMaterial color={isDark ? "#0a1a2a" : "#3a4a5a"} transparent opacity={0.3} />
               </mesh>
 
               {/* Glow indicators (flush to board) */}
@@ -1164,9 +1032,9 @@ export function OutdoorChess({
                     args={[squareSize * 0.92, squareSize * 0.92]}
                   />
                   <meshBasicMaterial
-                    color="#ffffff"
+                    color="#00ffff"
                     transparent
-                    opacity={0.14}
+                    opacity={0.4}
                     blending={THREE.AdditiveBlending}
                     depthWrite={false}
                     polygonOffset
@@ -1184,9 +1052,9 @@ export function OutdoorChess({
                 >
                   <planeGeometry args={[squareSize * 0.9, squareSize * 0.9]} />
                   <meshBasicMaterial
-                    color="#ffffff"
+                    color="#00ffff"
                     transparent
-                    opacity={0.09}
+                    opacity={0.2}
                     blending={THREE.AdditiveBlending}
                     depthWrite={false}
                     polygonOffset
@@ -1208,7 +1076,7 @@ export function OutdoorChess({
                   <meshBasicMaterial
                     color="#4a9eff"
                     transparent
-                    opacity={0.18}
+                    opacity={0.3}
                     blending={THREE.AdditiveBlending}
                     depthWrite={false}
                     polygonOffset
@@ -1230,7 +1098,7 @@ export function OutdoorChess({
                   <meshBasicMaterial
                     color="#ffa04a"
                     transparent
-                    opacity={0.2}
+                    opacity={0.3}
                     blending={THREE.AdditiveBlending}
                     depthWrite={false}
                     polygonOffset
@@ -1322,7 +1190,7 @@ export function OutdoorChess({
               position={[controlX, 0.48, controlZ + 1.2]}
               rotation={[-Math.PI / 2, 0, 0]}
               fontSize={0.18}
-              color="#111"
+              color="#00ffff"
               anchorX="center"
               anchorY="middle"
               outlineWidth={0.008}
