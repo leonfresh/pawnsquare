@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useState, useEffect } from "react";
 import { OAuthPopupGuard } from "@/components/oauth-popup-guard";
+import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 const World = dynamic(() => import("@/components/world"), { ssr: false });
 
@@ -19,6 +20,7 @@ export default function Home() {
   const [inputValue, setInputValue] = useState("");
   const [selectedRoom] = useState<string>("main-room");
   const [lobbyType, setLobbyType] = useState<"park" | "scifi">("park");
+  const [worldReady, setWorldReady] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("pawnsquare-user");
@@ -31,6 +33,46 @@ export default function Home() {
       } catch {}
     }
   }, []);
+
+  // Decide the correct lobby BEFORE mounting the heavy 3D world.
+  useEffect(() => {
+    if (!joined) {
+      setWorldReady(false);
+      return;
+    }
+
+    let cancelled = false;
+    const boot = async () => {
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data: auth } = await supabase.auth.getUser();
+        const user = auth.user;
+        if (!user) {
+          if (!cancelled) setWorldReady(true);
+          return;
+        }
+
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("equipped_theme")
+          .eq("id", user.id)
+          .single();
+
+        const equippedTheme = (profile as any)?.equipped_theme;
+        if (!cancelled) {
+          setLobbyType(equippedTheme === "theme_scifi" ? "scifi" : "park");
+          setWorldReady(true);
+        }
+      } catch {
+        if (!cancelled) setWorldReady(true);
+      }
+    };
+
+    void boot();
+    return () => {
+      cancelled = true;
+    };
+  }, [joined]);
 
   const handleJoin = () => {
     const name = inputValue.trim() || "Guest";
@@ -208,14 +250,33 @@ export default function Home() {
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
-      <World
-        roomId={selectedRoom}
-        initialName={username}
-        initialGender={gender}
-        lobbyType={lobbyType}
-        onLobbyChange={setLobbyType}
-        onExit={() => setJoined(false)}
-      />
+      {worldReady ? (
+        <World
+          roomId={selectedRoom}
+          initialName={username}
+          initialGender={gender}
+          lobbyType={lobbyType}
+          onLobbyChange={setLobbyType}
+          onExit={() => setJoined(false)}
+        />
+      ) : (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "#000",
+            color: "#fff",
+            fontFamily: "system-ui, -apple-system, sans-serif",
+            fontSize: "16px",
+            opacity: 0.9,
+          }}
+        >
+          Loading world…
+        </div>
+      )}
     </div>
   );
 }

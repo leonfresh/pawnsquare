@@ -129,7 +129,13 @@ function applyFresnelRim(
   rimPower = 2.25,
   rimIntensity = 0.65
 ) {
-  material.onBeforeCompile = (shader) => {
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    try {
+      (prev as any).call(material as any, shader, renderer);
+    } catch {
+      // ignore
+    }
     shader.uniforms.uRimColor = { value: rimColor };
     shader.uniforms.uRimPower = { value: rimPower };
     shader.uniforms.uRimIntensity = { value: rimIntensity };
@@ -144,6 +150,144 @@ function applyFresnelRim(
         `float rim = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), uRimPower);\noutgoingLight += uRimColor * rim * uRimIntensity;\n#include <output_fragment>`
       );
   };
+  material.needsUpdate = true;
+}
+
+function applyFrostedGlassShader(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  opts?: { scale?: number; strength?: number }
+) {
+  const scale = opts?.scale ?? 18.0;
+  const strength = opts?.strength ?? 0.22;
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    try {
+      (prev as any).call(material as any, shader, renderer);
+    } catch {
+      // ignore
+    }
+
+    shader.uniforms.uFrostScale = { value: scale };
+    shader.uniforms.uFrostStrength = { value: strength };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vFrostWorldPos;`
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\nvec4 wsPosF = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosF = instanceMatrix * wsPosF;\n#endif\nwsPosF = modelMatrix * wsPosF;\nvFrostWorldPos = wsPosF.xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vFrostWorldPos;\nuniform float uFrostScale;\nuniform float uFrostStrength;\nfloat frostHash(vec2 p){\n  // cheap stable hash\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);\n}`
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>\n// frosted micro-variation (kept cheap)
+float nF = frostHash(vFrostWorldPos.xz * uFrostScale);\nroughnessFactor = clamp(roughnessFactor + (nF - 0.5) * uFrostStrength, 0.02, 1.0);`
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>\n// subtle cloudiness + density so it reads as solid glass
+float nC = frostHash((vFrostWorldPos.zy + vFrostWorldPos.xz) * (uFrostScale * 0.65));\nfloat cloud = mix(0.90, 1.02, nC);\ndiffuseColor.rgb *= cloud;\ndiffuseColor.a *= mix(0.92, 1.02, nC);`
+      )
+      .replace(
+        "#include <output_fragment>",
+        `// view-dependent absorption so it doesn't read like a hologram\nfloat ndvF = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);\nfloat absorb = mix(0.92, 1.0, pow(1.0 - ndvF, 1.6));\noutgoingLight *= absorb;\n#include <output_fragment>`
+      );
+  };
+
+  material.needsUpdate = true;
+}
+
+function applyWoodGrainShader(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  opts?: { scale?: number; intensity?: number }
+) {
+  const scale = opts?.scale ?? 9.5;
+  const intensity = opts?.intensity ?? 0.22;
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    try {
+      (prev as any).call(material as any, shader, renderer);
+    } catch {
+      // ignore
+    }
+    shader.uniforms.uWoodScale = { value: scale };
+    shader.uniforms.uWoodIntensity = { value: intensity };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vWorldPos;`
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\nvec4 wsPos = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos = instanceMatrix * wsPos;\n#endif\nwsPos = modelMatrix * wsPos;\nvWorldPos = wsPos.xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vWorldPos;\nuniform float uWoodScale;\nuniform float uWoodIntensity;\nfloat woodNoise(vec2 p){\n  // cheap pseudo-noise using layered sines\n  float n = 0.0;\n  n += sin(p.x * 1.9 + sin(p.y * 1.2)) * 0.55;\n  n += sin(p.x * 3.7 + p.y * 0.7) * 0.25;\n  n += sin(p.x * 8.1 - p.y * 2.3) * 0.12;\n  return n * 0.5 + 0.5;\n}`
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>\n// Procedural wood grain in world-space so it works even without UVs.\nvec2 wp = vWorldPos.xz * uWoodScale;\nfloat n = woodNoise(wp);\nfloat grain = smoothstep(0.25, 0.85, n);\n// Add long streaks (growth rings-ish)\nfloat rings = sin((vWorldPos.x + vWorldPos.z) * uWoodScale * 0.35 + n * 3.14);\nrings = rings * 0.5 + 0.5;\nfloat streak = smoothstep(0.2, 0.95, rings);\nfloat shade = mix(0.88, 1.08, grain) * mix(0.92, 1.06, streak);\ndiffuseColor.rgb *= mix(1.0, shade, uWoodIntensity);`
+      );
+  };
+
+  material.needsUpdate = true;
+}
+
+function applyBrushedMetalShader(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  opts?: { strength?: number; scale?: number }
+) {
+  const strength = opts?.strength ?? 0.05;
+  const scale = opts?.scale ?? 10.0;
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    try {
+      (prev as any).call(material as any, shader, renderer);
+    } catch {
+      // ignore
+    }
+    shader.uniforms.uMetalVarStrength = { value: strength };
+    shader.uniforms.uMetalVarScale = { value: scale };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vWorldPos2;`
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\nvec4 wsPos2 = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos2 = instanceMatrix * wsPos2;\n#endif\nwsPos2 = modelMatrix * wsPos2;\nvWorldPos2 = wsPos2.xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vWorldPos2;\nuniform float uMetalVarStrength;\nuniform float uMetalVarScale;`
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>\n// subtle brushed variation\nfloat v = sin((vWorldPos2.x + vWorldPos2.z) * uMetalVarScale) * 0.5 + 0.5;\nroughnessFactor = clamp(roughnessFactor + (v - 0.5) * uMetalVarStrength, 0.02, 1.0);`
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>\nfloat c = sin((vWorldPos2.x - vWorldPos2.z) * uMetalVarScale * 0.6) * 0.5 + 0.5;\ndiffuseColor.rgb *= (1.0 + (c - 0.5) * (uMetalVarStrength * 0.9));`
+      );
+  };
+
   material.needsUpdate = true;
 }
 
@@ -178,51 +322,63 @@ function PieceModel({
 
       if (chessTheme === "chess_glass") {
         const isWhite = side === "w";
+        // Denser frosted glass (lighter than true transmission/refraction).
         const base = isWhite
-          ? new THREE.Color("#d7f0ff")
-          : new THREE.Color("#0b1220");
+          ? new THREE.Color("#cfefff")
+          : new THREE.Color("#07101d");
         const rim = isWhite
           ? new THREE.Color("#ffffff")
-          : new THREE.Color("#7dd3ff");
+          : new THREE.Color("#bfe7ff");
 
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(base);
         if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.0;
         if (typeof clonedMat.roughness === "number")
-          clonedMat.roughness = isWhite ? 0.35 : 0.12;
+          clonedMat.roughness = isWhite ? 0.62 : 0.48;
         clonedMat.transparent = true;
-        clonedMat.opacity = isWhite ? 0.42 : 0.28;
-        clonedMat.depthWrite = false;
+        clonedMat.opacity = isWhite ? 0.68 : 0.58;
+        clonedMat.depthWrite = true;
+        (clonedMat as any).premultipliedAlpha = true;
         if (clonedMat.emissive && clonedMat.emissive.isColor) {
           clonedMat.emissive = clonedMat.emissive.clone();
           clonedMat.emissive.copy(rim);
-          clonedMat.emissiveIntensity = isWhite ? 0.08 : 0.12;
+          clonedMat.emissiveIntensity = isWhite ? 0.02 : 0.04;
         }
         if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = 1.0;
-        applyFresnelRim(clonedMat, rim, 2.0, isWhite ? 0.55 : 0.75);
+          clonedMat.envMapIntensity = 0.65;
+        applyFrostedGlassShader(clonedMat, {
+          scale: 22.0,
+          strength: isWhite ? 0.20 : 0.24,
+        });
+        applyFresnelRim(clonedMat, rim, 2.4, isWhite ? 0.33 : 0.38);
       } else if (chessTheme === "chess_gold") {
         const isWhite = side === "w";
+        // Shader-based metals: white side = silver, black side = gold.
         const base = isWhite
-          ? new THREE.Color("#dfe6ef")
-          : new THREE.Color("#d4af37");
+          ? new THREE.Color("#d8dee6")
+          : new THREE.Color("#ffd15a");
         const rim = isWhite
           ? new THREE.Color("#ffffff")
-          : new THREE.Color("#fff2b0");
+          : new THREE.Color("#fff0c2");
 
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(base);
-        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 1.0;
+        if (typeof clonedMat.metalness === "number")
+          clonedMat.metalness = isWhite ? 0.72 : 0.9;
         if (typeof clonedMat.roughness === "number")
-          clonedMat.roughness = isWhite ? 0.18 : 0.22;
+          clonedMat.roughness = isWhite ? 0.34 : 0.2;
         if (clonedMat.emissive && clonedMat.emissive.isColor) {
           clonedMat.emissive = clonedMat.emissive.clone();
           clonedMat.emissive.copy(rim);
-          clonedMat.emissiveIntensity = isWhite ? 0.02 : 0.06;
+          clonedMat.emissiveIntensity = isWhite ? 0.04 : 0.08;
         }
         if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = 1.0;
-        applyFresnelRim(clonedMat, rim, 2.6, isWhite ? 0.28 : 0.42);
+          clonedMat.envMapIntensity = isWhite ? 1.1 : 1.25;
+        applyBrushedMetalShader(clonedMat, {
+          strength: isWhite ? 0.04 : 0.05,
+          scale: 12.0,
+        });
+        applyFresnelRim(clonedMat, rim, 2.8, isWhite ? 0.24 : 0.28);
       } else if (chessTheme === "chess_wood") {
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(tint);
@@ -231,6 +387,7 @@ function PieceModel({
         if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.85;
         if (typeof clonedMat.envMapIntensity === "number")
           clonedMat.envMapIntensity = 0.35;
+        applyWoodGrainShader(clonedMat, { scale: 11.5, intensity: 0.55 });
       } else {
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(tint);
@@ -1433,39 +1590,61 @@ export function OutdoorChess({
     [originVec, padOffset]
   );
 
+  const joinScheduleRef = useRef<number | null>(null);
+
   const clickJoin = (side: Side) => {
     if (joinLockedBoardKey && joinLockedBoardKey !== boardKey) return;
-    playClick();
 
     // Lock the user's intent globally so they can't start joining another board.
+    // Do this synchronously so the UI can immediately show "Joining…" and lock other boards.
     onJoinIntent?.(boardKey);
     setPendingJoinSide(side);
 
-    // Ensure we are connected, then join.
-    if (!chessConnectedRef.current) {
-      pendingJoinRef.current = side;
-      chessConnectedRef.current = true;
-      setChessConnected(true);
-      return;
+    // Avoid doing heavy work inside the click handler (audio decode / socket connect can hitch).
+    if (joinScheduleRef.current) {
+      window.clearTimeout(joinScheduleRef.current);
+      joinScheduleRef.current = null;
     }
 
-    // If socket isn't open yet, queue the join.
-    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      pendingJoinRef.current = side;
-      return;
-    }
+    joinScheduleRef.current = window.setTimeout(() => {
+      joinScheduleRef.current = null;
 
-    // Toggle behavior:
-    // - Clicking your current side leaves (frees seat)
-    // - Clicking the other side switches
-    if (mySide === side) {
-      requestLeave(side);
-      setPendingJoinSide(null);
-      return;
-    }
+      // Play click after the event returns to reduce interaction hitch.
+      try {
+        playClick();
+      } catch {
+        // ignore
+      }
 
-    if (mySide) requestLeave(mySide);
-    requestJoin(side);
+      // Ensure we are connected, then join.
+      if (!chessConnectedRef.current) {
+        pendingJoinRef.current = side;
+        chessConnectedRef.current = true;
+        setChessConnected(true);
+        return;
+      }
+
+      // If socket isn't open yet, queue the join.
+      if (
+        !socketRef.current ||
+        socketRef.current.readyState !== WebSocket.OPEN
+      ) {
+        pendingJoinRef.current = side;
+        return;
+      }
+
+      // Toggle behavior:
+      // - Clicking your current side leaves (frees seat)
+      // - Clicking the other side switches
+      if (mySide === side) {
+        requestLeave(side);
+        setPendingJoinSide(null);
+        return;
+      }
+
+      if (mySide) requestLeave(mySide);
+      requestJoin(side);
+    }, 0);
   };
 
   const requestSitAt = (seatX: number, seatZ: number) => {

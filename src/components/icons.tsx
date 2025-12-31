@@ -160,3 +160,85 @@ export function MenuIcon({
     </svg>
   );
 }
+
+export function GoogleIcon({
+  size = 20,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M20.5 12.2c0 4.8-3.3 8.3-8.4 8.3A8.5 8.5 0 1 1 12.1 3.5c2.3 0 4.2.9 5.7 2.4" />
+      <path d="M20.5 12.2h-8.4" />
+      <path d="M12.1 12.2v-3" />
+    </svg>
+  );
+}
+
+export function DiscordIcon({
+  size = 20,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M8 7.5c1.2-.9 2.6-1.5 4-1.5s2.8.6 4 1.5" />
+      <path d="M7.2 18.5c.9.7 2.7 1.5 4.8 1.5s3.9-.8 4.8-1.5" />
+      <path d="M6.2 8.5c-.8 1.5-1.2 3.1-1.2 4.9 0 1.7.4 3.3 1.2 4.6 1.5 1 3.4 1.8 5.8 1.8s4.3-.8 5.8-1.8c.8-1.3 1.2-2.9 1.2-4.6 0-1.8-.4-3.4-1.2-4.9-1.5-1-3.4-1.6-5.8-1.6s-4.3.6-5.8 1.6Z" />
+      <path d="M9.5 13.2h.01" />
+      <path d="M14.5 13.2h.01" />
+    </svg>
+  );
+}
+
+export function PaperPlaneIcon({
+  size = 20,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M22 2 11 13" />
+      <path d="M22 2 15 22l-4-9-9-4 20-7Z" />
+    </svg>
+  );
+}

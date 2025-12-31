@@ -17,7 +17,14 @@ export function useChessSounds() {
       // Load MP3s
       const load = (key: string, path: string) => {
         const a = new Audio(path);
+        a.preload = "auto";
         a.volume = 0.6;
+        // Kick off fetch/metadata early to reduce first-play hitch.
+        try {
+          a.load();
+        } catch {
+          // ignore
+        }
         audioFilesRef.current[key] = a;
       };
       load("move", "/sounds/Move.mp3");

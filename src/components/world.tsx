@@ -2,7 +2,7 @@
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Billboard, Plane, Text } from "@react-three/drei";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import {
   usePartyRoom as useP2PRoom,
@@ -2421,13 +2421,13 @@ function FollowCamera({
 }
 
 const DEBUG_AVATAR_URLS = {
-  male: "/three-avatar/avatars/adam_optimized_5mb.vrm",
+  defaultMale: "/three-avatar/avatars/default_male.vrm",
   cherryRoseOptimized5mb: "/three-avatar/avatars/cherry_rose_optimized_5mb.vrm",
   kawaiiOptimized5mb: "/three-avatar/avatars/kawaii_optimized_5mb.vrm",
   fuyukiOptimized: "/three-avatar/avatars/fuyuki_optimized_5mb.vrm",
   miuOptimized: "/three-avatar/avatars/miu_optimized_5mb.vrm",
   renOptimized7mb: "/three-avatar/avatars/ren_optimized_7mb.vrm",
-  vrmV1: "/three-avatar/asset/avatar-example/vrm-v1.vrm",
+  defaultFemale: "/three-avatar/asset/avatar-example/default_female.vrm",
   vrmV0: "/three-avatar/asset/avatar-example/vrm-v0.vrm",
   rpm: "/three-avatar/asset/avatar-example/rpm.glb",
 } as const;
@@ -2436,14 +2436,14 @@ const SHOP_ITEMS = [
   {
     id: "default_male",
     name: "Default Male",
-    url: DEBUG_AVATAR_URLS.male,
+    url: DEBUG_AVATAR_URLS.defaultMale,
     price: 0,
     type: "avatar",
   },
   {
     id: "default_female",
     name: "Default Female",
-    url: DEBUG_AVATAR_URLS.vrmV1,
+    url: DEBUG_AVATAR_URLS.defaultFemale,
     price: 0,
     type: "avatar",
   },
@@ -2451,35 +2451,35 @@ const SHOP_ITEMS = [
     id: "cherry",
     name: "Cherry Rose",
     url: DEBUG_AVATAR_URLS.cherryRoseOptimized5mb,
-    price: 250,
+    price: 900,
     type: "avatar",
   },
   {
     id: "fuyuki",
     name: "Fuyuki",
     url: DEBUG_AVATAR_URLS.fuyukiOptimized,
-    price: 250,
+    price: 900,
     type: "avatar",
   },
   {
     id: "kawaii",
     name: "Kawaii",
     url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb,
-    price: 80,
+    price: 650,
     type: "avatar",
   },
   {
     id: "miu",
     name: "Miu",
     url: DEBUG_AVATAR_URLS.miuOptimized,
-    price: 350,
+    price: 1200,
     type: "avatar",
   },
   {
     id: "ren",
     name: "Ren",
     url: DEBUG_AVATAR_URLS.renOptimized7mb,
-    price: 80,
+    price: 650,
     type: "avatar",
   },
   {
@@ -2494,7 +2494,7 @@ const SHOP_ITEMS = [
     id: "theme_scifi",
     name: "Sci-Fi World",
     url: "",
-    price: 1000,
+    price: 1500,
     type: "theme",
     previewImage: "/shop/theme-scifi.png",
   },
@@ -2518,7 +2518,7 @@ const SHOP_ITEMS = [
     id: "chess_glass",
     name: "Glass Chess Set",
     url: "",
-    price: 500,
+    price: 350,
     type: "chess",
     chessKind: "set",
   },
@@ -2526,7 +2526,7 @@ const SHOP_ITEMS = [
     id: "chess_gold",
     name: "Gold Chess Set",
     url: "",
-    price: 1500,
+    price: 500,
     type: "chess",
     chessKind: "set",
   },
@@ -2542,7 +2542,7 @@ const SHOP_ITEMS = [
     id: "board_marble",
     name: "Marble Chess Board",
     url: "",
-    price: 600,
+    price: 250,
     type: "chess",
     chessKind: "board",
   },
@@ -2550,7 +2550,7 @@ const SHOP_ITEMS = [
     id: "board_neon",
     name: "Neon Chess Board",
     url: "",
-    price: 900,
+    price: 300,
     type: "chess",
     chessKind: "board",
   },
@@ -2796,6 +2796,9 @@ import {
   ThemeIcon,
   CoinsIcon,
   MenuIcon,
+  GoogleIcon,
+  DiscordIcon,
+  PaperPlaneIcon,
 } from "@/components/icons";
 import { ChessBoardPreview } from "@/components/chess-board-preview";
 
@@ -2814,6 +2817,26 @@ export default function World({
   lobbyType?: "park" | "scifi";
   onLobbyChange?: (type: "park" | "scifi") => void;
 }) {
+  const readStartScreenGender = useCallback((): "male" | "female" => {
+    if (typeof window === "undefined") return initialGender ?? "male";
+    try {
+      const raw = window.localStorage.getItem("pawnsquare-user");
+      if (!raw) return initialGender ?? "male";
+      const parsed = JSON.parse(raw);
+      return parsed?.gender === "female" ? "female" : "male";
+    } catch {
+      return initialGender ?? "male";
+    }
+  }, [initialGender]);
+
+  const defaultAvatarUrlForGender = useCallback(
+    (gender: "male" | "female") =>
+      gender === "female"
+        ? DEBUG_AVATAR_URLS.defaultFemale
+        : DEBUG_AVATAR_URLS.defaultMale,
+    []
+  );
+
   const [isDuplicateSession, setIsDuplicateSession] = useState(false);
 
   useEffect(() => {
@@ -2922,9 +2945,27 @@ export default function World({
       }),
     []
   );
-  const [debugAvatarUrl, setDebugAvatarUrl] = useState<string>(
-    DEBUG_AVATAR_URLS.vrmV1
+  const [debugAvatarUrl, setDebugAvatarUrl] = useState<string>(() =>
+    defaultAvatarUrlForGender(initialGender ?? "male")
   );
+
+  const resetToDefaults = () => {
+    // Keep local state consistent when signing out / playing as guest.
+    const chosenGender = readStartScreenGender();
+    const defaultAvatarUrl = defaultAvatarUrlForGender(chosenGender);
+    setCoins(500);
+    setOwnedAvatarUrls([
+      DEBUG_AVATAR_URLS.defaultMale,
+      DEBUG_AVATAR_URLS.defaultFemale,
+      "chess_wood",
+      "board_classic",
+    ]);
+    setChessTheme("chess_wood");
+    setChessBoardTheme("board_classic");
+    setDebugAvatarUrl(defaultAvatarUrl);
+    setAvatarUrl(defaultAvatarUrl);
+    if (onLobbyChange) onLobbyChange("park");
+  };
 
   const [shopOpen, setShopOpen] = useState(false);
   const [shopTab, setShopTab] = useState<
@@ -2933,7 +2974,8 @@ export default function World({
   const [shopSelectedId, setShopSelectedId] = useState<string | null>(null);
   const [coins, setCoins] = useState<number>(500);
   const [ownedAvatarUrls, setOwnedAvatarUrls] = useState<string[]>([
-    DEBUG_AVATAR_URLS.male,
+    DEBUG_AVATAR_URLS.defaultMale,
+    DEBUG_AVATAR_URLS.defaultFemale,
     "chess_wood", // Default chess set
     "board_classic", // Default chess board
   ]);
@@ -2947,6 +2989,24 @@ export default function World({
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+
+  const equippedThemeId = lobbyType === "scifi" ? "theme_scifi" : "theme_park";
+  const isItemEquipped = (item: (typeof SHOP_ITEMS)[number]) => {
+    if (item.type === "avatar") return item.url === debugAvatarUrl;
+    if (item.type === "theme") return item.id === equippedThemeId;
+    if (item.type === "chess") {
+      if ((item as any).chessKind === "board") return item.id === chessBoardTheme;
+      return item.id === chessTheme;
+    }
+    return false;
+  };
+
+  const openAuthModal = () => {
+    setAuthMsg(null);
+    setMenuOpen(false);
+    setAuthModalOpen(true);
+  };
 
   const openCenteredPopup = (url: string, name: string) => {
     const w = 520;
@@ -3014,6 +3074,14 @@ export default function World({
       setShopTab(saved);
     }
   }, []);
+
+  // Auto-close the login modal once we're signed in.
+  useEffect(() => {
+    if (!supabaseUser) return;
+    setAuthModalOpen(false);
+    setAuthBusy(false);
+    setAuthMsg(null);
+  }, [supabaseUser]);
 
   // Persist current shop tab.
   useEffect(() => {
@@ -3232,7 +3300,10 @@ export default function World({
     } else {
       // Guest: No coins, only default avatars.
       setCoins(0);
-      setOwnedAvatarUrls([DEBUG_AVATAR_URLS.male]);
+      setOwnedAvatarUrls([
+        DEBUG_AVATAR_URLS.defaultMale,
+        DEBUG_AVATAR_URLS.defaultFemale,
+      ]);
     }
   }, [supabaseUser, isDuplicateSession]);
 
@@ -3273,10 +3344,10 @@ export default function World({
   useEffect(() => {
     if (avatarSystem !== "three-avatar") return;
     if (!self) return;
-    if (debugAvatarUrl !== DEBUG_AVATAR_URLS.vrmV1) return;
+    if (debugAvatarUrl !== DEBUG_AVATAR_URLS.defaultFemale) return;
     if (self.gender === "male") {
-      setDebugAvatarUrl(DEBUG_AVATAR_URLS.male);
-      setAvatarUrl(DEBUG_AVATAR_URLS.male);
+      setDebugAvatarUrl(DEBUG_AVATAR_URLS.defaultMale);
+      setAvatarUrl(DEBUG_AVATAR_URLS.defaultMale);
     }
   }, [avatarSystem, self, debugAvatarUrl, setAvatarUrl]);
 
@@ -4042,24 +4113,34 @@ export default function World({
             </button>
 
             <button
-              onClick={() => setMenuOpen((v) => !v)}
+              onClick={() => {
+                if (!supabaseUser) {
+                  openAuthModal();
+                  return;
+                }
+                setMenuOpen((v) => !v);
+              }}
               style={{
                 height: 42,
-                width: 42,
+                padding: "0 14px",
                 borderRadius: 21,
                 background: "rgba(0,0,0,0.35)",
                 backdropFilter: "blur(8px)",
                 border: "1px solid rgba(255,255,255,0.1)",
                 color: "white",
-                display: "grid",
-                placeItems: "center",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
                 cursor: "pointer",
                 boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                fontWeight: 700,
+                fontSize: 13,
               }}
-              title={supabaseUser ? "Account" : "Sign in"}
-              aria-label="Menu"
+              title={supabaseUser ? "Account" : "Login"}
+              aria-label={supabaseUser ? "Account" : "Login"}
             >
-              <MenuIcon size={18} />
+              <UserIcon size={18} />
+              {supabaseUser ? "Account" : "Login"}
             </button>
 
             {menuOpen ? (
@@ -4299,6 +4380,8 @@ export default function World({
                           if (error) {
                             setAuthMsg(error.message);
                           } else {
+                            resetToDefaults();
+                            setSupabaseUser(null);
                             setMenuOpen(false);
                           }
                         } catch (e) {
@@ -4582,9 +4665,21 @@ export default function World({
                     <div style={{ color: "#ffd700" }}>{stripeMsg}</div>
                   )}
                   {!supabaseUser && (
-                    <div style={{ color: "#ff6b6b" }}>
+                    <button
+                      onClick={openAuthModal}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        padding: 0,
+                        color: "#ff6b6b",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        font: "inherit",
+                        textUnderlineOffset: 3,
+                      }}
+                    >
                       Sign in required to purchase coins.
-                    </div>
+                    </button>
                   )}
                 </div>
               ) : (
@@ -4608,6 +4703,7 @@ export default function World({
                     ).map((item) => {
                       const owned = isShopItemOwned(item, ownedAvatarUrls);
                       const selected = shopSelectedId === item.id;
+                      const equipped = isItemEquipped(item);
                       return (
                         <button
                           key={item.id}
@@ -4646,9 +4742,7 @@ export default function World({
                               gap: 4,
                             }}
                           >
-                            {owned ? (
-                              "Owned"
-                            ) : (
+                            {owned ? (equipped ? "Equipped" : "Owned") : (
                               <>
                                 <CoinsIcon size={12} />
                                 {item.price}
@@ -4684,6 +4778,7 @@ export default function World({
                         );
                       const owned = isShopItemOwned(item, ownedAvatarUrls);
                       const canBuy = !owned && coins >= item.price;
+                      const equipped = isItemEquipped(item);
 
                       return (
                         <>
@@ -4814,7 +4909,9 @@ export default function World({
                               </button>
                             ) : (
                               <button
+                                disabled={equipped}
                                 onClick={() => {
+                                  if (equipped) return;
                                   if (item.type === "avatar") {
                                     setDebugAvatarUrl(item.url);
                                     setAvatarUrl(item.url);
@@ -4850,23 +4947,39 @@ export default function World({
                                 style={{
                                   padding: "12px 32px",
                                   borderRadius: 8,
-                                  background: "white",
+                                  background: equipped
+                                    ? "rgba(255,255,255,0.2)"
+                                    : "white",
                                   color: "black",
                                   border: "none",
                                   fontSize: 16,
                                   fontWeight: 600,
-                                  cursor: "pointer",
+                                  cursor: equipped ? "default" : "pointer",
+                                  opacity: equipped ? 0.8 : 1,
                                 }}
                               >
-                                Equip
+                                {equipped ? "Equipped" : "Equip"}
                               </button>
                             )}
                           </div>
 
                           {!supabaseUser && !owned && item.price > 0 && (
-                            <div style={{ fontSize: 12, color: "#ff6b6b" }}>
+                            <button
+                              onClick={openAuthModal}
+                              style={{
+                                fontSize: 12,
+                                background: "transparent",
+                                border: "none",
+                                padding: 0,
+                                color: "#ff6b6b",
+                                cursor: "pointer",
+                                textDecoration: "underline",
+                                font: "inherit",
+                                textUnderlineOffset: 3,
+                              }}
+                            >
                               Sign in required to purchase
-                            </div>
+                            </button>
                           )}
                         </>
                       );
@@ -4875,6 +4988,322 @@ export default function World({
                 </>
               )}
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Login Modal */}
+      {authModalOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 55,
+          }}
+          onClick={() => setAuthModalOpen(false)}
+        >
+          <div
+            style={{
+              width: 520,
+              maxWidth: "92vw",
+              height: 460,
+              maxHeight: "90vh",
+              background: "rgba(0,0,0,0.78)",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.14)",
+              padding: 20,
+              color: "white",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+              overflow: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <UserIcon size={18} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>
+                    Login
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                    Sync coins + purchases
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setAuthModalOpen(false)}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "transparent",
+                  color: "white",
+                  cursor: "pointer",
+                }}
+                aria-label="Close"
+                title="Close"
+              >
+                <CloseIcon size={18} />
+              </button>
+            </div>
+
+            <div
+              style={{
+                marginTop: 14,
+                height: 1,
+                background: "rgba(255,255,255,0.12)",
+              }}
+            />
+
+            <div
+              style={{
+                marginTop: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <input
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="Email"
+                  inputMode="email"
+                  autoComplete="email"
+                  style={{
+                    width: "100%",
+                    height: 42,
+                    padding: "0 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    outline: "none",
+                    fontSize: 14,
+                  }}
+                />
+                <button
+                  disabled={authBusy}
+                  onClick={async () => {
+                    setAuthBusy(true);
+                    setAuthMsg(null);
+                    try {
+                      const email = authEmail.trim();
+                      if (!email) {
+                        setAuthMsg("Enter your email.");
+                        return;
+                      }
+                      const supabase = getSupabaseBrowserClient();
+                      const redirectTo = `${window.location.origin}/auth/magic-link`;
+                      const { error } = await supabase.auth.signInWithOtp({
+                        email,
+                        options: { emailRedirectTo: redirectTo },
+                      });
+                      if (error) {
+                        setAuthMsg(error.message);
+                      } else {
+                        setAuthMsg("Check your email for the magic link.");
+                      }
+                    } catch (e) {
+                      setAuthMsg(
+                        e instanceof Error ? e.message : "Could not start sign-in."
+                      );
+                    } finally {
+                      setAuthBusy(false);
+                    }
+                  }}
+                  style={{
+                    height: 42,
+                    padding: "0 14px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    fontWeight: 800,
+                    cursor: authBusy ? "not-allowed" : "pointer",
+                    fontSize: 14,
+                    opacity: authBusy ? 0.6 : 1,
+                    whiteSpace: "nowrap",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 10,
+                  }}
+                >
+                  <PaperPlaneIcon size={18} />
+                  Send magic link
+                </button>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  marginTop: 2,
+                  opacity: 0.8,
+                }}
+              >
+                <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.12)" }} />
+                <div style={{ fontSize: 12 }}>or</div>
+                <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.12)" }} />
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  disabled={authBusy}
+                  onClick={async () => {
+                    setAuthBusy(true);
+                    setAuthMsg(null);
+                    try {
+                      const supabase = getSupabaseBrowserClient();
+                      const redirectTo = `${window.location.origin}/auth/popup`;
+                      const { data, error } = await supabase.auth.signInWithOAuth({
+                        provider: "google",
+                        options: {
+                          redirectTo,
+                          skipBrowserRedirect: true,
+                        },
+                      });
+
+                      if (error || !data?.url) {
+                        setAuthMsg(
+                          error?.message || "Could not start Google sign-in."
+                        );
+                        return;
+                      }
+
+                      const popup = openCenteredPopup(
+                        data.url,
+                        "pawnsquare-oauth"
+                      );
+                      if (!popup) {
+                        setAuthMsg("Popup blocked. Allow popups and try again.");
+                        return;
+                      }
+                      setAuthMsg("Complete sign-in in the popup...");
+                    } catch {
+                      setAuthMsg("Could not start Google sign-in.");
+                    } finally {
+                      setAuthBusy(false);
+                    }
+                  }}
+                  style={{
+                    height: 42,
+                    padding: "0 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    fontWeight: 700,
+                    cursor: authBusy ? "not-allowed" : "pointer",
+                    fontSize: 14,
+                    opacity: authBusy ? 0.6 : 1,
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 10,
+                  }}
+                >
+                  <GoogleIcon size={18} />
+                  Google
+                </button>
+
+                <button
+                  disabled={authBusy}
+                  onClick={async () => {
+                    setAuthBusy(true);
+                    setAuthMsg(null);
+                    try {
+                      const supabase = getSupabaseBrowserClient();
+                      const redirectTo = `${window.location.origin}/auth/popup`;
+                      const { data, error } =
+                        await supabase.auth.signInWithOAuth({
+                          provider: "discord",
+                          options: {
+                            redirectTo,
+                            skipBrowserRedirect: true,
+                          },
+                        });
+
+                      if (error || !data?.url) {
+                        setAuthMsg(
+                          error?.message || "Could not start Discord sign-in."
+                        );
+                        return;
+                      }
+
+                      const popup = openCenteredPopup(
+                        data.url,
+                        "pawnsquare-oauth"
+                      );
+                      if (!popup) {
+                        setAuthMsg("Popup blocked. Allow popups and try again.");
+                        return;
+                      }
+                      setAuthMsg("Complete sign-in in the popup...");
+                    } catch {
+                      setAuthMsg("Could not start Discord sign-in.");
+                    } finally {
+                      setAuthBusy(false);
+                    }
+                  }}
+                  style={{
+                    height: 42,
+                    padding: "0 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    fontWeight: 700,
+                    cursor: authBusy ? "not-allowed" : "pointer",
+                    fontSize: 14,
+                    opacity: authBusy ? 0.6 : 1,
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 10,
+                  }}
+                >
+                  <DiscordIcon size={18} />
+                  Discord
+                </button>
+              </div>
+            </div>
+
+            {authMsg ? (
+              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+                {authMsg}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

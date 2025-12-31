@@ -220,7 +220,7 @@ const ANIMATION_MAP: AvatarAnimationDataSource = {
   walk: "/three-avatar/asset/animation/walk.fbx",
 };
 
-const DEFAULT_AVATAR_URL = "/three-avatar/asset/avatar-example/vrm-v1.vrm";
+const DEFAULT_AVATAR_URL = "/three-avatar/asset/avatar-example/default_female.vrm";
 
 // Our world treats "forward" as -Z. The vendored three-avatar loader applies a
 // 180° rotation internally, so we add an offset here to keep the avatar facing
