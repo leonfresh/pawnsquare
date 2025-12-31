@@ -7,6 +7,7 @@ import PartySocket from "partysocket";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { Vec3 } from "@/lib/partyRoom";
+import { useChessSounds } from "./chess-sounds";
 
 type Side = "w" | "b";
 
@@ -666,7 +667,7 @@ export function OutdoorChess({
   onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
   onRequestMove?: (
     dest: Vec3,
-    opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3 }
+    opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
   ) => void;
 }) {
   const originVec = useMemo(
@@ -725,6 +726,44 @@ export function OutdoorChess({
   const [legalTargets, setLegalTargets] = useState<Square[]>([]);
   const lastMove = netState.lastMove;
 
+  const { playMove, playCapture, playSelect, playWarning, playClick } = useChessSounds();
+  const prevFenForSound = useRef(initialFen);
+  const lastSoundSeq = useRef(0);
+  const hasWarnedRef = useRef(false);
+
+  // Sound effects for moves (only for players who are seated)
+  useEffect(() => {
+    if (!mySide) return; // Only play sounds if we're a player
+    if (netState.seq <= lastSoundSeq.current) return;
+    lastSoundSeq.current = netState.seq;
+
+    if (netState.lastMove) {
+      try {
+        const tempChess = new Chess(prevFenForSound.current);
+        // Try to make the move to see if it was a capture
+        // We guess promotion to 'q' if needed, just to check capture flag
+        const moveResult = tempChess.move({
+          from: netState.lastMove.from,
+          to: netState.lastMove.to,
+          promotion: "q",
+        });
+
+        if (moveResult && moveResult.captured) {
+          playCapture();
+        } else {
+          playMove();
+        }
+      } catch (e) {
+        // Fallback if move validation fails (shouldn't happen with valid server state)
+        playMove();
+      }
+    }
+
+    prevFenForSound.current = netState.fen;
+    // Reset warning flag on new move
+    hasWarnedRef.current = false;
+  }, [mySide, netState.seq, netState.fen, netState.lastMove, playMove, playCapture]);
+
   // Drive clock rendering while it's running.
   const [clockNow, setClockNow] = useState(() => Date.now());
   useEffect(() => {
@@ -732,6 +771,27 @@ export function OutdoorChess({
     const id = window.setInterval(() => setClockNow(Date.now()), 200);
     return () => window.clearInterval(id);
   }, [netState.clock.running]);
+
+  // Clock warning sound (only for the player whose clock is running low)
+  useEffect(() => {
+    if (!mySide) return; // Only play warning if we're a player
+    if (!netState.clock.running) return;
+    const c = netState.clock;
+    
+    // Only warn if it's OUR clock running low
+    if (c.active !== mySide) return;
+    
+    const now = clockNow;
+    const remaining = c.remainingMs[c.active];
+    const elapsed = c.lastTickMs ? Math.max(0, now - c.lastTickMs) : 0;
+    const currentRemaining = Math.max(0, remaining - elapsed);
+
+    // Warn at 30 seconds remaining
+    if (currentRemaining < 30000 && currentRemaining > 0 && !hasWarnedRef.current) {
+      playWarning();
+      hasWarnedRef.current = true;
+    }
+  }, [mySide, clockNow, netState.clock, playWarning]);
 
   const send = (msg: ChessSendMessage) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -852,6 +912,7 @@ export function OutdoorChess({
 
     // If clicking our own piece, select it
     if (piece && mySide && turn === mySide && piece.color === mySide) {
+      if (mySide) playSelect(); // Only play if we're a player
       setSelected(square);
       const moves = chess.moves({ square, verbose: true }) as any[];
       const targets = moves.map((m) => m.to).filter(isSquare);
@@ -936,6 +997,7 @@ export function OutdoorChess({
 
   const clickJoin = (side: Side) => {
     if (joinLockedBoardKey && joinLockedBoardKey !== boardKey) return;
+    playClick();
 
     // Lock the user's intent globally so they can't start joining another board.
     onJoinIntent?.(boardKey);
@@ -986,6 +1048,7 @@ export function OutdoorChess({
       rotY: face,
       sit: true,
       sitDest: [seatX, 0.36, seatZ],
+      lookAtTarget: [originVec.x, originVec.y, originVec.z],
     });
   };
 
@@ -1027,6 +1090,7 @@ export function OutdoorChess({
 
   const setTimeControlByIndex = (nextIdx: number) => {
     if (!canConfigure) return;
+    playClick();
     const idx = clamp(nextIdx, 0, TIME_OPTIONS_SECONDS.length - 1);
     const secs = TIME_OPTIONS_SECONDS[idx]!;
     send({ type: "setTime", baseSeconds: secs });
@@ -1034,6 +1098,7 @@ export function OutdoorChess({
 
   const clickReset = () => {
     if (!mySide) return;
+    playClick();
     send({ type: "reset" });
   };
 

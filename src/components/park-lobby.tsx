@@ -5,6 +5,7 @@ import { useMemo, useRef, useState } from "react";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import { BoardLamp } from "./world";
+import { WaterPlane } from "./water-material";
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -281,7 +282,7 @@ function GradientSky({
 
   useFrame(({ clock }) => {
     if (materialRef.current) {
-      materialRef.current.uniforms.time.value = clock.getElapsedTime();
+      materialRef.current.uniforms.time.value = clock.getElapsedTime() * 0.5;
     }
   });
 
@@ -339,15 +340,18 @@ function GradientSky({
               vec3 blueSky = vec3(0.3, .55, 0.8);
               vec3 redSky = vec3(0.8, 0.8, 0.6);
               vec3 sky = mix(blueSky, redSky, 1.5 * pow(sundot, 8.));
-              col = sky * (1.0 - 0.8 * rd.y);
+              
+              // Gradient based on absolute Y to wrap around
+              col = sky * (1.0 - 0.8 * abs(rd.y));
               
               // Sun
               col += 0.1 * vec3(0.9, 0.3, 0.9) * pow(sundot, 0.5);
               col += 0.2 * vec3(1., 0.7, 0.7) * pow(sundot, 1.);
               col += 0.95 * vec3(1.) * pow(sundot, 256.);
               
-              // Clouds
-              if (rd.y > 0.0) {
+              // Clouds - mirrored for bottom
+              float absRy = abs(rd.y);
+              if (absRy > 0.01) {
                   float cloudSpeed = 0.01;
                   float cloudFlux = 0.25;
                   
@@ -355,7 +359,7 @@ function GradientSky({
                   
                   // Layer 1
                   float cloudHeight = 500.0;
-                  float t = (cloudHeight - ro.y) / rd.y;
+                  float t = (cloudHeight - ro.y) / absRy;
                   
                   if (t > 0.0) {
                       vec2 wind = vec2(time * 8.0, time * 4.0);
@@ -366,7 +370,7 @@ function GradientSky({
                       
                       // Layer 2
                       float cloudHeight2 = 300.0;
-                      float t2 = (cloudHeight2 - ro.y) / rd.y;
+                      float t2 = (cloudHeight2 - ro.y) / absRy;
                        if (t2 > 0.0) {
                           vec2 wind2 = vec2(time * 5.0, time * 2.5);
                           vec2 sc2 = (ro.xz + rd.xz * t2) + wind2;
@@ -376,8 +380,8 @@ function GradientSky({
                   }
               }
               
-              // Horizon blend
-              col = mix(col, 0.9 * vec3(0.9, 0.75, 0.8), pow(1. - max(rd.y + 0.1, 0.0), 8.0));
+              // Horizon blend - symmetric
+              col = mix(col, 0.9 * vec3(0.9, 0.75, 0.8), pow(1. - absRy, 8.0));
               
               // Contrast
               col = clamp(col, 0., 1.);
@@ -1622,8 +1626,8 @@ function ProceduralDuck({
         <meshStandardMaterial color="#004400" roughness={0.3} /> {/* Mallard green head */}
       </mesh>
       {/* Beak */}
-      <mesh castShadow position={[0, 0.43, 0.3]}>
-        <coneGeometry args={[0.04, 0.1, 8]} rotation={[Math.PI/2, 0, 0]} />
+      <mesh castShadow position={[0, 0.43, 0.3]} rotation={[Math.PI/2, 0, 0]}>
+        <coneGeometry args={[0.04, 0.1, 8]} />
         <meshStandardMaterial color="#ffaa00" roughness={0.5} />
       </mesh>
       {/* Wings (folded) */}
@@ -1726,8 +1730,8 @@ function ProceduralSwan({
         <meshStandardMaterial color="#ffffff" roughness={0.4} />
       </mesh>
       {/* Beak */}
-      <mesh castShadow position={[0, 0.73, 0.42]}>
-        <coneGeometry args={[0.04, 0.12, 8]} rotation={[Math.PI/2, 0, 0]} />
+      <mesh castShadow position={[0, 0.73, 0.42]} rotation={[Math.PI/2, 0, 0]}>
+        <coneGeometry args={[0.04, 0.12, 8]} />
         <meshStandardMaterial color="#ff9900" roughness={0.5} />
       </mesh>
     </group>
@@ -1902,16 +1906,7 @@ export function ParkLobby() {
 
       {/* Lakes/ponds - much closer and visible */}
       {/* Lake 1 - East side */}
-      <mesh position={[30, 0.02, -35]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[14, 48]} />
-        <meshStandardMaterial
-          color="#4a6f8d"
-          roughness={0.15}
-          metalness={0.3}
-          emissive="#1a3a4a"
-          emissiveIntensity={0.2}
-        />
-      </mesh>
+      <WaterPlane position={[30, 0.02, -35]} rotation={[-Math.PI / 2, 0, 0]} args={[14, 48]} />
       {/* Ducks in Lake 1 */}
       {Array.from({ length: 3 }).map((_, i) => (
         <ProceduralDuck key={`duck1-${i}`} position={[30, 0, -35]} radius={8} seed={i} />
@@ -1919,16 +1914,7 @@ export function ParkLobby() {
       <ProceduralSwan position={[30, 0, -35]} radius={5} seed={100} />
       
       {/* Lake 2 - Southwest */}
-      <mesh position={[-40, 0.02, 30]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[18, 48]} />
-        <meshStandardMaterial
-          color="#3f6580"
-          roughness={0.15}
-          metalness={0.3}
-          emissive="#1a3545"
-          emissiveIntensity={0.2}
-        />
-      </mesh>
+      <WaterPlane position={[-40, 0.02, 30]} rotation={[-Math.PI / 2, 0, 0]} args={[18, 48]} />
       {/* Swans in Lake 2 */}
       {Array.from({ length: 2 }).map((_, i) => (
         <ProceduralSwan key={`swan2-${i}`} position={[-40, 0, 30]} radius={10} seed={i + 20} />
@@ -1938,16 +1924,7 @@ export function ParkLobby() {
       ))}
 
       {/* Lake 3 - Southeast (smaller pond) */}
-      <mesh position={[38, 0.02, 42]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[10, 40]} />
-        <meshStandardMaterial
-          color="#5a7a95"
-          roughness={0.15}
-          metalness={0.3}
-          emissive="#2a4555"
-          emissiveIntensity={0.2}
-        />
-      </mesh>
+      <WaterPlane position={[38, 0.02, 42]} rotation={[-Math.PI / 2, 0, 0]} args={[10, 40]} />
       {/* Ducks in Lake 3 */}
       {Array.from({ length: 2 }).map((_, i) => (
         <ProceduralDuck key={`duck3-${i}`} position={[38, 0, 42]} radius={6} seed={i + 80} />

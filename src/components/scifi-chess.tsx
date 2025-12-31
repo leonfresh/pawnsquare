@@ -398,7 +398,7 @@ export function ScifiChess({
   joinLockedBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
   onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
-  onRequestMove?: (dest: Vec3, opts?: { rotY?: number; sit?: boolean }) => void;
+  onRequestMove?: (dest: Vec3, opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }) => void;
 }) {
   const originVec = useMemo(
     () => new THREE.Vector3(origin[0], origin[1], origin[2]),
@@ -704,7 +704,11 @@ export function ScifiChess({
     const dx = originVec.x - seatX;
     const dz = originVec.z - seatZ;
     const face = Math.atan2(dx, dz);
-    onRequestMove([seatX, 0.36, seatZ], { rotY: face, sit: true });
+    onRequestMove([seatX, 0.36, seatZ], {
+      rotY: face,
+      sit: true,
+      lookAtTarget: [originVec.x, originVec.y, originVec.z],
+    });
   };
 
   const clocks = useMemo(() => {

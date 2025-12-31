@@ -2246,7 +2246,7 @@ function RemoteAvatar({
   );
 }
 
-function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
+function FollowCamera({ target, lookAtOverride }: { target: React.RefObject<THREE.Vector3>, lookAtOverride?: React.RefObject<THREE.Vector3 | null> }) {
   const { gl } = useThree();
   const draggingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
@@ -2380,14 +2380,17 @@ function FollowCamera({ target }: { target: React.RefObject<THREE.Vector3> }) {
     const t = target.current;
     if (!t) return;
 
+    // Use lookAtOverride as orbit center when watching a board
+    const orbitCenter = lookAtOverride?.current || t;
+
     const offset = new THREE.Vector3().setFromSphericalCoords(
       radiusRef.current,
       phiRef.current,
       thetaRef.current
     );
-    const desired = new THREE.Vector3(t.x, t.y, t.z).add(offset);
+    const desired = new THREE.Vector3(orbitCenter.x, orbitCenter.y, orbitCenter.z).add(offset);
     camera.position.lerp(desired, clamp(dt * 6, 0, 1));
-    camera.lookAt(t.x, t.y + 1.0, t.z);
+    camera.lookAt(orbitCenter.x, orbitCenter.y + 1.0, orbitCenter.z);
   });
 
   return null;
@@ -2458,6 +2461,7 @@ function SelfSimulation({
   speedRef,
   moveTargetRef,
   sittingRef,
+  lookAtTargetRef,
 }: {
   enabled: boolean;
   keysRef: ReturnType<typeof useWASDKeys>;
@@ -2471,8 +2475,10 @@ function SelfSimulation({
     rotY?: number;
     sit?: boolean;
     sitDest?: Vec3;
+    lookAtTarget?: Vec3;
   } | null>;
   sittingRef: React.RefObject<boolean>;
+  lookAtTargetRef: React.RefObject<THREE.Vector3 | null>;
 }) {
   const vRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const camDirRef = useRef<THREE.Vector3>(new THREE.Vector3());
@@ -2495,6 +2501,7 @@ function SelfSimulation({
       // Keyboard input always cancels click-to-move and standing up from sitting.
       moveTargetRef.current = null;
       aligningToSitStartRef.current = null;
+      lookAtTargetRef.current = null; // Clear camera override
       if (sittingRef.current && process.env.NODE_ENV !== "production") {
         // eslint-disable-next-line no-console
         console.log("[sit] canceled via keyboard");
@@ -2551,6 +2558,15 @@ function SelfSimulation({
            }
 
            sittingRef.current = true;
+           // Set camera lookAt target if provided
+           if (moveTargetRef.current?.lookAtTarget) {
+             const lat = moveTargetRef.current.lookAtTarget;
+             if (!lookAtTargetRef.current) {
+               lookAtTargetRef.current = new THREE.Vector3(lat[0], lat[1], lat[2]);
+             } else {
+               lookAtTargetRef.current.set(lat[0], lat[1], lat[2]);
+             }
+           }
            moveTargetRef.current = null;
            aligningToSitStartRef.current = null;
         }
@@ -2907,11 +2923,14 @@ export default function World({
   const selfPosRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
   const selfRotRef = useRef<number>(0);
   const selfSpeedRef = useRef<number>(0);
+  const lookAtTargetRef = useRef<THREE.Vector3 | null>(null);
 
   const moveTargetRef = useRef<{
     dest: Vec3;
     rotY?: number;
     sit?: boolean;
+    sitDest?: Vec3;
+    lookAtTarget?: Vec3;
   } | null>(null);
   const sittingRef = useRef<boolean>(false);
   const sitDebugRef = useRef<{ requested: number }>({ requested: 0 });
@@ -3134,6 +3153,7 @@ export default function World({
             const z = clamp(hit.z, -18, 18);
             moveTargetRef.current = { dest: [x, planeY, z] };
             sittingRef.current = false;
+            lookAtTargetRef.current = null;
           }}
         >
           {lobbyType === "scifi" ? <SciFiLobby /> : <ParkLobby />}
@@ -3187,6 +3207,7 @@ export default function World({
                         rotY: opts?.rotY,
                         sit: opts?.sit,
                         sitDest: opts?.sitDest,
+                        lookAtTarget: opts?.lookAtTarget,
                       };
                       sittingRef.current = false;
                     }}
@@ -3222,6 +3243,7 @@ export default function World({
                         rotY: opts?.rotY,
                         sit: opts?.sit,
                         sitDest: opts?.sitDest,
+                        lookAtTarget: opts?.lookAtTarget,
                       };
                       sittingRef.current = false;
                     }}
@@ -3231,7 +3253,7 @@ export default function World({
             </group>
           ))}
 
-          <FollowCamera target={selfPosRef} />
+          <FollowCamera target={selfPosRef} lookAtOverride={lookAtTargetRef} />
 
           <SelfSimulation
             enabled={!!self}
@@ -3243,6 +3265,7 @@ export default function World({
             speedRef={selfSpeedRef}
             moveTargetRef={moveTargetRef}
             sittingRef={sittingRef}
+            lookAtTargetRef={lookAtTargetRef}
           />
 
           {self ? (
