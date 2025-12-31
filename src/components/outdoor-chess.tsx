@@ -123,7 +123,41 @@ function piecePath(type: string) {
   }
 }
 
-function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
+function applyFresnelRim(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  rimColor: THREE.Color,
+  rimPower = 2.25,
+  rimIntensity = 0.65
+) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimColor = { value: rimColor };
+    shader.uniforms.uRimPower = { value: rimPower };
+    shader.uniforms.uRimIntensity = { value: rimIntensity };
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimIntensity;`
+      )
+      .replace(
+        "#include <output_fragment>",
+        `float rim = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), uRimPower);\noutgoingLight += uRimColor * rim * uRimIntensity;\n#include <output_fragment>`
+      );
+  };
+  material.needsUpdate = true;
+}
+
+function PieceModel({
+  path,
+  tint,
+  chessTheme,
+  side,
+}: {
+  path: string;
+  tint: THREE.Color;
+  chessTheme?: string;
+  side?: "w" | "b";
+}) {
   const gltf = useGLTF(path) as any;
 
   const cloned = useMemo(() => {
@@ -134,14 +168,72 @@ function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
 
-      const mat = mesh.material as any;
-      if (mat && mat.isMaterial) {
-        mesh.material = mat.clone();
-        const clonedMat = mesh.material as any;
-        if (clonedMat.color && clonedMat.color.isColor) {
-          clonedMat.color = clonedMat.color.clone();
-          clonedMat.color.copy(tint);
+      const srcMat = mesh.material as any;
+      if (!srcMat || !srcMat.isMaterial) return;
+      mesh.material = srcMat.clone();
+      const clonedMat = mesh.material as any;
+      if (clonedMat.color && clonedMat.color.isColor) {
+        clonedMat.color = clonedMat.color.clone();
+      }
+
+      if (chessTheme === "chess_glass") {
+        const isWhite = side === "w";
+        const base = isWhite
+          ? new THREE.Color("#d7f0ff")
+          : new THREE.Color("#0b1220");
+        const rim = isWhite
+          ? new THREE.Color("#ffffff")
+          : new THREE.Color("#7dd3ff");
+
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(base);
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.0;
+        if (typeof clonedMat.roughness === "number")
+          clonedMat.roughness = isWhite ? 0.35 : 0.12;
+        clonedMat.transparent = true;
+        clonedMat.opacity = isWhite ? 0.42 : 0.28;
+        clonedMat.depthWrite = false;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(rim);
+          clonedMat.emissiveIntensity = isWhite ? 0.08 : 0.12;
         }
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 1.0;
+        applyFresnelRim(clonedMat, rim, 2.0, isWhite ? 0.55 : 0.75);
+      } else if (chessTheme === "chess_gold") {
+        const isWhite = side === "w";
+        const base = isWhite
+          ? new THREE.Color("#dfe6ef")
+          : new THREE.Color("#d4af37");
+        const rim = isWhite
+          ? new THREE.Color("#ffffff")
+          : new THREE.Color("#fff2b0");
+
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(base);
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 1.0;
+        if (typeof clonedMat.roughness === "number")
+          clonedMat.roughness = isWhite ? 0.18 : 0.22;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(rim);
+          clonedMat.emissiveIntensity = isWhite ? 0.02 : 0.06;
+        }
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 1.0;
+        applyFresnelRim(clonedMat, rim, 2.6, isWhite ? 0.28 : 0.42);
+      } else if (chessTheme === "chess_wood") {
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(tint);
+        // Wood: low metalness, higher roughness.
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.05;
+        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.85;
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 0.35;
+      } else {
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(tint);
         // Metallic material for pieces
         if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.7;
         if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.3;
@@ -166,7 +258,7 @@ function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
     }
 
     return root;
-  }, [gltf, tint]);
+  }, [gltf, tint, chessTheme, side]);
 
   return <primitive object={cloned} />;
 }
@@ -192,6 +284,7 @@ function AnimatedPiece({
   onPickPiece,
   whiteTint,
   blackTint,
+  chessTheme,
 }: {
   square: Square;
   type: string;
@@ -205,6 +298,7 @@ function AnimatedPiece({
   onPickPiece: (sq: Square) => void;
   whiteTint: THREE.Color;
   blackTint: THREE.Color;
+  chessTheme?: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const animRef = useRef<{
@@ -282,7 +376,12 @@ function AnimatedPiece({
       }}
     >
       <group scale={[scale, scale, scale]}>
-        <PieceModel path={piecePath(type)} tint={tint} />
+        <PieceModel
+          path={piecePath(type)}
+          tint={tint}
+          chessTheme={chessTheme}
+          side={color}
+        />
       </group>
     </group>
   );
@@ -404,15 +503,17 @@ function PlantMaterial(props: any) {
       }
 
       ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
-      `
+    `
+      .replace(
+        "#include <worldpos_vertex>",
+        `
       #include <worldpos_vertex>
       vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
       `
-    ).replace(
-      "#include <begin_vertex>",
-      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `
       #include <begin_vertex>
       
       // Vertex Displacement for Bushes
@@ -420,7 +521,7 @@ function PlantMaterial(props: any) {
       float strength = 0.25; 
       transformed += normal * (1.0 - disp) * strength;
       `
-    );
+      );
 
     shader.fragmentShader = `
       varying vec3 vPos;
@@ -567,67 +668,361 @@ function WoodMaterial({ color, ...props }: any) {
   );
 }
 
-function Bench({ position, rotation, onClick }: { position: [number, number, number], rotation?: [number, number, number], onClick?: (e: any) => void }) {
+function MarbleTileMaterial({ color, ...props }: { color: string } & any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const base = useMemo(() => new THREE.Color(color), [color]);
+  const vein = useMemo(() => new THREE.Color("#ffffff"), []);
+
+  const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uBase = { value: base };
+    shader.uniforms.uVein = { value: vein };
+
+    shader.vertexShader = `
+      varying vec3 vPos;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      uniform float uTime;
+      uniform vec3 uBase;
+      uniform vec3 uVein;
+
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i + vec2(0.0, 0.0));
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+      float fbm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise2(p); p *= 2.02;
+        f += 0.2500 * noise2(p); p *= 2.03;
+        f += 0.1250 * noise2(p); p *= 2.01;
+        f += 0.0625 * noise2(p);
+        return f;
+      }
+
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+
+      // Marble: layered noise + thin veins, continuous in world space.
+      vec2 p = vPos.xz * 1.25;
+      float n = fbm(p);
+      float n2 = fbm(p * 2.3 + vec2(12.3, -4.7));
+      float flow = sin((p.x + p.y) * 2.5 + (n * 6.0) + uTime * 0.05);
+      float veins = smoothstep(0.55, 0.85, abs(flow)) * smoothstep(0.2, 0.8, n2);
+
+      vec3 baseCol = uBase;
+      vec3 darkCol = baseCol * 0.82;
+      vec3 lightCol = mix(baseCol, uVein, 0.35);
+
+      vec3 col = mix(darkCol, lightCol, n * 0.55);
+      col = mix(col, uVein, veins * 0.35);
+      diffuseColor.rgb = col;
+      `
+    );
+
+    (materialRef.current as any).userData.shader = shader;
+  };
+
+  useFrame(({ clock }) => {
+    const shader = (materialRef.current as any)?.userData?.shader;
+    if (shader?.uniforms?.uTime)
+      shader.uniforms.uTime.value = clock.getElapsedTime();
+  });
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      roughness={0.35}
+      metalness={0.25}
+      {...props}
+    />
+  );
+}
+
+function NeonTileMaterial({ color, ...props }: { color: string } & any) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const base = useMemo(() => new THREE.Color(color), [color]);
+  const neon = useMemo(() => new THREE.Color("#4be7ff"), []);
+  const neonAlt = useMemo(() => new THREE.Color("#ff4bd8"), []);
+
+  const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uBase = { value: base };
+    shader.uniforms.uNeon = { value: neon };
+    shader.uniforms.uNeonAlt = { value: neonAlt };
+    shader.uniforms.uSquareSize = { value: 0.6 };
+
+    shader.vertexShader = `
+      varying vec3 vPos;
+      varying vec2 vTronUv;
+      ${shader.vertexShader}
+    `
+      .replace(
+        "#include <uv_vertex>",
+        `
+        #include <uv_vertex>
+        vTronUv = uv;
+        `
+      )
+      .replace(
+        "#include <worldpos_vertex>",
+        `
+        #include <worldpos_vertex>
+        vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        `
+      );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      varying vec2 vTronUv;
+      uniform float uTime;
+      uniform vec3 uBase;
+      uniform vec3 uNeon;
+      uniform vec3 uNeonAlt;
+      uniform float uSquareSize;
+
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i + vec2(0.0, 0.0));
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+      float fbm2(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise2(p); p *= 2.02;
+        f += 0.2500 * noise2(p); p *= 2.03;
+        f += 0.1250 * noise2(p); p *= 2.01;
+        f += 0.0625 * noise2(p);
+        return f;
+      }
+
+      float panelSeams(vec2 p, vec2 cell) {
+        vec2 g = p / cell;
+        vec2 f = abs(fract(g) - 0.5);
+        float line = min(f.x, f.y);
+        return 1.0 - smoothstep(0.485, 0.5, line);
+      }
+      ${shader.fragmentShader}
+    `
+      .replace(
+        "#include <color_fragment>",
+        `
+        #include <color_fragment>
+
+        vec2 uv = vTronUv;
+        vec2 pW = vPos.xz;
+        float grime = fbm2(pW * 0.30);
+        float pulse = 0.82 + 0.18 * sin(uTime * 1.10 + (vPos.x + vPos.z) * 0.65);
+
+        float s0 = panelSeams(pW, vec2(1.8, 1.8));
+        float s1 = panelSeams(pW + vec2(0.55, 0.8), vec2(4.6, 4.6));
+        float seams = clamp(s0 * 0.9 + s1 * 0.35, 0.0, 1.0);
+
+        float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+        float borderLine = 1.0 - smoothstep(0.045, 0.070, edge);
+
+        vec2 p = uv * 10.0;
+        vec2 cell = abs(fract(p) - 0.5);
+        float grid = 1.0 - smoothstep(0.492, 0.5, min(cell.x, cell.y));
+
+        float n = fbm2(uv * 14.0 + vec2(2.3, -1.7));
+        float traces = smoothstep(0.70, 0.86, n) * 0.55;
+
+        vec2 idx = floor((pW / uSquareSize) + vec2(4.0));
+        float parity = mod(idx.x + idx.y, 2.0);
+        vec3 neonCol = mix(uNeon, uNeonAlt, parity);
+
+        float baseLum = dot(uBase, vec3(0.299, 0.587, 0.114));
+        float baseMul = mix(0.28, 0.52, smoothstep(0.08, 0.34, baseLum));
+
+        diffuseColor.rgb = uBase * baseMul;
+        diffuseColor.rgb *= mix(0.92, 1.03, grime);
+        float dataPulse = smoothstep(0.92, 1.0, abs(sin((uv.x + uv.y) * 18.0 + uTime * 1.6 + n * 4.0)));
+        diffuseColor.rgb += neonCol * (borderLine * 0.045 + grid * 0.016 + traces * 0.015) * pulse;
+        diffuseColor.rgb += neonCol * (seams * 0.012) * (0.85 + 0.15 * grime);
+        diffuseColor.rgb += neonCol * (dataPulse * 0.008) * (0.8 + 0.2 * pulse);
+        `
+      )
+      .replace(
+        "#include <emissivemap_fragment>",
+        `
+        #include <emissivemap_fragment>
+        vec2 uv2 = vTronUv;
+        float edge2 = min(min(uv2.x, 1.0 - uv2.x), min(uv2.y, 1.0 - uv2.y));
+        float borderLine2 = 1.0 - smoothstep(0.045, 0.070, edge2);
+
+        vec2 p2 = uv2 * 10.0;
+        vec2 cell2 = abs(fract(p2) - 0.5);
+        float grid2 = 1.0 - smoothstep(0.492, 0.5, min(cell2.x, cell2.y));
+
+        float n2 = fbm2(uv2 * 14.0 + vec2(2.3, -1.7));
+        float traces2 = smoothstep(0.70, 0.86, n2) * 0.55;
+
+        vec2 pW2 = vPos.xz;
+        float s02 = panelSeams(pW2, vec2(1.8, 1.8));
+        float s12 = panelSeams(pW2 + vec2(0.55, 0.8), vec2(4.6, 4.6));
+        float seams2 = clamp(s02 * 0.9 + s12 * 0.35, 0.0, 1.0);
+
+        vec2 idx2 = floor((pW2 / uSquareSize) + vec2(4.0));
+        float parity2 = mod(idx2.x + idx2.y, 2.0);
+        vec3 neonCol2 = mix(uNeon, uNeonAlt, parity2);
+
+        float pulse2 = 0.82 + 0.18 * sin(uTime * 1.10 + (vPos.x + vPos.z) * 0.65);
+        float flicker2 = 0.92 + 0.08 * noise2(vPos.xz * 0.70 + vec2(uTime * 0.10, uTime * 0.07));
+
+        totalEmissiveRadiance += neonCol2 * (borderLine2 * 0.10 + grid2 * 0.032 + traces2 * 0.040) * pulse2 * flicker2;
+        totalEmissiveRadiance += neonCol2 * (seams2 * 0.030) * (0.85 + 0.15 * flicker2);
+        `
+      );
+
+    (materialRef.current as any).userData.shader = shader;
+  };
+
+  useFrame(({ clock }) => {
+    const shader = (materialRef.current as any)?.userData?.shader;
+    if (shader?.uniforms?.uTime)
+      shader.uniforms.uTime.value = clock.getElapsedTime();
+  });
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      roughness={0.25}
+      metalness={0.45}
+      emissive={neon}
+      emissiveIntensity={0.05}
+      {...props}
+    />
+  );
+}
+
+function Bench({
+  position,
+  rotation,
+  onClick,
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  onClick?: (e: any) => void;
+}) {
   const legColor = "#222222";
   const woodColor = "#8b5a2b";
 
   return (
-    <group 
-      position={position} 
-      rotation={rotation} 
-      onPointerDown={(e) => { 
-        e.stopPropagation(); 
-        onClick && onClick(e); 
+    <group
+      position={position}
+      rotation={rotation}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onClick && onClick(e);
       }}
-      onPointerEnter={(e) => { 
-        e.stopPropagation(); 
-        document.body.style.cursor = "pointer"; 
+      onPointerEnter={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "pointer";
       }}
-      onPointerLeave={(e) => { 
-        e.stopPropagation(); 
-        document.body.style.cursor = "default"; 
+      onPointerLeave={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "default";
       }}
     >
       {/* Cast Iron Legs (Ornate style simplified) */}
       <group position={[-0.9, 0, 0]}>
         {/* Front Leg */}
         <mesh castShadow position={[0, 0.2, 0.25]}>
-           <boxGeometry args={[0.1, 0.4, 0.1]} />
-           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+          <boxGeometry args={[0.1, 0.4, 0.1]} />
+          <meshStandardMaterial
+            color={legColor}
+            roughness={0.8}
+            metalness={0.6}
+          />
         </mesh>
         {/* Back Leg + Backrest Support */}
         <mesh castShadow position={[0, 0.45, -0.25]} rotation={[-0.2, 0, 0]}>
-           <boxGeometry args={[0.1, 0.9, 0.1]} />
-           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+          <boxGeometry args={[0.1, 0.9, 0.1]} />
+          <meshStandardMaterial
+            color={legColor}
+            roughness={0.8}
+            metalness={0.6}
+          />
         </mesh>
         {/* Base Connector */}
         <mesh castShadow position={[0, 0.1, 0]}>
-           <boxGeometry args={[0.08, 0.1, 0.6]} />
-           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+          <boxGeometry args={[0.08, 0.1, 0.6]} />
+          <meshStandardMaterial
+            color={legColor}
+            roughness={0.8}
+            metalness={0.6}
+          />
         </mesh>
       </group>
 
       <group position={[0.9, 0, 0]}>
         {/* Front Leg */}
         <mesh castShadow position={[0, 0.2, 0.25]}>
-           <boxGeometry args={[0.1, 0.4, 0.1]} />
-           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+          <boxGeometry args={[0.1, 0.4, 0.1]} />
+          <meshStandardMaterial
+            color={legColor}
+            roughness={0.8}
+            metalness={0.6}
+          />
         </mesh>
         {/* Back Leg + Backrest Support */}
         <mesh castShadow position={[0, 0.45, -0.25]} rotation={[-0.2, 0, 0]}>
-           <boxGeometry args={[0.1, 0.9, 0.1]} />
-           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+          <boxGeometry args={[0.1, 0.9, 0.1]} />
+          <meshStandardMaterial
+            color={legColor}
+            roughness={0.8}
+            metalness={0.6}
+          />
         </mesh>
         {/* Base Connector */}
         <mesh castShadow position={[0, 0.1, 0]}>
-           <boxGeometry args={[0.08, 0.1, 0.6]} />
-           <meshStandardMaterial color={legColor} roughness={0.8} metalness={0.6} />
+          <boxGeometry args={[0.08, 0.1, 0.6]} />
+          <meshStandardMaterial
+            color={legColor}
+            roughness={0.8}
+            metalness={0.6}
+          />
         </mesh>
       </group>
 
       {/* Seat Slats */}
       {[0.2, 0.0, -0.2].map((z, i) => (
-        <mesh key={`seat-${i}`} castShadow receiveShadow position={[0, 0.42, z]}>
+        <mesh
+          key={`seat-${i}`}
+          castShadow
+          receiveShadow
+          position={[0, 0.42, z]}
+        >
           <boxGeometry args={[2.0, 0.05, 0.15]} />
           <WoodMaterial color={woodColor} roughness={0.8} />
         </mesh>
@@ -635,7 +1030,13 @@ function Bench({ position, rotation, onClick }: { position: [number, number, num
 
       {/* Backrest Slats */}
       {[0.6, 0.8].map((y, i) => (
-        <mesh key={`back-${i}`} castShadow receiveShadow position={[0, y, -0.32 + i * 0.05]} rotation={[-0.2, 0, 0]}>
+        <mesh
+          key={`back-${i}`}
+          castShadow
+          receiveShadow
+          position={[0, y, -0.32 + i * 0.05]}
+          rotation={[-0.2, 0, 0]}
+        >
           <boxGeometry args={[2.0, 0.15, 0.05]} />
           <WoodMaterial color={woodColor} roughness={0.8} />
         </mesh>
@@ -655,6 +1056,8 @@ export function OutdoorChess({
   onJoinIntent,
   onSelfSeatChange,
   onRequestMove,
+  chessTheme,
+  chessBoardTheme,
 }: {
   roomId: string;
   boardKey: string;
@@ -669,6 +1072,8 @@ export function OutdoorChess({
     dest: Vec3,
     opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
   ) => void;
+  chessTheme?: string;
+  chessBoardTheme?: string;
 }) {
   const originVec = useMemo(
     () => new THREE.Vector3(origin[0], origin[1], origin[2]),
@@ -677,9 +1082,30 @@ export function OutdoorChess({
   const squareSize = 0.6;
   const boardSize = squareSize * 8;
 
-  const whiteTint = useMemo(() => new THREE.Color("#e8e8e8"), []);
-  // Dark gold instead of near-black: keeps contrast, reads premium, avoids disappearing in warm lighting.
-  const blackTint = useMemo(() => new THREE.Color("#8a6a1b"), []);
+  const whiteTint = useMemo(() => {
+    if (chessTheme === "chess_wood") return new THREE.Color("#e1c28b");
+    return new THREE.Color("#e8e8e8");
+  }, [chessTheme]);
+  const blackTint = useMemo(() => {
+    // For the wood set, the dark side should read warm/golden (not near-black).
+    if (chessTheme === "chess_wood") return new THREE.Color("#8a6a1b");
+    // Classic default should actually be dark.
+    return new THREE.Color("#1c1c1c");
+  }, [chessTheme]);
+
+  const boardStyle = useMemo(() => {
+    switch (chessBoardTheme) {
+      case "board_walnut":
+        return { kind: "wood" as const, light: "#c7a07a", dark: "#5a2d13" };
+      case "board_marble":
+        return { kind: "marble" as const, light: "#d9d9df", dark: "#3a3a44" };
+      case "board_neon":
+        // Darker, closer to preview.
+        return { kind: "neon" as const, light: "#1f5561", dark: "#070a10" };
+      default:
+        return { kind: "wood" as const, light: "#deb887", dark: "#8b4513" };
+    }
+  }, [chessBoardTheme]);
 
   const socketRef = useRef<PartySocket | null>(null);
   const [chessSelfId, setChessSelfId] = useState<string>("");
@@ -726,7 +1152,8 @@ export function OutdoorChess({
   const [legalTargets, setLegalTargets] = useState<Square[]>([]);
   const lastMove = netState.lastMove;
 
-  const { playMove, playCapture, playSelect, playWarning, playClick } = useChessSounds();
+  const { playMove, playCapture, playSelect, playWarning, playClick } =
+    useChessSounds();
   const prevFenForSound = useRef(initialFen);
   const lastSoundSeq = useRef(0);
   const hasWarnedRef = useRef(false);
@@ -762,7 +1189,14 @@ export function OutdoorChess({
     prevFenForSound.current = netState.fen;
     // Reset warning flag on new move
     hasWarnedRef.current = false;
-  }, [mySide, netState.seq, netState.fen, netState.lastMove, playMove, playCapture]);
+  }, [
+    mySide,
+    netState.seq,
+    netState.fen,
+    netState.lastMove,
+    playMove,
+    playCapture,
+  ]);
 
   // Drive clock rendering while it's running.
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -777,17 +1211,21 @@ export function OutdoorChess({
     if (!mySide) return; // Only play warning if we're a player
     if (!netState.clock.running) return;
     const c = netState.clock;
-    
+
     // Only warn if it's OUR clock running low
     if (c.active !== mySide) return;
-    
+
     const now = clockNow;
     const remaining = c.remainingMs[c.active];
     const elapsed = c.lastTickMs ? Math.max(0, now - c.lastTickMs) : 0;
     const currentRemaining = Math.max(0, remaining - elapsed);
 
     // Warn at 30 seconds remaining
-    if (currentRemaining < 30000 && currentRemaining > 0 && !hasWarnedRef.current) {
+    if (
+      currentRemaining < 30000 &&
+      currentRemaining > 0 &&
+      !hasWarnedRef.current
+    ) {
       playWarning();
       hasWarnedRef.current = true;
     }
@@ -1130,27 +1568,35 @@ export function OutdoorChess({
 
       {/* Decorative benches */}
       {/* White side benches (facing board -> -Z) */}
-      <Bench 
-        position={[originVec.x - 3.5, 0, originVec.z + padOffset + 1.5]} 
+      <Bench
+        position={[originVec.x - 3.5, 0, originVec.z + padOffset + 1.5]}
         rotation={[0, Math.PI, 0]}
-        onClick={() => requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 1.35)}
+        onClick={() =>
+          requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 1.35)
+        }
       />
-      <Bench 
-        position={[originVec.x + 3.5, 0, originVec.z + padOffset + 1.5]} 
+      <Bench
+        position={[originVec.x + 3.5, 0, originVec.z + padOffset + 1.5]}
         rotation={[0, Math.PI, 0]}
-        onClick={() => requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 1.35)}
+        onClick={() =>
+          requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 1.35)
+        }
       />
 
       {/* Black side benches (facing board -> +Z) */}
-      <Bench 
-        position={[originVec.x - 3.5, 0, originVec.z - padOffset - 1.5]} 
+      <Bench
+        position={[originVec.x - 3.5, 0, originVec.z - padOffset - 1.5]}
         rotation={[0, 0, 0]}
-        onClick={() => requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 1.35)}
+        onClick={() =>
+          requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 1.35)
+        }
       />
-      <Bench 
-        position={[originVec.x + 3.5, 0, originVec.z - padOffset - 1.5]} 
+      <Bench
+        position={[originVec.x + 3.5, 0, originVec.z - padOffset - 1.5]}
         rotation={[0, 0, 0]}
-        onClick={() => requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 1.35)}
+        onClick={() =>
+          requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 1.35)
+        }
       />
 
       {/* Decorative potted plants */}
@@ -1272,11 +1718,21 @@ export function OutdoorChess({
             >
               <mesh receiveShadow>
                 <boxGeometry args={[squareSize, 0.08, squareSize]} />
-                <WoodMaterial
-                  color={isDark ? "#8b4513" : "#deb887"}
-                  roughness={0.7}
-                  metalness={0.1}
-                />
+                {boardStyle.kind === "wood" ? (
+                  <WoodMaterial
+                    color={isDark ? boardStyle.dark : boardStyle.light}
+                    roughness={0.7}
+                    metalness={0.1}
+                  />
+                ) : boardStyle.kind === "marble" ? (
+                  <MarbleTileMaterial
+                    color={isDark ? boardStyle.dark : boardStyle.light}
+                  />
+                ) : (
+                  <NeonTileMaterial
+                    color={isDark ? boardStyle.dark : boardStyle.light}
+                  />
+                )}
               </mesh>
 
               {/* Glow indicators (flush to board) */}
@@ -1495,6 +1951,7 @@ export function OutdoorChess({
             onPickPiece={onPickPiece}
             whiteTint={whiteTint}
             blackTint={blackTint}
+            chessTheme={chessTheme}
           />
         );
       })}

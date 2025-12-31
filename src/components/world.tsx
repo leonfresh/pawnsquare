@@ -16,6 +16,7 @@ import { OutdoorChess } from "@/components/outdoor-chess";
 import { ScifiChess } from "@/components/scifi-chess";
 import { VrmPreview } from "@/components/vrm-preview";
 import { CoinIcon } from "@/components/coin-icon";
+import { ChessSetPreview } from "@/components/chess-set-preview";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import type { User } from "@supabase/supabase-js";
 
@@ -556,7 +557,13 @@ function LampPostMaterial(props: any) {
       `
     );
   };
-  return <meshStandardMaterial ref={materialRef} onBeforeCompile={onBeforeCompile} {...props} />;
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      {...props}
+    />
+  );
 }
 
 function LampGlassMaterial(props: any) {
@@ -595,7 +602,14 @@ function LampGlassMaterial(props: any) {
       `
     );
   };
-  return <meshStandardMaterial ref={materialRef} onBeforeCompile={onBeforeCompile} transparent {...props} />;
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      transparent
+      {...props}
+    />
+  );
 }
 
 export function BoardLamp({
@@ -669,8 +683,8 @@ export function BoardLamp({
       <group position={lampPos}>
         {/* Base */}
         <mesh castShadow receiveShadow position={[0, 0.2, 0]}>
-           <cylinderGeometry args={[0.25, 0.3, 0.4, 8]} />
-           <LampPostMaterial roughness={0.8} metalness={0.5} />
+          <cylinderGeometry args={[0.25, 0.3, 0.4, 8]} />
+          <LampPostMaterial roughness={0.8} metalness={0.5} />
         </mesh>
         {/* Post */}
         <mesh castShadow receiveShadow position={[0, 1.7, 0]}>
@@ -679,17 +693,17 @@ export function BoardLamp({
         </mesh>
         {/* Lamp Head Holder */}
         <mesh castShadow receiveShadow position={[0, 3.05, 0]}>
-           <cylinderGeometry args={[0.2, 0.08, 0.1, 8]} />
-           <LampPostMaterial roughness={0.8} metalness={0.5} />
+          <cylinderGeometry args={[0.2, 0.08, 0.1, 8]} />
+          <LampPostMaterial roughness={0.8} metalness={0.5} />
         </mesh>
-        
+
         {/* Inner Bulb */}
         <mesh position={[0, 3.25, 0]}>
           <sphereGeometry args={[0.08, 16, 16]} />
-          <meshStandardMaterial 
-            color="#ffaa00" 
-            emissive="#ffaa00" 
-            emissiveIntensity={2.0} 
+          <meshStandardMaterial
+            color="#ffaa00"
+            emissive="#ffaa00"
+            emissiveIntensity={2.0}
             toneMapped={false}
           />
         </mesh>
@@ -697,11 +711,11 @@ export function BoardLamp({
         {/* Lamp Glass (Lantern shape) */}
         <mesh castShadow position={[0, 3.3, 0]}>
           <cylinderGeometry args={[0.25, 0.15, 0.5, 6]} />
-          <LampGlassMaterial 
-            ref={bulbMatRef} 
-            emissiveIntensity={0.2} 
-            roughness={0.2} 
-            metalness={0.1} 
+          <LampGlassMaterial
+            ref={bulbMatRef}
+            emissiveIntensity={0.2}
+            roughness={0.2}
+            metalness={0.1}
             transparent
             opacity={0.6}
             side={THREE.DoubleSide}
@@ -710,10 +724,10 @@ export function BoardLamp({
         </mesh>
         {/* Cap */}
         <mesh castShadow position={[0, 3.6, 0]}>
-           <coneGeometry args={[0.35, 0.15, 6]} />
-           <LampPostMaterial roughness={0.8} metalness={0.5} />
+          <coneGeometry args={[0.35, 0.15, 6]} />
+          <LampPostMaterial roughness={0.8} metalness={0.5} />
         </mesh>
-        
+
         <Billboard position={[0, 3.3, 0]}>
           <mesh ref={glowMeshRef}>
             <planeGeometry args={[1.5, 1.5]} />
@@ -2103,7 +2117,7 @@ function SelfAvatar({
     const p = pos.current;
     if (!g || !p) return;
     g.position.set(p.x, p.y, p.z);
-    
+
     // Smooth rotation with shortest path interpolation
     let diff = rotY.current - g.rotation.y;
     // Normalize to -PI...PI
@@ -2175,12 +2189,12 @@ function RemoteAvatar({
       targetPosition[2]
     );
     posRef.current.lerp(targetRef.current, alpha);
-    
+
     // shortest angle lerp
     let d = targetRotY - rotRef.current;
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
-    
+
     rotRef.current = rotRef.current + d * alpha;
 
     g.position.set(posRef.current.x, posRef.current.y, posRef.current.z);
@@ -2246,7 +2260,13 @@ function RemoteAvatar({
   );
 }
 
-function FollowCamera({ target, lookAtOverride }: { target: React.RefObject<THREE.Vector3>, lookAtOverride?: React.RefObject<THREE.Vector3 | null> }) {
+function FollowCamera({
+  target,
+  lookAtOverride,
+}: {
+  target: React.RefObject<THREE.Vector3>;
+  lookAtOverride?: React.RefObject<THREE.Vector3 | null>;
+}) {
   const { gl } = useThree();
   const draggingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
@@ -2388,7 +2408,11 @@ function FollowCamera({ target, lookAtOverride }: { target: React.RefObject<THRE
       phiRef.current,
       thetaRef.current
     );
-    const desired = new THREE.Vector3(orbitCenter.x, orbitCenter.y, orbitCenter.z).add(offset);
+    const desired = new THREE.Vector3(
+      orbitCenter.x,
+      orbitCenter.y,
+      orbitCenter.z
+    ).add(offset);
     camera.position.lerp(desired, clamp(dt * 6, 0, 1));
     camera.lookAt(orbitCenter.x, orbitCenter.y + 1.0, orbitCenter.z);
   });
@@ -2410,31 +2434,138 @@ const DEBUG_AVATAR_URLS = {
 
 const SHOP_ITEMS = [
   {
+    id: "default_male",
+    name: "Default Male",
+    url: DEBUG_AVATAR_URLS.male,
+    price: 0,
+    type: "avatar",
+  },
+  {
+    id: "default_female",
+    name: "Default Female",
+    url: DEBUG_AVATAR_URLS.vrmV1,
+    price: 0,
+    type: "avatar",
+  },
+  {
     id: "cherry",
     name: "Cherry Rose",
     url: DEBUG_AVATAR_URLS.cherryRoseOptimized5mb,
     price: 250,
+    type: "avatar",
   },
   {
     id: "fuyuki",
     name: "Fuyuki",
     url: DEBUG_AVATAR_URLS.fuyukiOptimized,
     price: 250,
+    type: "avatar",
   },
   {
     id: "kawaii",
     name: "Kawaii",
     url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb,
     price: 80,
+    type: "avatar",
   },
-  { id: "miu", name: "Miu", url: DEBUG_AVATAR_URLS.miuOptimized, price: 350 },
+  {
+    id: "miu",
+    name: "Miu",
+    url: DEBUG_AVATAR_URLS.miuOptimized,
+    price: 350,
+    type: "avatar",
+  },
   {
     id: "ren",
     name: "Ren",
     url: DEBUG_AVATAR_URLS.renOptimized7mb,
     price: 80,
+    type: "avatar",
+  },
+  {
+    id: "theme_park",
+    name: "Park World",
+    url: "",
+    price: 0,
+    type: "theme",
+    previewImage: "/shop/theme-park.png",
+  },
+  {
+    id: "theme_scifi",
+    name: "Sci-Fi World",
+    url: "",
+    price: 1000,
+    type: "theme",
+    previewImage: "/shop/theme-scifi.png",
+  },
+  {
+    id: "chess_wood",
+    name: "Wood Chess Set",
+    url: "",
+    price: 0,
+    type: "chess",
+    chessKind: "set",
+  },
+  {
+    id: "chess_classic",
+    name: "Classic Chess Set",
+    url: "",
+    price: 0,
+    type: "chess",
+    chessKind: "set",
+  },
+  {
+    id: "chess_glass",
+    name: "Glass Chess Set",
+    url: "",
+    price: 500,
+    type: "chess",
+    chessKind: "set",
+  },
+  {
+    id: "chess_gold",
+    name: "Gold Chess Set",
+    url: "",
+    price: 1500,
+    type: "chess",
+    chessKind: "set",
+  },
+  {
+    id: "board_classic",
+    name: "Classic Chess Board",
+    url: "",
+    price: 0,
+    type: "chess",
+    chessKind: "board",
+  },
+  {
+    id: "board_marble",
+    name: "Marble Chess Board",
+    url: "",
+    price: 600,
+    type: "chess",
+    chessKind: "board",
+  },
+  {
+    id: "board_neon",
+    name: "Neon Chess Board",
+    url: "",
+    price: 900,
+    type: "chess",
+    chessKind: "board",
   },
 ] as const;
+
+function isShopItemOwned(
+  item: (typeof SHOP_ITEMS)[number],
+  ownedAvatarUrls: string[]
+) {
+  // Treat all price=0 items as always owned (defaults), even if not in DB.
+  if (item.price === 0) return true;
+  if (ownedAvatarUrls.includes(item.id)) return true;
+  if (item.url && ownedAvatarUrls.includes(item.url)) return true;
+  return false;
+}
 
 const COIN_PACKS = [
   { id: "p80", coins: 80, priceLabel: "$1" },
@@ -2449,6 +2580,22 @@ function safeParseJson<T>(raw: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+const SHOP_TAB_STORAGE_KEY = "pawnsquare:shopTab";
+
+function isShopItemLocked(
+  item: (typeof SHOP_ITEMS)[number],
+  ownedAvatarUrls: string[]
+): boolean {
+  // Buying the Sci‑Fi world unlocks Sci‑Fi pieces + board.
+  // (Currently mapped to Glass set + Neon board.)
+  const sciFiUnlocked = ownedAvatarUrls.includes("theme_scifi");
+  if (!sciFiUnlocked) {
+    if (item.id === "chess_glass") return true;
+    if (item.id === "board_neon") return true;
+  }
+  return false;
 }
 
 function SelfSimulation({
@@ -2542,39 +2689,43 @@ function SelfSimulation({
       const d = moveTargetRef.current.dest;
       v.set(d[0] - pos.current.x, 0, d[2] - pos.current.z);
       const dist = v.length();
-      
+
       // Check if we are in the "aligning" phase of sitting
       if (aligningToSitStartRef.current !== null) {
         // Force position to target while turning
         pos.current.set(d[0], pos.current.y, d[2]);
         v.set(0, 0, 0);
-        
+
         // Wait for turn to complete (approx 0.5s)
         if (state.clock.elapsedTime - aligningToSitStartRef.current > 0.5) {
-           // Snap to sitDest if available
-           if (moveTargetRef.current?.sitDest) {
-             const sd = moveTargetRef.current.sitDest;
-             pos.current.set(sd[0], pos.current.y, sd[2]);
-           }
+          // Snap to sitDest if available
+          if (moveTargetRef.current?.sitDest) {
+            const sd = moveTargetRef.current.sitDest;
+            pos.current.set(sd[0], pos.current.y, sd[2]);
+          }
 
-           sittingRef.current = true;
-           // Set camera lookAt target if provided
-           if (moveTargetRef.current?.lookAtTarget) {
-             const lat = moveTargetRef.current.lookAtTarget;
-             if (!lookAtTargetRef.current) {
-               lookAtTargetRef.current = new THREE.Vector3(lat[0], lat[1], lat[2]);
-             } else {
-               lookAtTargetRef.current.set(lat[0], lat[1], lat[2]);
-             }
-           }
-           moveTargetRef.current = null;
-           aligningToSitStartRef.current = null;
+          sittingRef.current = true;
+          // Set camera lookAt target if provided
+          if (moveTargetRef.current?.lookAtTarget) {
+            const lat = moveTargetRef.current.lookAtTarget;
+            if (!lookAtTargetRef.current) {
+              lookAtTargetRef.current = new THREE.Vector3(
+                lat[0],
+                lat[1],
+                lat[2]
+              );
+            } else {
+              lookAtTargetRef.current.set(lat[0], lat[1], lat[2]);
+            }
+          }
+          moveTargetRef.current = null;
+          aligningToSitStartRef.current = null;
         }
       } else if (dist < 0.25) {
         // Arrived at destination.
         pos.current.set(d[0], pos.current.y, d[2]);
         v.set(0, 0, 0);
-        
+
         if (moveTargetRef.current.sit) {
           // Start aligning phase
           if (typeof moveTargetRef.current.rotY === "number") {
@@ -2638,6 +2789,15 @@ function SelfSimulation({
 
 import { ParkLobby } from "@/components/park-lobby";
 import { SciFiLobby, SciFiLamp } from "@/components/scifi-lobby";
+import {
+  ShopIcon,
+  CloseIcon,
+  UserIcon,
+  ThemeIcon,
+  CoinsIcon,
+  MenuIcon,
+} from "@/components/icons";
+import { ChessBoardPreview } from "@/components/chess-board-preview";
 
 export default function World({
   roomId,
@@ -2767,19 +2927,139 @@ export default function World({
   );
 
   const [shopOpen, setShopOpen] = useState(false);
-  const [shopSelectedUrl, setShopSelectedUrl] = useState<string>(
-    SHOP_ITEMS[0]?.url ?? DEBUG_AVATAR_URLS.male
-  );
+  const [shopTab, setShopTab] = useState<
+    "avatar" | "theme" | "chess" | "coins"
+  >("avatar");
+  const [shopSelectedId, setShopSelectedId] = useState<string | null>(null);
   const [coins, setCoins] = useState<number>(500);
   const [ownedAvatarUrls, setOwnedAvatarUrls] = useState<string[]>([
     DEBUG_AVATAR_URLS.male,
+    "chess_wood", // Default chess set
+    "board_classic", // Default chess board
   ]);
+  const [chessTheme, setChessTheme] = useState<string>("chess_wood");
+  const [chessBoardTheme, setChessBoardTheme] =
+    useState<string>("board_classic");
   const [stripeBusy, setStripeBusy] = useState(false);
   const [stripeMsg, setStripeMsg] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const openCenteredPopup = (url: string, name: string) => {
+    const w = 520;
+    const h = 720;
+    const left = Math.max(
+      0,
+      Math.floor(window.screenX + (window.outerWidth - w) / 2)
+    );
+    const top = Math.max(
+      0,
+      Math.floor(window.screenY + (window.outerHeight - h) / 2)
+    );
+    return window.open(
+      url,
+      name,
+      `popup=yes,width=${w},height=${h},left=${left},top=${top}`
+    );
+  };
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type !== "pawnsquare:auth") return;
+      if (event.data?.ok) {
+        setAuthMsg(null);
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // Close the hamburger menu on outside click / ESC.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) {
+        setMenuOpen(false);
+        return;
+      }
+      if (target.closest?.("[data-pawnsquare-menu-root]")) return;
+      setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  // Restore last-used shop tab from localStorage.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(SHOP_TAB_STORAGE_KEY);
+    if (
+      saved === "avatar" ||
+      saved === "theme" ||
+      saved === "chess" ||
+      saved === "coins"
+    ) {
+      setShopTab(saved);
+    }
+  }, []);
+
+  // Persist current shop tab.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(SHOP_TAB_STORAGE_KEY, shopTab);
+    } catch {
+      // ignore
+    }
+  }, [shopTab]);
+
+  const persistEquipped = async (patch: {
+    equipped_avatar_url?: string | null;
+    equipped_theme?: string | null;
+    equipped_chess_set?: string | null;
+    equipped_chess_board?: string | null;
+  }) => {
+    if (!supabaseUser) return;
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { error } = await supabase
+        .from("profiles")
+        .update(patch)
+        .eq("id", supabaseUser.id);
+      if (error) {
+        console.error("[equip] persist failed:", {
+          message: (error as any)?.message,
+          details: (error as any)?.details,
+          hint: (error as any)?.hint,
+          code: (error as any)?.code,
+          raw: error,
+        });
+      }
+    } catch (e) {
+      console.error("[equip] persist threw:", e);
+    }
+  };
+
+  // Reset shop view when closing so reopening starts clean.
+  useEffect(() => {
+    if (shopOpen) return;
+    setShopSelectedId(null);
+    setStripeBusy(false);
+    setStripeMsg(null);
+    setAuthMsg(null);
+  }, [shopOpen]);
 
   // Supabase Auth (required before purchases)
   useEffect(() => {
@@ -2809,6 +3089,49 @@ export default function World({
     };
   }, []);
 
+  // When auth completes in another tab (magic-link or OAuth), refresh auth state here.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const supabase = getSupabaseBrowserClient();
+
+    const refresh = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        setSupabaseUser(data.user ?? null);
+      } catch {
+        // ignore
+      }
+    };
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("pawnsquare-auth");
+      bc.onmessage = (event) => {
+        if (event.data?.type === "AUTH_OK") {
+          void refresh();
+        }
+      };
+    } catch {
+      // ignore
+    }
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "pawnsquare:authUpdatedAt") {
+        void refresh();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      try {
+        bc?.close();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
+
   // Load shop state (Supabase only).
   useEffect(() => {
     if (isDuplicateSession) return;
@@ -2826,6 +3149,35 @@ export default function World({
           if (data) {
             setCoins(data.coins ?? 0);
             setOwnedAvatarUrls((data.owned_avatars as string[]) ?? []);
+
+            const equippedAvatarUrl =
+              typeof (data as any).equipped_avatar_url === "string"
+                ? ((data as any).equipped_avatar_url as string)
+                : null;
+            const equippedTheme =
+              typeof (data as any).equipped_theme === "string"
+                ? ((data as any).equipped_theme as string)
+                : null;
+            const equippedSet =
+              typeof (data as any).equipped_chess_set === "string"
+                ? ((data as any).equipped_chess_set as string)
+                : null;
+            const equippedBoard =
+              typeof (data as any).equipped_chess_board === "string"
+                ? ((data as any).equipped_chess_board as string)
+                : null;
+
+            if (equippedSet) setChessTheme(equippedSet);
+            if (equippedBoard) setChessBoardTheme(equippedBoard);
+
+            if (equippedTheme && onLobbyChange) {
+              onLobbyChange(equippedTheme === "theme_scifi" ? "scifi" : "park");
+            }
+
+            if (equippedAvatarUrl && avatarSystem === "three-avatar") {
+              setDebugAvatarUrl(equippedAvatarUrl);
+              setAvatarUrl(equippedAvatarUrl);
+            }
           }
         });
 
@@ -2841,9 +3193,35 @@ export default function World({
             filter: `id=eq.${supabaseUser.id}`,
           },
           (payload) => {
-            const newRow = payload.new as { coins: number; owned_avatars: any };
+            const newRow = payload.new as {
+              coins: number;
+              owned_avatars: any;
+              equipped_avatar_url?: any;
+              equipped_theme?: any;
+              equipped_chess_set?: any;
+              equipped_chess_board?: any;
+            };
             setCoins(newRow.coins ?? 0);
             setOwnedAvatarUrls((newRow.owned_avatars as string[]) ?? []);
+
+            if (typeof newRow.equipped_chess_set === "string") {
+              setChessTheme(newRow.equipped_chess_set);
+            }
+            if (typeof newRow.equipped_chess_board === "string") {
+              setChessBoardTheme(newRow.equipped_chess_board);
+            }
+            if (typeof newRow.equipped_theme === "string" && onLobbyChange) {
+              onLobbyChange(
+                newRow.equipped_theme === "theme_scifi" ? "scifi" : "park"
+              );
+            }
+            if (
+              typeof newRow.equipped_avatar_url === "string" &&
+              avatarSystem === "three-avatar"
+            ) {
+              setDebugAvatarUrl(newRow.equipped_avatar_url);
+              setAvatarUrl(newRow.equipped_avatar_url);
+            }
           }
         )
         .subscribe();
@@ -3127,7 +3505,10 @@ export default function World({
         gl={{ antialias: false, powerPreference: "high-performance" }}
         style={{ background: lobbyType === "scifi" ? "#1a0033" : "#d6a57d" }}
         onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color(lobbyType === "scifi" ? "#1a0033" : "#d6a57d"), 1);
+          gl.setClearColor(
+            new THREE.Color(lobbyType === "scifi" ? "#1a0033" : "#d6a57d"),
+            1
+          );
           gl.shadowMap.enabled = false;
           gl.shadowMap.autoUpdate = false;
           gl.outputColorSpace = THREE.SRGBColorSpace;
@@ -3188,6 +3569,8 @@ export default function World({
                     selfId={self?.id || ""}
                     selfName={self?.name || ""}
                     joinLockedBoardKey={joinLockedBoardKey}
+                    chessTheme={chessTheme}
+                    chessBoardTheme={chessBoardTheme}
                     onJoinIntent={(boardKey) => {
                       setPendingJoinBoardKey((prev) => prev ?? boardKey);
                     }}
@@ -3221,6 +3604,8 @@ export default function World({
                     selfId={self?.id || ""}
                     selfName={self?.name || ""}
                     joinLockedBoardKey={joinLockedBoardKey}
+                    chessTheme={chessTheme}
+                    chessBoardTheme={chessBoardTheme}
                     onJoinIntent={(boardKey) => {
                       // Lock immediately to prevent starting a second join elsewhere.
                       setPendingJoinBoardKey((prev) => prev ?? boardKey);
@@ -3350,649 +3735,128 @@ export default function World({
         </div>
       ) : null}
 
-      {/* UI overlay */}
+      {/* Top Left HUD */}
       <div
         style={{
           position: "fixed",
           top: 12,
           left: 12,
           display: "flex",
-          gap: 10,
-          alignItems: "center",
-          padding: "10px 12px",
-          borderRadius: 10,
-          border: "1px solid rgba(127,127,127,0.25)",
-          background: "rgba(0,0,0,0.35)",
-          backdropFilter: "blur(6px)",
+          flexDirection: "column",
+          gap: 8,
+          pointerEvents: "none", // Let clicks pass through to canvas where possible
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ fontSize: 13, opacity: 0.9 }}>Room: {roomId}</div>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Players: {peerCount + 1}/20 • Move: WASD / arrows
+        {/* Room Info Card */}
+        <div
+          style={{
+            pointerEvents: "auto",
+            padding: "10px 14px",
+            borderRadius: 12,
+            background: "rgba(0,0,0,0.4)",
+            backdropFilter: "blur(8px)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            color: "white",
+            minWidth: 180,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600 }}>{roomId}</div>
+            <div
+              style={{
+                fontSize: 12,
+                opacity: 0.8,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <UserIcon size={12} />
+              {peerCount + 1}
+            </div>
           </div>
 
-          {onLobbyChange ? (
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <button
-                onClick={() => onLobbyChange("park")}
-                style={{
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  background: lobbyType === "park" ? "rgba(255,255,255,0.2)" : "transparent",
-                  color: "white",
-                  cursor: "pointer",
-                  fontSize: 11,
-                }}
-              >
-                Park
-              </button>
-              <button
-                onClick={() => onLobbyChange("scifi")}
-                style={{
-                  padding: "4px 8px",
-                  borderRadius: 6,
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  background: lobbyType === "scifi" ? "rgba(255,255,255,0.2)" : "transparent",
-                  color: "white",
-                  cursor: "pointer",
-                  fontSize: 11,
-                }}
-              >
-                Sci-Fi
-              </button>
-            </div>
-          ) : null}
-
-          {avatarSystem === "three-avatar" &&
-          supabaseUser?.email === "kittystudioscom@gmail.com" ? (
-            <label
+          {avatarSystem === "three-avatar" ? (
+            <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 8,
-                fontSize: 12,
-                opacity: 0.85,
+                gap: 6,
+                fontSize: 13,
+                color: "#ffd700",
+                fontWeight: 500,
+                marginTop: 2,
               }}
             >
-              <span style={{ whiteSpace: "nowrap" }}>Avatar (debug)</span>
-              <select
-                value={debugAvatarUrl}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setDebugAvatarUrl(next);
-                  setAvatarUrl(next);
-                }}
-                style={{
-                  background: "rgba(0,0,0,0.35)",
-                  color: "white",
-                  border: "1px solid rgba(127,127,127,0.35)",
-                  borderRadius: 8,
-                  padding: "4px 8px",
-                  outline: "none",
-                }}
-              >
-                <option value={DEBUG_AVATAR_URLS.male}>Male (custom)</option>
-                <option value={DEBUG_AVATAR_URLS.cherryRoseOptimized5mb}>
-                  Cherry Rose (optimized)
-                </option>
-                <option value={DEBUG_AVATAR_URLS.fuyukiOptimized}>
-                  Fuyuki (optimized)
-                </option>
-                <option value={DEBUG_AVATAR_URLS.kawaiiOptimized5mb}>
-                  Kawaii (optimized)
-                </option>
-                <option value={DEBUG_AVATAR_URLS.miuOptimized}>
-                  Miu (optimized)
-                </option>
-                <option value={DEBUG_AVATAR_URLS.renOptimized7mb}>
-                  Ren (optimized ~7MB)
-                </option>
-                <option value={DEBUG_AVATAR_URLS.vrmV1}>VRM v1</option>
-                <option value={DEBUG_AVATAR_URLS.vrmV0}>VRM v0</option>
-                <option value={DEBUG_AVATAR_URLS.rpm}>Ready Player Me</option>
-              </select>
-            </label>
-          ) : null}
-
-          {avatarSystem === "three-avatar" ? (
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <CoinsIcon size={14} />
+              {coins}
               <button
-                style={{
-                  pointerEvents: "auto",
-                  height: 30,
-                  padding: "0 10px",
-                  borderRadius: 8,
-                  border: "1px solid rgba(127,127,127,0.25)",
-                  background: "transparent",
-                  color: "inherit",
-                  cursor: "pointer",
-                  fontSize: 12,
+                onClick={() => {
+                  setShopTab("coins");
+                  setShopOpen(true);
                 }}
-                onClick={() => setShopOpen((v) => !v)}
-              >
-                {shopOpen ? "Close shop" : "Shop"}
-              </button>
-              <div
                 style={{
-                  fontSize: 12,
-                  opacity: 0.8,
-                  whiteSpace: "nowrap",
+                  background: "#667eea",
+                  border: "none",
+                  borderRadius: "50%",
+                  width: 18,
+                  height: 18,
                   display: "flex",
                   alignItems: "center",
-                  gap: 6,
+                  justifyContent: "center",
+                  color: "white",
+                  cursor: "pointer",
+                  marginLeft: 4,
+                  fontSize: 14,
+                  lineHeight: 1,
                 }}
+                title="Buy more coins"
               >
-                <CoinIcon size={14} />
-                {coins}
-              </div>
+                +
+              </button>
             </div>
           ) : null}
+        </div>
 
-          {avatarSystem === "three-avatar" && shopOpen ? (
-            <div
-              style={{
-                marginTop: 4,
-                display: "grid",
-                gridTemplateColumns: "220px 1fr",
-                gap: 10,
-                alignItems: "start",
-                width: 520,
-                maxWidth: "calc(100vw - 64px)",
-              }}
-            >
-              <VrmPreview url={shopSelectedUrl} width={220} height={220} />
-
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 8,
-                  minWidth: 0,
-                }}
-              >
-                <div
-                  style={{ display: "flex", flexDirection: "column", gap: 6 }}
-                >
-                  <div style={{ fontSize: 12, opacity: 0.85 }}>
-                    Avatar shop (local MVP)
-                  </div>
-
-                  <div
-                    style={{ display: "flex", gap: 8, alignItems: "center" }}
-                  >
-                    {COIN_PACKS.map((p) => (
-                      <button
-                        key={p.id}
-                        disabled={stripeBusy || !supabaseUser}
-                        style={{
-                          pointerEvents: "auto",
-                          height: 28,
-                          padding: "0 10px",
-                          borderRadius: 8,
-                          border: "1px solid rgba(127,127,127,0.25)",
-                          background: "transparent",
-                          color: "inherit",
-                          cursor:
-                            stripeBusy || !supabaseUser
-                              ? "not-allowed"
-                              : "pointer",
-                          opacity: stripeBusy || !supabaseUser ? 0.6 : 1,
-                          fontSize: 12,
-                          whiteSpace: "nowrap",
-                        }}
-                        onClick={async () => {
-                          if (!self?.id) return;
-                          if (!supabaseUser) {
-                            setAuthMsg("Sign in required before purchases.");
-                            return;
-                          }
-                          setStripeMsg(null);
-                          try {
-                            setStripeBusy(true);
-                            const supabase = getSupabaseBrowserClient();
-                            const { data: sessionData } =
-                              await supabase.auth.getSession();
-                            const token = sessionData.session?.access_token;
-                            if (!token) {
-                              setAuthMsg("Sign in required before purchases.");
-                              return;
-                            }
-                            const res = await fetch(
-                              "/api/stripe/create-checkout",
-                              {
-                                method: "POST",
-                                headers: {
-                                  "content-type": "application/json",
-                                  authorization: `Bearer ${token}`,
-                                },
-                                body: JSON.stringify({
-                                  packId: p.id,
-                                  roomId,
-                                  playerId: self.id,
-                                }),
-                              }
-                            );
-                            const data = (await res.json()) as {
-                              url?: string;
-                              error?: string;
-                            };
-                            if (!data.url) {
-                              setStripeMsg(
-                                data.error || "Could not start checkout."
-                              );
-                              return;
-                            }
-                            window.open(
-                              data.url,
-                              "pawnsquare-checkout",
-                              "width=600,height=800"
-                            );
-                            setStripeMsg("Complete payment in the popup...");
-                          } catch {
-                            setStripeMsg("Could not start checkout.");
-                            setStripeBusy(false);
-                          }
-                        }}
-                      >
-                        {p.coins} for {p.priceLabel}
-                      </button>
-                    ))}
-                  </div>
-
-                  {!supabaseUser ? (
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 6,
-                      }}
-                    >
-                      <div style={{ fontSize: 11, opacity: 0.75 }}>
-                        Sign in required before purchases.
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 8,
-                          alignItems: "center",
-                        }}
-                      >
-                        <input
-                          value={authEmail}
-                          onChange={(e) => setAuthEmail(e.target.value)}
-                          placeholder="email@domain.com"
-                          style={{
-                            pointerEvents: "auto",
-                            height: 28,
-                            padding: "0 10px",
-                            borderRadius: 8,
-                            border: "1px solid rgba(127,127,127,0.25)",
-                            background: "transparent",
-                            color: "inherit",
-                            width: 200,
-                            fontSize: 12,
-                          }}
-                        />
-                        <button
-                          disabled={authBusy}
-                          style={{
-                            pointerEvents: "auto",
-                            height: 28,
-                            padding: "0 10px",
-                            borderRadius: 8,
-                            border: "1px solid rgba(127,127,127,0.25)",
-                            background: "transparent",
-                            color: "inherit",
-                            cursor: authBusy ? "not-allowed" : "pointer",
-                            opacity: authBusy ? 0.6 : 1,
-                            fontSize: 12,
-                            whiteSpace: "nowrap",
-                          }}
-                          onClick={async () => {
-                            setAuthMsg(null);
-                            const email = authEmail.trim();
-                            if (!email) {
-                              setAuthMsg("Enter an email.");
-                              return;
-                            }
-                            try {
-                              setAuthBusy(true);
-                              const supabase = getSupabaseBrowserClient();
-                              const redirectTo =
-                                window.location.origin + "/auth/magic-link";
-                              const { error } =
-                                await supabase.auth.signInWithOtp({
-                                  email,
-                                  options: { emailRedirectTo: redirectTo },
-                                });
-                              if (error) {
-                                setAuthMsg(error.message);
-                                return;
-                              }
-                              setAuthMsg(
-                                "Magic link sent. Check your email (and Spam/Junk)."
-                              );
-                            } catch {
-                              setAuthMsg("Could not start email sign-in.");
-                            } finally {
-                              setAuthBusy(false);
-                            }
-                          }}
-                        >
-                          Email link
-                        </button>
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: 8,
-                          alignItems: "center",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <button
-                          disabled={authBusy}
-                          style={{
-                            pointerEvents: "auto",
-                            height: 28,
-                            padding: "0 10px",
-                            borderRadius: 8,
-                            border: "1px solid rgba(127,127,127,0.25)",
-                            background: "transparent",
-                            color: "inherit",
-                            cursor: authBusy ? "not-allowed" : "pointer",
-                            opacity: authBusy ? 0.6 : 1,
-                            fontSize: 12,
-                            whiteSpace: "nowrap",
-                          }}
-                          onClick={async () => {
-                            setAuthMsg(null);
-                            try {
-                              setAuthBusy(true);
-                              const supabase = getSupabaseBrowserClient();
-                              const { data, error } =
-                                await supabase.auth.signInWithOAuth({
-                                  provider: "google",
-                                  options: {
-                                    redirectTo:
-                                      window.location.origin + "/auth/popup",
-                                    skipBrowserRedirect: true,
-                                  },
-                                });
-                              if (error) throw error;
-                              if (data?.url) {
-                                window.open(
-                                  data.url,
-                                  "pawnsquare-oauth",
-                                  "width=600,height=800"
-                                );
-                              }
-                              setAuthBusy(false);
-                            } catch {
-                              setAuthMsg("Could not start Google sign-in.");
-                              setAuthBusy(false);
-                            }
-                          }}
-                        >
-                          Google
-                        </button>
-
-                        <button
-                          disabled={authBusy}
-                          style={{
-                            pointerEvents: "auto",
-                            height: 28,
-                            padding: "0 10px",
-                            borderRadius: 8,
-                            border: "1px solid rgba(127,127,127,0.25)",
-                            background: "transparent",
-                            color: "inherit",
-                            cursor: authBusy ? "not-allowed" : "pointer",
-                            opacity: authBusy ? 0.6 : 1,
-                            fontSize: 12,
-                            whiteSpace: "nowrap",
-                          }}
-                          onClick={async () => {
-                            setAuthMsg(null);
-                            try {
-                              setAuthBusy(true);
-                              const supabase = getSupabaseBrowserClient();
-                              const { data, error } =
-                                await supabase.auth.signInWithOAuth({
-                                  provider: "discord",
-                                  options: {
-                                    redirectTo:
-                                      window.location.origin + "/auth/popup",
-                                    skipBrowserRedirect: true,
-                                  },
-                                });
-                              if (error) throw error;
-                              if (data?.url) {
-                                window.open(
-                                  data.url,
-                                  "pawnsquare-oauth",
-                                  "width=600,height=800"
-                                );
-                              }
-                              setAuthBusy(false);
-                            } catch {
-                              setAuthMsg("Could not start Discord sign-in.");
-                              setAuthBusy(false);
-                            }
-                          }}
-                        >
-                          Discord
-                        </button>
-                      </div>
-
-                      {authMsg ? (
-                        <div style={{ fontSize: 11, opacity: 0.75 }}>
-                          {authMsg}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <div
-                      style={{ display: "flex", gap: 8, alignItems: "center" }}
-                    >
-                      <div style={{ fontSize: 11, opacity: 0.75 }}>
-                        Signed in
-                        {supabaseUser.email ? `: ${supabaseUser.email}` : "."}
-                      </div>
-                      <button
-                        disabled={authBusy}
-                        style={{
-                          pointerEvents: "auto",
-                          height: 24,
-                          padding: "0 8px",
-                          borderRadius: 8,
-                          border: "1px solid rgba(127,127,127,0.25)",
-                          background: "transparent",
-                          color: "inherit",
-                          cursor: authBusy ? "not-allowed" : "pointer",
-                          opacity: authBusy ? 0.6 : 1,
-                          fontSize: 11,
-                        }}
-                        onClick={async () => {
-                          setAuthMsg(null);
-                          try {
-                            setAuthBusy(true);
-                            const supabase = getSupabaseBrowserClient();
-                            await supabase.auth.signOut();
-                          } catch {
-                            setAuthMsg("Could not sign out.");
-                          } finally {
-                            setAuthBusy(false);
-                          }
-                        }}
-                      >
-                        Sign out
-                      </button>
-                    </div>
-                  )}
-
-                  {stripeMsg ? (
-                    <div style={{ fontSize: 11, opacity: 0.75 }}>
-                      {stripeMsg}
-                    </div>
-                  ) : null}
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
-                    maxHeight: 220,
-                    overflow: "auto",
-                    paddingRight: 4,
-                  }}
-                >
-                  {SHOP_ITEMS.map((item) => {
-                    const owned = ownedAvatarUrls.includes(item.url);
-                    const selected = shopSelectedUrl === item.url;
-                    const canBuy = !owned && coins >= item.price;
-                    return (
-                      <div
-                        key={item.id}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 10,
-                          padding: "6px 8px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(127,127,127,0.20)",
-                          background: selected
-                            ? "rgba(255,255,255,0.08)"
-                            : "rgba(0,0,0,0.10)",
-                          cursor: "pointer",
-                        }}
-                        onClick={() => setShopSelectedUrl(item.url)}
-                      >
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontSize: 12,
-                              opacity: 0.95,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {item.name}
-                          </div>
-                          <div style={{ fontSize: 11, opacity: 0.7 }}>
-                            {owned ? "Owned" : `${item.price} coins`}
-                          </div>
-                        </div>
-
-                        <div
-                          style={{ display: "flex", gap: 8, flex: "0 0 auto" }}
-                        >
-                          {!owned ? (
-                            <button
-                              style={{
-                                pointerEvents: "auto",
-                                height: 28,
-                                padding: "0 10px",
-                                borderRadius: 8,
-                                border: "1px solid rgba(127,127,127,0.25)",
-                                background: "transparent",
-                                color: "inherit",
-                                cursor:
-                                  canBuy && supabaseUser
-                                    ? "pointer"
-                                    : "not-allowed",
-                                opacity: canBuy && supabaseUser ? 1 : 0.55,
-                                fontSize: 12,
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (!supabaseUser) {
-                                  setAuthMsg("Sign in to buy avatars.");
-                                  return;
-                                }
-                                if (!canBuy) return;
-
-                                const newCoins = Math.max(
-                                  0,
-                                  coins - item.price
-                                );
-                                const newOwned = ownedAvatarUrls.includes(
-                                  item.url
-                                )
-                                  ? ownedAvatarUrls
-                                  : [...ownedAvatarUrls, item.url];
-
-                                // Optimistic update
-                                setCoins(newCoins);
-                                setOwnedAvatarUrls(newOwned);
-
-                                const supabase = getSupabaseBrowserClient();
-                                supabase
-                                  .from("profiles")
-                                  .update({
-                                    coins: newCoins,
-                                    owned_avatars: newOwned,
-                                  })
-                                  .eq("id", supabaseUser.id)
-                                  .then(({ error }) => {
-                                    if (error) {
-                                      console.error("Purchase error:", error);
-                                      setAuthMsg(
-                                        `Purchase failed: ${error.message}`
-                                      );
-                                      // Revert on error
-                                      setCoins(coins);
-                                      setOwnedAvatarUrls(ownedAvatarUrls);
-                                    }
-                                  });
-                              }}
-                            >
-                              Buy
-                            </button>
-                          ) : (
-                            <button
-                              style={{
-                                pointerEvents: "auto",
-                                height: 28,
-                                padding: "0 10px",
-                                borderRadius: 8,
-                                border: "1px solid rgba(127,127,127,0.25)",
-                                background: "transparent",
-                                color: "inherit",
-                                cursor: "pointer",
-                                fontSize: 12,
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setDebugAvatarUrl(item.url);
-                                setAvatarUrl(item.url);
-                              }}
-                            >
-                              Equip
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.25 }}>
-                  {supabaseUser
-                    ? "Purchases are saved to your account."
-                    : "Sign in to save your purchases."}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {/* Player List (Desktop only or collapsible) */}
+        <div
+          style={{
+            pointerEvents: "auto",
+            padding: "10px 14px",
+            borderRadius: 12,
+            background: "rgba(0,0,0,0.4)",
+            backdropFilter: "blur(8px)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            color: "white",
+            maxHeight: "40vh",
+            overflowY: "auto",
+            width: 180,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              opacity: 0.6,
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}
+          >
+            Players
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {hudPlayers.slice(0, 10).map((p) => (
               <div
                 key={p.id}
@@ -4000,103 +3864,77 @@ export default function World({
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  fontSize: 12,
-                  opacity: 0.85,
+                  fontSize: 13,
                 }}
               >
                 <div
                   style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: 999,
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
                     background: p.color,
-                    flex: "0 0 auto",
+                    boxShadow: `0 0 4px ${p.color}`,
                   }}
                 />
-                <div style={{ whiteSpace: "nowrap" }}>
-                  {p.name || p.id.slice(0, 4)}
-                  {self?.id === p.id ? " (you)" : ""}
+                <div
+                  style={{
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    opacity: 0.9,
+                  }}
+                >
+                  {p.name || "Guest"}
+                  {self?.id === p.id ? " (You)" : ""}
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        <input
-          value={nameInput}
-          placeholder="Your name"
-          onChange={(e) => setNameInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter") return;
-            const cleaned = nameInput.trim().slice(0, 24);
-            setName(cleaned);
-            try {
-              window.sessionStorage.setItem("pawnsquare:name", cleaned);
-            } catch {
-              // ignore
-            }
-            (e.currentTarget as HTMLInputElement).blur();
-          }}
-          onBlur={() => {
-            const cleaned = nameInput.trim().slice(0, 24);
-            setName(cleaned);
-            try {
-              window.sessionStorage.setItem("pawnsquare:name", cleaned);
-            } catch {
-              // ignore
-            }
-          }}
-          style={{
-            pointerEvents: "auto",
-            height: 34,
-            width: 160,
-            padding: "0 10px",
-            borderRadius: 8,
-            border: "1px solid rgba(127,127,127,0.25)",
-            background: "transparent",
-            color: "inherit",
-            outline: "none",
-          }}
-        />
+        {/* Controls / Actions */}
+        <div style={{ display: "flex", gap: 8, pointerEvents: "auto" }}>
+          <button
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(roomLink);
+                setCopied(true);
+              } catch {
+                // ignore
+              }
+            }}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              background: "rgba(0,0,0,0.4)",
+              backdropFilter: "blur(8px)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "white",
+              fontSize: 12,
+              cursor: "pointer",
+              transition: "background 0.2s",
+            }}
+          >
+            {copied ? "Copied!" : "Share Link"}
+          </button>
 
-        <button
-          style={{
-            pointerEvents: "auto",
-            height: 34,
-            padding: "0 10px",
-            borderRadius: 8,
-            border: "1px solid rgba(127,127,127,0.25)",
-            background: "transparent",
-            color: "inherit",
-            cursor: "pointer",
-          }}
-          onClick={async () => {
-            try {
-              await navigator.clipboard.writeText(roomLink);
-              setCopied(true);
-            } catch {
-              // ignore
-            }
-          }}
-        >
-          {copied ? "Copied" : "Copy link"}
-        </button>
-
-        <button
-          style={{
-            pointerEvents: "auto",
-            height: 34,
-            padding: "0 10px",
-            borderRadius: 8,
-            border: "1px solid rgba(127,127,127,0.25)",
-            background: "transparent",
-            color: "inherit",
-            cursor: "pointer",
-          }}
-          onClick={onExit}
-        >
-          Exit
-        </button>
+          <button
+            onClick={onExit}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              background: "rgba(255, 59, 48, 0.2)",
+              backdropFilter: "blur(8px)",
+              border: "1px solid rgba(255, 59, 48, 0.3)",
+              color: "#ff6b6b",
+              fontSize: 12,
+              cursor: "pointer",
+              fontWeight: 500,
+            }}
+          >
+            Exit
+          </button>
+        </div>
       </div>
 
       <div
@@ -4162,6 +4000,884 @@ export default function World({
           }}
         />
       </div>
+      {/* Top Right Dock */}
+      <div
+        style={{
+          position: "fixed",
+          top: 12,
+          right: 12,
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+          pointerEvents: "auto",
+        }}
+        data-pawnsquare-menu-root
+      >
+        {/* Shop Button */}
+        {avatarSystem === "three-avatar" ? (
+          <>
+            <button
+              onClick={() => {
+                setShopOpen(true);
+              }}
+              style={{
+                height: 42,
+                padding: "0 16px",
+                borderRadius: 21,
+                background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+                border: "none",
+                color: "white",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                fontWeight: 600,
+                fontSize: 14,
+              }}
+              title="Shop"
+            >
+              <ShopIcon size={18} />
+              Shop
+            </button>
+
+            <button
+              onClick={() => setMenuOpen((v) => !v)}
+              style={{
+                height: 42,
+                width: 42,
+                borderRadius: 21,
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "white",
+                display: "grid",
+                placeItems: "center",
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+              }}
+              title={supabaseUser ? "Account" : "Sign in"}
+              aria-label="Menu"
+            >
+              <MenuIcon size={18} />
+            </button>
+
+            {menuOpen ? (
+              <div
+                style={{
+                  position: "fixed",
+                  top: 62,
+                  right: 12,
+                  width: 320,
+                  maxWidth: "calc(100vw - 24px)",
+                  background: "rgba(0,0,0,0.78)",
+                  backdropFilter: "blur(10px)",
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  borderRadius: 14,
+                  padding: 14,
+                  color: "white",
+                  boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+                  zIndex: 60,
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  {supabaseUser
+                    ? `Signed in${
+                        supabaseUser.email ? ` as ${supabaseUser.email}` : ""
+                      }`
+                    : "Sign in to sync coins + purchases"}
+                </div>
+
+                {!supabaseUser ? (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="Email"
+                        inputMode="email"
+                        autoComplete="email"
+                        style={{
+                          flex: 1,
+                          height: 36,
+                          padding: "0 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.18)",
+                          background: "rgba(255,255,255,0.06)",
+                          color: "white",
+                          outline: "none",
+                          fontSize: 13,
+                        }}
+                      />
+                      <button
+                        disabled={authBusy}
+                        onClick={async () => {
+                          const email = authEmail.trim();
+                          if (!email) {
+                            setAuthMsg("Enter an email.");
+                            return;
+                          }
+                          setAuthMsg(null);
+                          setAuthBusy(true);
+                          try {
+                            const supabase = getSupabaseBrowserClient();
+                            const redirectTo = `${window.location.origin}/auth/magic-link`;
+                            const { error } = await supabase.auth.signInWithOtp(
+                              {
+                                email,
+                                options: { emailRedirectTo: redirectTo },
+                              }
+                            );
+                            if (error) {
+                              setAuthMsg(error.message);
+                            } else {
+                              setAuthMsg(
+                                "Check your email for the magic link."
+                              );
+                            }
+                          } catch (e) {
+                            setAuthMsg(
+                              e instanceof Error
+                                ? e.message
+                                : "Could not start sign-in."
+                            );
+                          } finally {
+                            setAuthBusy(false);
+                          }
+                        }}
+                        style={{
+                          height: 36,
+                          padding: "0 12px",
+                          borderRadius: 10,
+                          border: "none",
+                          background: authBusy
+                            ? "rgba(255,255,255,0.12)"
+                            : "#667eea",
+                          color: "white",
+                          fontWeight: 700,
+                          cursor: authBusy ? "not-allowed" : "pointer",
+                          fontSize: 13,
+                        }}
+                      >
+                        {authBusy ? "..." : "Email"}
+                      </button>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        disabled={authBusy}
+                        onClick={async () => {
+                          setAuthMsg(null);
+                          try {
+                            setAuthBusy(true);
+                            const supabase = getSupabaseBrowserClient();
+                            const redirectTo = `${window.location.origin}/auth/popup`;
+                            const { data, error } =
+                              await supabase.auth.signInWithOAuth({
+                                provider: "google",
+                                options: {
+                                  redirectTo,
+                                  skipBrowserRedirect: true,
+                                },
+                              });
+
+                            if (error || !data?.url) {
+                              setAuthMsg(
+                                error?.message ||
+                                  "Could not start Google sign-in."
+                              );
+                              return;
+                            }
+
+                            const popup = openCenteredPopup(
+                              data.url,
+                              "pawnsquare-oauth"
+                            );
+                            if (!popup) {
+                              setAuthMsg(
+                                "Popup blocked. Allow popups and try again."
+                              );
+                              return;
+                            }
+                            setAuthMsg("Complete sign-in in the popup...");
+                          } catch {
+                            setAuthMsg("Could not start Google sign-in.");
+                          } finally {
+                            setAuthBusy(false);
+                          }
+                        }}
+                        style={{
+                          height: 34,
+                          padding: "0 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "transparent",
+                          color: "white",
+                          fontWeight: 700,
+                          cursor: authBusy ? "not-allowed" : "pointer",
+                          fontSize: 13,
+                          opacity: authBusy ? 0.6 : 1,
+                        }}
+                      >
+                        Google
+                      </button>
+
+                      <button
+                        disabled={authBusy}
+                        onClick={async () => {
+                          setAuthMsg(null);
+                          try {
+                            setAuthBusy(true);
+                            const supabase = getSupabaseBrowserClient();
+                            const redirectTo = `${window.location.origin}/auth/popup`;
+                            const { data, error } =
+                              await supabase.auth.signInWithOAuth({
+                                provider: "discord",
+                                options: {
+                                  redirectTo,
+                                  skipBrowserRedirect: true,
+                                },
+                              });
+
+                            if (error || !data?.url) {
+                              setAuthMsg(
+                                error?.message ||
+                                  "Could not start Discord sign-in."
+                              );
+                              return;
+                            }
+
+                            const popup = openCenteredPopup(
+                              data.url,
+                              "pawnsquare-oauth"
+                            );
+                            if (!popup) {
+                              setAuthMsg(
+                                "Popup blocked. Allow popups and try again."
+                              );
+                              return;
+                            }
+                            setAuthMsg("Complete sign-in in the popup...");
+                          } catch {
+                            setAuthMsg("Could not start Discord sign-in.");
+                          } finally {
+                            setAuthBusy(false);
+                          }
+                        }}
+                        style={{
+                          height: 34,
+                          padding: "0 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "transparent",
+                          color: "white",
+                          fontWeight: 700,
+                          cursor: authBusy ? "not-allowed" : "pointer",
+                          fontSize: 13,
+                          opacity: authBusy ? 0.6 : 1,
+                        }}
+                      >
+                        Discord
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                    <button
+                      onClick={async () => {
+                        setAuthMsg(null);
+                        try {
+                          const supabase = getSupabaseBrowserClient();
+                          const { error } = await supabase.auth.signOut();
+                          if (error) {
+                            setAuthMsg(error.message);
+                          } else {
+                            setMenuOpen(false);
+                          }
+                        } catch (e) {
+                          setAuthMsg(
+                            e instanceof Error
+                              ? e.message
+                              : "Could not sign out."
+                          );
+                        }
+                      }}
+                      style={{
+                        height: 36,
+                        padding: "0 12px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        background: "transparent",
+                        color: "white",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      Log out
+                    </button>
+                  </div>
+                )}
+
+                {authMsg ? (
+                  <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+                    {authMsg}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+
+      {/* Shop Modal */}
+      {shopOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+          }}
+          onClick={() => setShopOpen(false)}
+        >
+          <div
+            style={{
+              width: 800,
+              maxWidth: "90vw",
+              height: 600,
+              maxHeight: "90vh",
+              background: "#1a1a1a",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.1)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "16px 24px",
+                borderBottom: "1px solid rgba(255,255,255,0.1)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+                <div style={{ fontSize: 20, fontWeight: 600 }}>Shop</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {(["avatar", "theme", "chess"] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => {
+                        setShopTab(t);
+                        setShopSelectedId(null);
+                      }}
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: 8,
+                        background:
+                          shopTab === t
+                            ? "rgba(255,255,255,0.2)"
+                            : "transparent",
+                        color:
+                          shopTab === t ? "white" : "rgba(255,255,255,0.6)",
+                        border: "none",
+                        cursor: "pointer",
+                        fontSize: 14,
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {t === "chess"
+                        ? "Chess"
+                        : `${t.slice(0, 1).toUpperCase()}${t.slice(1)}s`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "rgba(255,255,255,0.1)",
+                    padding: "6px 12px",
+                    borderRadius: 20,
+                    fontSize: 14,
+                  }}
+                >
+                  <CoinsIcon size={16} />
+                  {coins}
+                  <button
+                    onClick={() => setShopTab("coins")}
+                    style={{
+                      background: "#667eea",
+                      border: "none",
+                      borderRadius: "50%",
+                      width: 18,
+                      height: 18,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "white",
+                      cursor: "pointer",
+                      marginLeft: 4,
+                      fontSize: 14,
+                      lineHeight: 1,
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+                <button
+                  onClick={() => setShopOpen(false)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "rgba(255,255,255,0.6)",
+                    cursor: "pointer",
+                    padding: 4,
+                  }}
+                >
+                  <CloseIcon size={24} />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+              {shopTab === "coins" ? (
+                <div
+                  style={{
+                    flex: 1,
+                    padding: 32,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 24,
+                  }}
+                >
+                  <div style={{ fontSize: 24, fontWeight: 600 }}>
+                    Get More Coins
+                  </div>
+                  <div style={{ display: "flex", gap: 16 }}>
+                    {COIN_PACKS.map((p) => (
+                      <button
+                        key={p.id}
+                        disabled={stripeBusy || !supabaseUser}
+                        style={{
+                          padding: "24px",
+                          borderRadius: 16,
+                          background: "rgba(255,255,255,0.05)",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          gap: 12,
+                          cursor:
+                            stripeBusy || !supabaseUser
+                              ? "not-allowed"
+                              : "pointer",
+                          opacity: stripeBusy || !supabaseUser ? 0.6 : 1,
+                          width: 160,
+                        }}
+                        onClick={async () => {
+                          if (!self?.id) return;
+                          if (!supabaseUser) {
+                            setAuthMsg("Sign in required before purchases.");
+                            return;
+                          }
+                          setStripeMsg(null);
+                          try {
+                            setStripeBusy(true);
+                            const supabase = getSupabaseBrowserClient();
+                            const { data: sessionData } =
+                              await supabase.auth.getSession();
+                            const token = sessionData.session?.access_token;
+                            if (!token) {
+                              setAuthMsg("Sign in required before purchases.");
+                              return;
+                            }
+                            const res = await fetch(
+                              "/api/stripe/create-checkout",
+                              {
+                                method: "POST",
+                                headers: {
+                                  "content-type": "application/json",
+                                  authorization: `Bearer ${token}`,
+                                },
+                                body: JSON.stringify({
+                                  packId: p.id,
+                                  roomId,
+                                  playerId: self.id,
+                                }),
+                              }
+                            );
+                            const data = (await res.json()) as {
+                              url?: string;
+                              error?: string;
+                            };
+                            if (!data.url) {
+                              setStripeMsg(
+                                data.error || "Could not start checkout."
+                              );
+                              return;
+                            }
+                            const popup = window.open(
+                              data.url,
+                              "pawnsquare-checkout",
+                              "width=600,height=800"
+                            );
+                            setStripeMsg("Complete payment in the popup...");
+
+                            // Poll to see if popup is closed
+                            const timer = setInterval(() => {
+                              if (popup && popup.closed) {
+                                clearInterval(timer);
+                                setStripeBusy(false);
+                                setStripeMsg(null);
+                              }
+                            }, 500);
+                          } catch {
+                            setStripeMsg("Could not start checkout.");
+                            setStripeBusy(false);
+                          }
+                        }}
+                      >
+                        <CoinsIcon size={32} />
+                        <div style={{ fontSize: 20, fontWeight: 600 }}>
+                          {p.coins}
+                        </div>
+                        <div
+                          style={{
+                            padding: "6px 12px",
+                            background: "#667eea",
+                            borderRadius: 8,
+                            fontSize: 14,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {p.priceLabel}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  {stripeMsg && (
+                    <div style={{ color: "#ffd700" }}>{stripeMsg}</div>
+                  )}
+                  {!supabaseUser && (
+                    <div style={{ color: "#ff6b6b" }}>
+                      Sign in required to purchase coins.
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Sidebar / List */}
+                  <div
+                    style={{
+                      width: 280,
+                      borderRight: "1px solid rgba(255,255,255,0.1)",
+                      overflowY: "auto",
+                      padding: 16,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                    }}
+                  >
+                    {SHOP_ITEMS.filter(
+                      (i) =>
+                        i.type === shopTab &&
+                        !isShopItemLocked(i, ownedAvatarUrls)
+                    ).map((item) => {
+                      const owned = isShopItemOwned(item, ownedAvatarUrls);
+                      const selected = shopSelectedId === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => setShopSelectedId(item.id)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            padding: "12px",
+                            borderRadius: 8,
+                            background: selected
+                              ? "rgba(255,255,255,0.1)"
+                              : "transparent",
+                            border: "none",
+                            color: "white",
+                            cursor: "pointer",
+                            textAlign: "left",
+                            transition: "background 0.2s",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 2,
+                            }}
+                          >
+                            <div style={{ fontWeight: 500 }}>{item.name}</div>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              opacity: owned ? 0.5 : 1,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 4,
+                            }}
+                          >
+                            {owned ? (
+                              "Owned"
+                            ) : (
+                              <>
+                                <CoinsIcon size={12} />
+                                {item.price}
+                              </>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Preview Area */}
+                  <div
+                    style={{
+                      flex: 1,
+                      padding: 24,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 24,
+                      background:
+                        "radial-gradient(circle at center, rgba(255,255,255,0.05) 0%, transparent 70%)",
+                    }}
+                  >
+                    {(() => {
+                      const item = SHOP_ITEMS.find(
+                        (i) => i.id === shopSelectedId
+                      );
+                      if (!item || isShopItemLocked(item, ownedAvatarUrls))
+                        return (
+                          <div style={{ opacity: 0.5 }}>Select an item</div>
+                        );
+                      const owned = isShopItemOwned(item, ownedAvatarUrls);
+                      const canBuy = !owned && coins >= item.price;
+
+                      return (
+                        <>
+                          <div
+                            style={{
+                              width: 300,
+                              height: 400,
+                              background: "rgba(0,0,0,0.2)",
+                              borderRadius: 12,
+                              overflow: "hidden",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              border: "1px solid rgba(255,255,255,0.1)",
+                            }}
+                          >
+                            {item.type === "avatar" ? (
+                              <VrmPreview
+                                url={item.url}
+                                width={300}
+                                height={400}
+                              />
+                            ) : item.type === "chess" ? (
+                              <div style={{ width: "100%", height: "100%" }}>
+                                {(item as any).chessKind === "board" ? (
+                                  <ChessBoardPreview boardTheme={item.id} />
+                                ) : (
+                                  <ChessSetPreview chessTheme={item.id} />
+                                )}
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  alignItems: "center",
+                                  gap: 16,
+                                  opacity: 0.7,
+                                }}
+                              >
+                                {(item as any).previewImage ? (
+                                  <img
+                                    src={(item as any).previewImage}
+                                    alt={item.name}
+                                    style={{
+                                      width: 240,
+                                      height: 240,
+                                      objectFit: "cover",
+                                      borderRadius: 12,
+                                      border:
+                                        "1px solid rgba(255,255,255,0.12)",
+                                    }}
+                                  />
+                                ) : (
+                                  <ThemeIcon size={64} />
+                                )}
+                                <div>
+                                  {item.type === "theme"
+                                    ? "World Theme"
+                                    : "Chess Set"}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ display: "flex", gap: 16 }}>
+                            {!owned ? (
+                              <button
+                                disabled={!canBuy || !supabaseUser}
+                                onClick={() => {
+                                  if (!supabaseUser) {
+                                    setAuthMsg("Sign in to buy.");
+                                    return;
+                                  }
+                                  if (!canBuy) return;
+
+                                  const newCoins = Math.max(
+                                    0,
+                                    coins - item.price
+                                  );
+                                  const idToStore =
+                                    item.type === "theme" ||
+                                    item.type === "chess"
+                                      ? item.id
+                                      : item.url;
+                                  const newOwned = [
+                                    ...ownedAvatarUrls,
+                                    idToStore,
+                                  ];
+
+                                  setCoins(newCoins);
+                                  setOwnedAvatarUrls(newOwned);
+
+                                  const supabase = getSupabaseBrowserClient();
+                                  supabase
+                                    .from("profiles")
+                                    .update({
+                                      coins: newCoins,
+                                      owned_avatars: newOwned,
+                                    })
+                                    .eq("id", supabaseUser.id)
+                                    .then(({ error }) => {
+                                      if (error) {
+                                        console.error("Purchase error:", error);
+                                        setAuthMsg(
+                                          `Purchase failed: ${error.message}`
+                                        );
+                                        setCoins(coins);
+                                        setOwnedAvatarUrls(ownedAvatarUrls);
+                                      }
+                                    });
+                                }}
+                                style={{
+                                  padding: "12px 32px",
+                                  borderRadius: 8,
+                                  background: canBuy
+                                    ? "#667eea"
+                                    : "rgba(255,255,255,0.1)",
+                                  color: "white",
+                                  border: "none",
+                                  fontSize: 16,
+                                  fontWeight: 600,
+                                  cursor: canBuy ? "pointer" : "not-allowed",
+                                  opacity: canBuy ? 1 : 0.5,
+                                }}
+                              >
+                                Buy for {item.price}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  if (item.type === "avatar") {
+                                    setDebugAvatarUrl(item.url);
+                                    setAvatarUrl(item.url);
+                                    void persistEquipped({
+                                      equipped_avatar_url: item.url,
+                                    });
+                                  } else if (
+                                    item.type === "theme" &&
+                                    onLobbyChange
+                                  ) {
+                                    if (item.id === "theme_scifi") {
+                                      onLobbyChange("scifi");
+                                    } else {
+                                      onLobbyChange("park");
+                                    }
+                                    void persistEquipped({
+                                      equipped_theme: item.id,
+                                    });
+                                  } else if (item.type === "chess") {
+                                    if ((item as any).chessKind === "board") {
+                                      setChessBoardTheme(item.id);
+                                      void persistEquipped({
+                                        equipped_chess_board: item.id,
+                                      });
+                                    } else {
+                                      setChessTheme(item.id);
+                                      void persistEquipped({
+                                        equipped_chess_set: item.id,
+                                      });
+                                    }
+                                  }
+                                }}
+                                style={{
+                                  padding: "12px 32px",
+                                  borderRadius: 8,
+                                  background: "white",
+                                  color: "black",
+                                  border: "none",
+                                  fontSize: 16,
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Equip
+                              </button>
+                            )}
+                          </div>
+
+                          {!supabaseUser && !owned && item.price > 0 && (
+                            <div style={{ fontSize: 12, color: "#ff6b6b" }}>
+                              Sign in required to purchase
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

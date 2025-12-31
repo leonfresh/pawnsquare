@@ -1,6 +1,6 @@
 "use client";
 
-import { Text, useGLTF } from "@react-three/drei";
+import { RoundedBox, Text, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { Chess, type Square } from "chess.js";
 import PartySocket from "partysocket";
@@ -122,7 +122,41 @@ function piecePath(type: string) {
   }
 }
 
-function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
+function applyFresnelRim(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  rimColor: THREE.Color,
+  rimPower = 2.25,
+  rimIntensity = 0.65
+) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimColor = { value: rimColor };
+    shader.uniforms.uRimPower = { value: rimPower };
+    shader.uniforms.uRimIntensity = { value: rimIntensity };
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimIntensity;`
+      )
+      .replace(
+        "#include <output_fragment>",
+        `float rim = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), uRimPower);\noutgoingLight += uRimColor * rim * uRimIntensity;\n#include <output_fragment>`
+      );
+  };
+  material.needsUpdate = true;
+}
+
+function PieceModel({
+  path,
+  tint,
+  chessTheme,
+  side,
+}: {
+  path: string;
+  tint: THREE.Color;
+  chessTheme?: string;
+  side?: "w" | "b";
+}) {
   const gltf = useGLTF(path) as any;
 
   const cloned = useMemo(() => {
@@ -133,20 +167,83 @@ function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
 
-      const mat = mesh.material as any;
-      if (mat && mat.isMaterial) {
-        mesh.material = mat.clone();
-        const clonedMat = mesh.material as any;
-        if (clonedMat.color && clonedMat.color.isColor) {
-          clonedMat.color = clonedMat.color.clone();
-          clonedMat.color.copy(tint);
+      const srcMat = mesh.material as any;
+      if (!srcMat || !srcMat.isMaterial) return;
+      mesh.material = srcMat.clone();
+      const clonedMat = mesh.material as any;
+      if (clonedMat.color && clonedMat.color.isColor) {
+        clonedMat.color = clonedMat.color.clone();
+      }
+
+      if (chessTheme === "chess_glass") {
+        const isWhite = side === "w";
+        const base = isWhite
+          ? new THREE.Color("#d7f0ff")
+          : new THREE.Color("#0a0f1c");
+        const rim = isWhite
+          ? new THREE.Color("#bff3ff")
+          : new THREE.Color("#4aa3ff");
+
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(base);
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.05;
+        if (typeof clonedMat.roughness === "number")
+          clonedMat.roughness = isWhite ? 0.35 : 0.12;
+        clonedMat.transparent = true;
+        clonedMat.opacity = isWhite ? 0.42 : 0.28;
+        clonedMat.depthWrite = false;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(rim);
+          clonedMat.emissiveIntensity = isWhite ? 0.12 : 0.18;
         }
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 1.25;
+        applyFresnelRim(clonedMat, rim, 2.0, isWhite ? 0.55 : 0.75);
+      } else if (chessTheme === "chess_gold") {
+        const isWhite = side === "w";
+        const base = isWhite
+          ? new THREE.Color("#dfe6ef")
+          : new THREE.Color("#d4af37");
+        const rim = isWhite
+          ? new THREE.Color("#9fe8ff")
+          : new THREE.Color("#fff2b0");
+
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(base);
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 1.0;
+        if (typeof clonedMat.roughness === "number")
+          clonedMat.roughness = isWhite ? 0.18 : 0.22;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(rim);
+          clonedMat.emissiveIntensity = isWhite ? 0.06 : 0.08;
+        }
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 1.25;
+        applyFresnelRim(clonedMat, rim, 2.6, isWhite ? 0.28 : 0.42);
+      } else if (chessTheme === "chess_wood") {
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(tint);
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.05;
+        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.85;
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 0.35;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(tint.clone().multiplyScalar(0.02));
+          clonedMat.emissiveIntensity = 0.25;
+        }
+      } else {
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(tint);
         // Matte metallic look - more readable, less neon
         if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.6;
         if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.4;
-        if (typeof clonedMat.emissive === "object") {
-            clonedMat.emissive = tint.clone().multiplyScalar(0.05);
-            clonedMat.emissiveIntensity = 0.5;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(tint.clone().multiplyScalar(0.05));
+          clonedMat.emissiveIntensity = 0.5;
         }
       }
     });
@@ -169,13 +266,365 @@ function PieceModel({ path, tint }: { path: string; tint: THREE.Color }) {
     }
 
     return root;
-  }, [gltf, tint]);
+  }, [gltf, tint, chessTheme, side]);
 
   return <primitive object={cloned} />;
 }
 
 const BOARD_TOP_Y = 0.08;
 const SQUARE_TOP_Y = 0.04;
+
+function MarbleTileMaterial({ color }: { color: string }) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const base = useMemo(() => new THREE.Color(color), [color]);
+  const vein = useMemo(() => new THREE.Color("#ffffff"), []);
+
+  const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uBase = { value: base };
+    shader.uniforms.uVein = { value: vein };
+
+    shader.vertexShader = `
+      varying vec3 vPos;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+      #include <worldpos_vertex>
+      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      `
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      uniform float uTime;
+      uniform vec3 uBase;
+      uniform vec3 uVein;
+
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i + vec2(0.0, 0.0));
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+      float fbm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise2(p); p *= 2.02;
+        f += 0.2500 * noise2(p); p *= 2.03;
+        f += 0.1250 * noise2(p); p *= 2.01;
+        f += 0.0625 * noise2(p);
+        return f;
+      }
+
+      ${shader.fragmentShader}
+    `.replace(
+      "#include <color_fragment>",
+      `
+      #include <color_fragment>
+      vec2 p = vPos.xz * 1.25;
+      float n = fbm(p);
+      float n2 = fbm(p * 2.3 + vec2(12.3, -4.7));
+      float flow = sin((p.x + p.y) * 2.5 + (n * 6.0) + uTime * 0.05);
+      float veins = smoothstep(0.55, 0.85, abs(flow)) * smoothstep(0.2, 0.8, n2);
+
+      vec3 baseCol = uBase;
+      vec3 darkCol = baseCol * 0.82;
+      vec3 lightCol = mix(baseCol, uVein, 0.35);
+      vec3 col = mix(darkCol, lightCol, n * 0.55);
+      col = mix(col, uVein, veins * 0.35);
+      diffuseColor.rgb = col;
+      `
+    );
+
+    (materialRef.current as any).userData.shader = shader;
+  };
+
+  useFrame(({ clock }) => {
+    const shader = (materialRef.current as any)?.userData?.shader;
+    if (shader?.uniforms?.uTime)
+      shader.uniforms.uTime.value = clock.getElapsedTime();
+  });
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      roughness={0.35}
+      metalness={0.25}
+    />
+  );
+}
+
+function NeonTileMaterial({ color }: { color: string }) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+  const base = useMemo(() => new THREE.Color(color), [color]);
+  const neon = useMemo(() => new THREE.Color("#4be7ff"), []);
+  const neonAlt = useMemo(() => new THREE.Color("#ff4bd8"), []);
+
+  const onBeforeCompile = (shader: any) => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uBase = { value: base };
+    shader.uniforms.uNeon = { value: neon };
+    shader.uniforms.uNeonAlt = { value: neonAlt };
+    shader.uniforms.uSquareSize = { value: 0.6 };
+
+    shader.vertexShader = `
+      varying vec3 vPos;
+      varying vec2 vTronUv;
+      ${shader.vertexShader}
+    `
+      .replace(
+        "#include <uv_vertex>",
+        `
+        #include <uv_vertex>
+        vTronUv = uv;
+        `
+      )
+      .replace(
+        "#include <worldpos_vertex>",
+        `
+        #include <worldpos_vertex>
+        vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        `
+      );
+
+    shader.fragmentShader = `
+      varying vec3 vPos;
+      varying vec2 vTronUv;
+      uniform float uTime;
+      uniform vec3 uBase;
+      uniform vec3 uNeon;
+      uniform vec3 uNeonAlt;
+      uniform float uSquareSize;
+
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i + vec2(0.0, 0.0));
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+      float fbm2(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise2(p); p *= 2.02;
+        f += 0.2500 * noise2(p); p *= 2.03;
+        f += 0.1250 * noise2(p); p *= 2.01;
+        f += 0.0625 * noise2(p);
+        return f;
+      }
+
+      float panelSeams(vec2 p, vec2 cell) {
+        vec2 g = p / cell;
+        vec2 f = abs(fract(g) - 0.5);
+        float line = min(f.x, f.y);
+        return 1.0 - smoothstep(0.485, 0.5, line);
+      }
+
+      ${shader.fragmentShader}
+    `
+      .replace(
+        "#include <color_fragment>",
+        `
+        #include <color_fragment>
+
+        vec2 uv = vTronUv;
+
+        vec2 pW = vPos.xz;
+        float grime = fbm2(pW * 0.30);
+        float pulse = 0.82 + 0.18 * sin(uTime * 1.10 + (vPos.x + vPos.z) * 0.65);
+
+        float s0 = panelSeams(pW, vec2(1.8, 1.8));
+        float s1 = panelSeams(pW + vec2(0.55, 0.8), vec2(4.6, 4.6));
+        float seams = clamp(s0 * 0.9 + s1 * 0.35, 0.0, 1.0);
+
+        float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+        float borderLine = 1.0 - smoothstep(0.045, 0.070, edge);
+
+        vec2 p = uv * 10.0;
+        vec2 cell = abs(fract(p) - 0.5);
+        float grid = 1.0 - smoothstep(0.492, 0.5, min(cell.x, cell.y));
+
+        float n = fbm2(uv * 14.0 + vec2(2.3, -1.7));
+        float traces = smoothstep(0.70, 0.86, n) * 0.55;
+
+        vec2 idx = floor((pW / uSquareSize) + vec2(4.0));
+        float parity = mod(idx.x + idx.y, 2.0);
+        vec3 neonCol = mix(uNeon, uNeonAlt, parity);
+
+        float baseLum = dot(uBase, vec3(0.299, 0.587, 0.114));
+        float baseMul = mix(0.28, 0.52, smoothstep(0.08, 0.34, baseLum));
+
+        diffuseColor.rgb = uBase * baseMul;
+        diffuseColor.rgb *= mix(0.92, 1.03, grime);
+        float dataPulse = smoothstep(0.92, 1.0, abs(sin((uv.x + uv.y) * 18.0 + uTime * 1.6 + n * 4.0)));
+        diffuseColor.rgb += neonCol * (borderLine * 0.045 + grid * 0.016 + traces * 0.015) * pulse;
+        diffuseColor.rgb += neonCol * (seams * 0.012) * (0.85 + 0.15 * grime);
+        diffuseColor.rgb += neonCol * (dataPulse * 0.008) * (0.8 + 0.2 * pulse);
+        `
+      )
+      .replace(
+        "#include <emissivemap_fragment>",
+        `
+        #include <emissivemap_fragment>
+
+        vec2 uv2 = vTronUv;
+
+        float edge2 = min(min(uv2.x, 1.0 - uv2.x), min(uv2.y, 1.0 - uv2.y));
+        float borderLine2 = 1.0 - smoothstep(0.045, 0.070, edge2);
+
+        vec2 p2 = uv2 * 10.0;
+        vec2 cell2 = abs(fract(p2) - 0.5);
+        float grid2 = 1.0 - smoothstep(0.492, 0.5, min(cell2.x, cell2.y));
+
+        float n2 = fbm2(uv2 * 14.0 + vec2(2.3, -1.7));
+        float traces2 = smoothstep(0.70, 0.86, n2) * 0.55;
+
+        vec2 pW2 = vPos.xz;
+        float s02 = panelSeams(pW2, vec2(1.8, 1.8));
+        float s12 = panelSeams(pW2 + vec2(0.55, 0.8), vec2(4.6, 4.6));
+        float seams2 = clamp(s02 * 0.9 + s12 * 0.35, 0.0, 1.0);
+
+        vec2 idx2 = floor((pW2 / uSquareSize) + vec2(4.0));
+        float parity2 = mod(idx2.x + idx2.y, 2.0);
+        vec3 neonCol2 = mix(uNeon, uNeonAlt, parity2);
+
+        float pulse2 = 0.82 + 0.18 * sin(uTime * 1.10 + (vPos.x + vPos.z) * 0.65);
+        float flicker2 = 0.92 + 0.08 * noise2(vPos.xz * 0.70 + vec2(uTime * 0.10, uTime * 0.07));
+
+        totalEmissiveRadiance += neonCol2 * (borderLine2 * 0.10 + grid2 * 0.032 + traces2 * 0.040) * pulse2 * flicker2;
+        totalEmissiveRadiance += neonCol2 * (seams2 * 0.030) * (0.85 + 0.15 * flicker2);
+        `
+      );
+
+    (materialRef.current as any).userData.shader = shader;
+  };
+
+  useFrame(({ clock }) => {
+    const shader = (materialRef.current as any)?.userData?.shader;
+    if (shader?.uniforms?.uTime)
+      shader.uniforms.uTime.value = clock.getElapsedTime();
+  });
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      roughness={0.25}
+      metalness={0.45}
+      emissive={neon}
+      emissiveIntensity={0.05}
+    />
+  );
+}
+
+function CozyGlowDecal({
+  position,
+  rotation,
+  size,
+  colorA,
+  colorB,
+  intensity = 1.0,
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  size: [number, number];
+  colorA: string;
+  colorB: string;
+  intensity?: number;
+}) {
+  const matRef = useRef<THREE.ShaderMaterial>(null);
+  const cA = useMemo(() => new THREE.Color(colorA), [colorA]);
+  const cB = useMemo(() => new THREE.Color(colorB), [colorB]);
+
+  useFrame(({ clock }) => {
+    if (matRef.current)
+      matRef.current.uniforms.uTime.value = clock.getElapsedTime();
+  });
+
+  return (
+    <mesh
+      position={position}
+      rotation={rotation ?? [-Math.PI / 2, 0, 0]}
+      renderOrder={-10}
+    >
+      <planeGeometry args={size} />
+      <shaderMaterial
+        ref={matRef}
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
+        toneMapped={false}
+        uniforms={{
+          uTime: { value: 0 },
+          uColorA: { value: cA },
+          uColorB: { value: cB },
+          uIntensity: { value: intensity },
+        }}
+        vertexShader={`
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `}
+        fragmentShader={`
+          varying vec2 vUv;
+          uniform float uTime;
+          uniform vec3 uColorA;
+          uniform vec3 uColorB;
+          uniform float uIntensity;
+
+          float hash21(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+          }
+          float noise2(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            float a = hash21(i + vec2(0.0, 0.0));
+            float b = hash21(i + vec2(1.0, 0.0));
+            float c = hash21(i + vec2(0.0, 1.0));
+            float d = hash21(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+          }
+
+          void main() {
+            vec2 uv = vUv;
+            vec2 p = uv - 0.5;
+            p.x *= 1.15;
+            float r = length(p);
+
+            // soft radial pool + a bit of animated texture
+            float base = smoothstep(0.55, 0.05, r);
+            float n = noise2(uv * 8.0 + vec2(uTime * 0.05, -uTime * 0.04));
+            float n2 = noise2(uv * 22.0 + vec2(-uTime * 0.12, uTime * 0.08));
+            float tex = 0.75 + 0.25 * (n * 0.7 + n2 * 0.3);
+            float pulse = 0.85 + 0.15 * sin(uTime * 0.8);
+
+            vec3 col = mix(uColorA, uColorB, smoothstep(0.0, 0.9, uv.y));
+            float a = base * tex * pulse;
+            a *= 0.30;
+
+            gl_FragColor = vec4(col * (a * uIntensity), a);
+          }
+        `}
+      />
+    </mesh>
+  );
+}
 
 function easeInOut(t: number) {
   // smoothstep
@@ -195,6 +644,7 @@ function AnimatedPiece({
   onPickPiece,
   whiteTint,
   blackTint,
+  chessTheme,
 }: {
   square: Square;
   type: string;
@@ -208,6 +658,7 @@ function AnimatedPiece({
   onPickPiece: (sq: Square) => void;
   whiteTint: THREE.Color;
   blackTint: THREE.Color;
+  chessTheme?: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const animRef = useRef<{
@@ -285,7 +736,12 @@ function AnimatedPiece({
       }}
     >
       <group scale={[scale, scale, scale]}>
-        <PieceModel path={piecePath(type)} tint={tint} />
+        <PieceModel
+          path={piecePath(type)}
+          tint={tint}
+          chessTheme={chessTheme}
+          side={color}
+        />
       </group>
     </group>
   );
@@ -335,10 +791,7 @@ function JoinPad({
         />
       </mesh>
       {/* Holographic top */}
-      <mesh
-        position={[0, 0.1, 0]}
-        onPointerDown={handleClick}
-      >
+      <mesh position={[0, 0.1, 0]} onPointerDown={handleClick}>
         <boxGeometry args={[w * 0.95, 0.02, d * 0.95]} />
         <meshBasicMaterial
           color={disabled ? "#444" : active ? "#00ffff" : "#0088ff"}
@@ -359,7 +812,6 @@ function JoinPad({
         anchorY="middle"
         outlineWidth={0.008}
         outlineColor={active ? "#00ffff" : "transparent"}
-        fontWeight="bold"
         onPointerDown={handleClick}
       >
         {label}
@@ -388,6 +840,8 @@ export function ScifiChess({
   onJoinIntent,
   onSelfSeatChange,
   onRequestMove,
+  chessTheme,
+  chessBoardTheme,
 }: {
   roomId: string;
   boardKey: string;
@@ -398,7 +852,12 @@ export function ScifiChess({
   joinLockedBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
   onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
-  onRequestMove?: (dest: Vec3, opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }) => void;
+  onRequestMove?: (
+    dest: Vec3,
+    opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
+  ) => void;
+  chessTheme?: string;
+  chessBoardTheme?: string;
 }) {
   const originVec = useMemo(
     () => new THREE.Vector3(origin[0], origin[1], origin[2]),
@@ -407,9 +866,68 @@ export function ScifiChess({
   const squareSize = 0.6;
   const boardSize = squareSize * 8;
 
-  // Brighter, more readable colors - Chrome silver vs Deep blue
-  const whiteTint = useMemo(() => new THREE.Color("#d0d8e8"), []);
-  const blackTint = useMemo(() => new THREE.Color("#2a4a7a"), []);
+  // Brighter, more readable colors - Chrome silver vs Deep blue (unless wood set equipped)
+  const whiteTint = useMemo(() => {
+    if (chessTheme === "chess_wood") return new THREE.Color("#e1c28b");
+    return new THREE.Color("#d0d8e8");
+  }, [chessTheme]);
+  const blackTint = useMemo(() => {
+    if (chessTheme === "chess_wood") return new THREE.Color("#8a6a1b");
+    return new THREE.Color("#2a4a7a");
+  }, [chessTheme]);
+
+  const boardPalette = useMemo(() => {
+    switch (chessBoardTheme) {
+      case "board_walnut":
+        return {
+          base: {
+            color: "#2a1b12",
+            roughness: 0.55,
+            metalness: 0.25,
+            emissive: "#110a08",
+            emissiveIntensity: 0.08,
+          },
+          light: { color: "#c7a07a", emissive: "#2a1b12" },
+          dark: { color: "#5a2d13", emissive: "#1a0e08" },
+        };
+      case "board_marble":
+        return {
+          base: {
+            color: "#2b2b33",
+            roughness: 0.35,
+            metalness: 0.6,
+            emissive: "#16161c",
+            emissiveIntensity: 0.12,
+          },
+          light: { color: "#d9d9df", emissive: "#202028" },
+          dark: { color: "#3a3a44", emissive: "#101018" },
+        };
+      case "board_neon":
+        return {
+          base: {
+            color: "#07101c",
+            roughness: 0.18,
+            metalness: 0.9,
+            emissive: "#07101c",
+            emissiveIntensity: 0.08,
+          },
+          light: { color: "#1f5561", emissive: "#0a203a" },
+          dark: { color: "#070a10", emissive: "#07101c" },
+        };
+      default:
+        return {
+          base: {
+            color: "#2a3a4a",
+            roughness: 0.3,
+            metalness: 0.7,
+            emissive: "#1a2a3a",
+            emissiveIntensity: 0.2,
+          },
+          light: { color: "#4a5a6a", emissive: "#2a3a4a" },
+          dark: { color: "#1a2a3a", emissive: "#0a1a2a" },
+        };
+    }
+  }, [chessBoardTheme]);
 
   const socketRef = useRef<PartySocket | null>(null);
   const [chessSelfId, setChessSelfId] = useState<string>("");
@@ -769,6 +1287,45 @@ export function ScifiChess({
 
   return (
     <group>
+      {/* Cozy glow pools (cheap shader decals) */}
+      <CozyGlowDecal
+        position={[originVec.x, 0.031, originVec.z]}
+        size={[10.5, 10.5]}
+        colorA="#ff7ad9"
+        colorB="#7ae6ff"
+        intensity={1.0}
+      />
+
+      {/* under-seat pools */}
+      <CozyGlowDecal
+        position={[originVec.x - 3.5, 0.031, originVec.z + padOffset + 1.5]}
+        size={[4.0, 2.2]}
+        colorA="#ffb36b"
+        colorB="#ff5fd6"
+        intensity={0.9}
+      />
+      <CozyGlowDecal
+        position={[originVec.x + 3.5, 0.031, originVec.z + padOffset + 1.5]}
+        size={[4.0, 2.2]}
+        colorA="#ffb36b"
+        colorB="#ff5fd6"
+        intensity={0.9}
+      />
+      <CozyGlowDecal
+        position={[originVec.x - 3.5, 0.031, originVec.z - padOffset - 1.5]}
+        size={[4.0, 2.2]}
+        colorA="#7ae6ff"
+        colorB="#8fff6b"
+        intensity={0.85}
+      />
+      <CozyGlowDecal
+        position={[originVec.x + 3.5, 0.031, originVec.z - padOffset - 1.5]}
+        size={[4.0, 2.2]}
+        colorA="#7ae6ff"
+        colorB="#8fff6b"
+        intensity={0.85}
+      />
+
       {/* Result banner */}
       {resultLabel ? (
         <Text
@@ -779,7 +1336,6 @@ export function ScifiChess({
           anchorY="middle"
           outlineWidth={0.02}
           outlineColor="#000"
-          fontWeight="bold"
         >
           {resultLabel}
         </Text>
@@ -787,7 +1343,9 @@ export function ScifiChess({
 
       {/* Sci-fi Seats */}
       {/* White side seats */}
-      <group position={[originVec.x - 3.5, 0.2, originVec.z + padOffset + 1.5]}>
+      <group
+        position={[originVec.x - 3.5, 0.28, originVec.z + padOffset + 1.5]}
+      >
         <mesh
           castShadow
           receiveShadow
@@ -799,28 +1357,75 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 0.95);
+            requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 1.35);
           }}
         >
-          <boxGeometry args={[2.5, 0.1, 0.6]} />
-          <meshStandardMaterial
-            color="#111"
-            roughness={0.2}
-            metalness={0.9}
-          />
+          <boxGeometry args={[2.9, 0.1, 0.85]} />
+          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
         </mesh>
+
+        {/* cushion + pillows (raise seat height) */}
+        <RoundedBox
+          args={[2.55, 0.14, 0.72]}
+          radius={0.1}
+          smoothness={3}
+          position={[0, 0.1, 0]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#1a1a24"
+            roughness={0.98}
+            metalness={0.02}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.82, 0.12, 0.36]}
+          radius={0.1}
+          smoothness={3}
+          position={[-0.62, 0.18, 0.1]}
+          rotation={[0, 0.08, 0.06]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.88, 0.12, 0.38]}
+          radius={0.1}
+          smoothness={3}
+          position={[0.62, 0.175, -0.06]}
+          rotation={[0, -0.07, -0.05]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
         {/* Glowing edge */}
-        <mesh position={[0, 0.055, 0.3]}>
-            <boxGeometry args={[2.5, 0.01, 0.02]} />
-            <meshBasicMaterial color="#00ffff" />
+        <mesh position={[0, 0.135, 0.42]}>
+          <boxGeometry args={[2.9, 0.01, 0.02]} />
+          <meshBasicMaterial color="#00ffff" />
         </mesh>
         {/* Floating effect base */}
         <mesh position={[0, -0.2, 0]}>
-            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-            <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
+          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+          <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
         </mesh>
       </group>
-      <group position={[originVec.x + 3.5, 0.2, originVec.z + padOffset + 1.5]}>
+      <group
+        position={[originVec.x + 3.5, 0.28, originVec.z + padOffset + 1.5]}
+      >
         <mesh
           castShadow
           receiveShadow
@@ -832,28 +1437,75 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 0.95);
+            requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 1.35);
           }}
         >
-          <boxGeometry args={[2.5, 0.1, 0.6]} />
-          <meshStandardMaterial
-            color="#111"
-            roughness={0.2}
-            metalness={0.9}
-          />
+          <boxGeometry args={[2.9, 0.1, 0.85]} />
+          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
         </mesh>
-        <mesh position={[0, 0.055, 0.3]}>
-            <boxGeometry args={[2.5, 0.01, 0.02]} />
-            <meshBasicMaterial color="#00ffff" />
+
+        {/* cushion + pillows (raise seat height) */}
+        <RoundedBox
+          args={[2.55, 0.14, 0.72]}
+          radius={0.1}
+          smoothness={3}
+          position={[0, 0.1, 0]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#1a1a24"
+            roughness={0.98}
+            metalness={0.02}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.82, 0.12, 0.36]}
+          radius={0.1}
+          smoothness={3}
+          position={[-0.62, 0.18, 0.1]}
+          rotation={[0, 0.08, 0.06]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.88, 0.12, 0.38]}
+          radius={0.1}
+          smoothness={3}
+          position={[0.62, 0.175, -0.06]}
+          rotation={[0, -0.07, -0.05]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <mesh position={[0, 0.135, 0.42]}>
+          <boxGeometry args={[2.9, 0.01, 0.02]} />
+          <meshBasicMaterial color="#00ffff" />
         </mesh>
         <mesh position={[0, -0.2, 0]}>
-            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-            <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
+          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+          <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
         </mesh>
       </group>
 
       {/* Black side seats */}
-      <group position={[originVec.x - 3.5, 0.2, originVec.z - padOffset - 1.5]}>
+      <group
+        position={[originVec.x - 3.5, 0.28, originVec.z - padOffset - 1.5]}
+      >
         <mesh
           castShadow
           receiveShadow
@@ -865,26 +1517,73 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 0.95);
+            requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 1.35);
           }}
         >
-          <boxGeometry args={[2.5, 0.1, 0.6]} />
-          <meshStandardMaterial
-            color="#111"
-            roughness={0.2}
-            metalness={0.9}
-          />
+          <boxGeometry args={[2.9, 0.1, 0.85]} />
+          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
         </mesh>
-        <mesh position={[0, 0.055, -0.3]}>
-            <boxGeometry args={[2.5, 0.01, 0.02]} />
-            <meshBasicMaterial color="#ff00ff" />
+
+        {/* cushion + pillows (raise seat height) */}
+        <RoundedBox
+          args={[2.55, 0.14, 0.72]}
+          radius={0.1}
+          smoothness={3}
+          position={[0, 0.1, 0]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#1a1a24"
+            roughness={0.98}
+            metalness={0.02}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.82, 0.12, 0.36]}
+          radius={0.1}
+          smoothness={3}
+          position={[-0.62, 0.18, 0.1]}
+          rotation={[0, 0.08, 0.06]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.88, 0.12, 0.38]}
+          radius={0.1}
+          smoothness={3}
+          position={[0.62, 0.175, -0.06]}
+          rotation={[0, -0.07, -0.05]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <mesh position={[0, 0.135, -0.42]}>
+          <boxGeometry args={[2.9, 0.01, 0.02]} />
+          <meshBasicMaterial color="#ff00ff" />
         </mesh>
         <mesh position={[0, -0.2, 0]}>
-            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-            <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
+          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+          <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
         </mesh>
       </group>
-      <group position={[originVec.x + 3.5, 0.2, originVec.z - padOffset - 1.5]}>
+      <group
+        position={[originVec.x + 3.5, 0.28, originVec.z - padOffset - 1.5]}
+      >
         <mesh
           castShadow
           receiveShadow
@@ -896,23 +1595,68 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 0.95);
+            requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 1.35);
           }}
         >
-          <boxGeometry args={[2.5, 0.1, 0.6]} />
-          <meshStandardMaterial
-            color="#111"
-            roughness={0.2}
-            metalness={0.9}
-          />
+          <boxGeometry args={[2.9, 0.1, 0.85]} />
+          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
         </mesh>
-        <mesh position={[0, 0.055, -0.3]}>
-            <boxGeometry args={[2.5, 0.01, 0.02]} />
-            <meshBasicMaterial color="#ff00ff" />
+
+        {/* cushion + pillows (raise seat height) */}
+        <RoundedBox
+          args={[2.55, 0.14, 0.72]}
+          radius={0.1}
+          smoothness={3}
+          position={[0, 0.1, 0]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#1a1a24"
+            roughness={0.98}
+            metalness={0.02}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.82, 0.12, 0.36]}
+          radius={0.1}
+          smoothness={3}
+          position={[-0.62, 0.18, 0.1]}
+          rotation={[0, 0.08, 0.06]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <RoundedBox
+          args={[0.88, 0.12, 0.38]}
+          radius={0.1}
+          smoothness={3}
+          position={[0.62, 0.175, -0.06]}
+          rotation={[0, -0.07, -0.05]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color="#151525"
+            roughness={0.99}
+            metalness={0.01}
+          />
+        </RoundedBox>
+
+        <mesh position={[0, 0.135, -0.42]}>
+          <boxGeometry args={[2.9, 0.01, 0.02]} />
+          <meshBasicMaterial color="#ff00ff" />
         </mesh>
         <mesh position={[0, -0.2, 0]}>
-            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-            <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
+          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+          <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
         </mesh>
       </group>
 
@@ -931,21 +1675,28 @@ export function ScifiChess({
               metalness={0.8}
             />
           </mesh>
-          
+
           {/* Floating Crystal/Core */}
           <mesh position={[0, 1.2, 0]} rotation={[0, 0, 0]}>
             <octahedronGeometry args={[0.3, 0]} />
-            <meshBasicMaterial color={side > 0 ? "#00ffff" : "#ff00ff"} wireframe />
+            <meshBasicMaterial
+              color={side > 0 ? "#00ffff" : "#ff00ff"}
+              wireframe
+            />
           </mesh>
-          <mesh position={[0, 1.2, 0]} rotation={[0, Math.PI/4, 0]}>
+          <mesh position={[0, 1.2, 0]} rotation={[0, Math.PI / 4, 0]}>
             <octahedronGeometry args={[0.2, 0]} />
             <meshBasicMaterial color={side > 0 ? "#00ffff" : "#ff00ff"} />
           </mesh>
 
           {/* Energy Beam */}
           <mesh position={[0, 1.0, 0]}>
-             <cylinderGeometry args={[0.05, 0.05, 2, 8]} />
-             <meshBasicMaterial color={side > 0 ? "#00ffff" : "#ff00ff"} transparent opacity={0.3} />
+            <cylinderGeometry args={[0.05, 0.05, 2, 8]} />
+            <meshBasicMaterial
+              color={side > 0 ? "#00ffff" : "#ff00ff"}
+              transparent
+              opacity={0.3}
+            />
           </mesh>
 
           {/* Rings */}
@@ -953,7 +1704,7 @@ export function ScifiChess({
             <torusGeometry args={[0.3, 0.02, 8, 32]} />
             <meshStandardMaterial color="#444" metalness={1} roughness={0} />
           </mesh>
-           <mesh position={[0, 1.8, 0]} rotation={[-0.1, 0, 0]}>
+          <mesh position={[0, 1.8, 0]} rotation={[-0.1, 0, 0]}>
             <torusGeometry args={[0.3, 0.02, 8, 32]} />
             <meshStandardMaterial color="#444" metalness={1} roughness={0} />
           </mesh>
@@ -961,15 +1712,45 @@ export function ScifiChess({
       ))}
 
       {/* Board overhead lighting */}
-      <pointLight position={[originVec.x, originVec.y + 8, originVec.z]} intensity={4} color="#ffffff" distance={15} decay={2} />
-      <pointLight position={[originVec.x, originVec.y + 3, originVec.z]} intensity={2} color="#8899ff" distance={10} decay={2} />
+      <pointLight
+        position={[originVec.x, originVec.y + 8, originVec.z]}
+        intensity={4}
+        color="#ffffff"
+        distance={15}
+        decay={2}
+      />
+      <pointLight
+        position={[originVec.x, originVec.y + 3, originVec.z]}
+        intensity={2}
+        color="#8899ff"
+        distance={10}
+        decay={2}
+      />
 
       {/* Board */}
       <group position={[originVec.x, originVec.y, originVec.z]}>
         {/* Board Base - brighter */}
         <mesh position={[0, -0.05, 0]} receiveShadow castShadow>
-            <boxGeometry args={[boardSize + 0.2, 0.1, boardSize + 0.2]} />
-            <meshStandardMaterial color="#2a3a4a" roughness={0.3} metalness={0.7} emissive="#1a2a3a" emissiveIntensity={0.2} />
+          <boxGeometry args={[boardSize + 0.2, 0.1, boardSize + 0.2]} />
+          {chessBoardTheme === "board_marble" ? (
+            <MarbleTileMaterial color={boardPalette.base.color} />
+          ) : chessBoardTheme === "board_neon" ? (
+            <meshStandardMaterial
+              color={boardPalette.base.color}
+              roughness={0.18}
+              metalness={0.9}
+              emissive={boardPalette.base.emissive}
+              emissiveIntensity={boardPalette.base.emissiveIntensity}
+            />
+          ) : (
+            <meshStandardMaterial
+              color={boardPalette.base.color}
+              roughness={boardPalette.base.roughness}
+              metalness={boardPalette.base.metalness}
+              emissive={boardPalette.base.emissive}
+              emissiveIntensity={boardPalette.base.emissiveIntensity}
+            />
+          )}
         </mesh>
 
         {Array.from({ length: 64 }).map((_, idx) => {
@@ -1010,19 +1791,53 @@ export function ScifiChess({
             >
               <mesh receiveShadow castShadow>
                 <boxGeometry args={[squareSize, 0.08, squareSize]} />
-                <meshStandardMaterial
-                  color={isDark ? "#1a2a3a" : "#4a5a6a"}
-                  roughness={0.4}
-                  metalness={0.6}
-                  emissive={isDark ? "#0a1a2a" : "#2a3a4a"}
-                  emissiveIntensity={0.15}
-                />
+                {chessBoardTheme === "board_marble" ? (
+                  <MarbleTileMaterial
+                    color={
+                      isDark
+                        ? boardPalette.dark.color
+                        : boardPalette.light.color
+                    }
+                  />
+                ) : chessBoardTheme === "board_neon" ? (
+                  <NeonTileMaterial
+                    color={
+                      isDark
+                        ? boardPalette.dark.color
+                        : boardPalette.light.color
+                    }
+                  />
+                ) : (
+                  <meshStandardMaterial
+                    color={
+                      isDark
+                        ? boardPalette.dark.color
+                        : boardPalette.light.color
+                    }
+                    roughness={0.4}
+                    metalness={0.6}
+                    emissive={
+                      isDark
+                        ? boardPalette.dark.emissive
+                        : boardPalette.light.emissive
+                    }
+                    emissiveIntensity={0.15}
+                  />
+                )}
               </mesh>
-              
+
               {/* Subtle grid lines on squares */}
-              <mesh position={[0, 0.041, 0]} rotation={[-Math.PI/2, 0, 0]}>
-                  <planeGeometry args={[squareSize * 0.98, squareSize * 0.98]} />
-                  <meshBasicMaterial color={isDark ? "#0a1a2a" : "#3a4a5a"} transparent opacity={0.3} />
+              <mesh position={[0, 0.041, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+                <planeGeometry args={[squareSize * 0.98, squareSize * 0.98]} />
+                <meshBasicMaterial
+                  color={
+                    isDark
+                      ? boardPalette.dark.emissive
+                      : boardPalette.light.emissive
+                  }
+                  transparent
+                  opacity={0.3}
+                />
               </mesh>
 
               {/* Glow indicators (flush to board) */}
@@ -1199,7 +2014,6 @@ export function ScifiChess({
               anchorY="middle"
               outlineWidth={0.008}
               outlineColor="transparent"
-              fontWeight="bold"
             >
               {`Time ${Math.round(clocks.baseMs / 60000)}m`}
             </Text>
@@ -1241,6 +2055,7 @@ export function ScifiChess({
             onPickPiece={onPickPiece}
             whiteTint={whiteTint}
             blackTint={blackTint}
+            chessTheme={chessTheme}
           />
         );
       })}

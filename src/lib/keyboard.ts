@@ -18,6 +18,7 @@ export function useWASDKeys() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
+      if (typeof e.key !== "string") return;
       const k = e.key.toLowerCase();
       if (k === "w" || k === "arrowup") keysRef.current.forward = true;
       if (k === "s" || k === "arrowdown") keysRef.current.back = true;
@@ -26,6 +27,7 @@ export function useWASDKeys() {
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
+      if (typeof e.key !== "string") return;
       const k = e.key.toLowerCase();
       if (k === "w" || k === "arrowup") keysRef.current.forward = false;
       if (k === "s" || k === "arrowdown") keysRef.current.back = false;

@@ -149,13 +149,18 @@ function buildHeuristicHumanoidMap(
     .filter((k) => getPos(k).y < hipsPos.y - height * 0.03)
     .sort((a, b) => getPos(a).x - getPos(b).x);
   const leftUpperLeg = downKids[0];
-  const rightUpperLeg = downKids.length >= 2 ? downKids[downKids.length - 1] : null;
+  const rightUpperLeg =
+    downKids.length >= 2 ? downKids[downKids.length - 1] : null;
 
   if (leftUpperLeg) out.set("leftUpperLeg", leftUpperLeg);
   if (rightUpperLeg) out.set("rightUpperLeg", rightUpperLeg);
 
   const pickDownChain = (start?: THREE.Bone | null) => {
-    if (!start) return { lower: null as THREE.Bone | null, foot: null as THREE.Bone | null };
+    if (!start)
+      return {
+        lower: null as THREE.Bone | null,
+        foot: null as THREE.Bone | null,
+      };
     const startPos = getPos(start);
     const lower = childBones(start)
       .filter((k) => getPos(k).y < startPos.y - height * 0.02)
@@ -182,7 +187,9 @@ function buildHeuristicHumanoidMap(
     const candidates = bones
       .filter((b) => {
         const p = getPos(b);
-        return p.y > basePos.y - height * 0.05 && p.y < basePos.y + height * 0.15;
+        return (
+          p.y > basePos.y - height * 0.05 && p.y < basePos.y + height * 0.15
+        );
       })
       .sort((a, b) => Math.abs(getPos(b).x) - Math.abs(getPos(a).x));
     const left = candidates.find((b) => getPos(b).x < -height * 0.05);
@@ -234,10 +241,16 @@ export function ThreeAvatar({
   movingSpeed = 0,
   url,
   pose = "stand",
+  idleWiggle = false,
+  idleWiggleStrength = 1,
+  onLoaded,
 }: {
   movingSpeed?: number;
   url?: string;
   pose?: "stand" | "sit";
+  idleWiggle?: boolean;
+  idleWiggleStrength?: number;
+  onLoaded?: (object3D: THREE.Object3D) => void;
 }) {
   const { gl } = useThree();
   const [avatar, setAvatar] = useState<Avatar | null>(null);
@@ -252,6 +265,14 @@ export function ThreeAvatar({
   const boneNameIndexRef = useRef<Map<string, THREE.Object3D>>(new Map());
   const heuristicHumanoidRef = useRef<Map<BoneKey, THREE.Object3D>>(new Map());
   const warnedNoBonesRef = useRef(false);
+  const onLoadedRef = useRef<((object3D: THREE.Object3D) => void) | undefined>(
+    undefined
+  );
+  const tmpWiggleQuatRef = useRef<THREE.Quaternion>(new THREE.Quaternion());
+
+  useEffect(() => {
+    onLoadedRef.current = onLoaded;
+  }, [onLoaded]);
 
   useEffect(() => {
     if (process.env.NODE_ENV === "production") return;
@@ -273,7 +294,9 @@ export function ThreeAvatar({
       const avatarUrl = url ?? DEFAULT_AVATAR_URL;
       const resp = await fetch(avatarUrl);
       if (!resp.ok) {
-        throw new Error(`Failed to fetch avatar: ${resp.status} ${resp.statusText}`);
+        throw new Error(
+          `Failed to fetch avatar: ${resp.status} ${resp.statusText}`
+        );
       }
       const avatarData = new Uint8Array(await resp.arrayBuffer());
 
@@ -351,7 +374,9 @@ export function ThreeAvatar({
       boneNameIndexRef.current = nameIndex;
 
       // Heuristic fallback: works for skinned humanoids even if bones have no names.
-      heuristicHumanoidRef.current = buildHeuristicHumanoidMap(nextAvatar.object3D);
+      heuristicHumanoidRef.current = buildHeuristicHumanoidMap(
+        nextAvatar.object3D
+      );
 
       if (cancelled) {
         nextAvatar.dispose();
@@ -360,6 +385,7 @@ export function ThreeAvatar({
 
       avatarRef.current = nextAvatar;
       setAvatar(nextAvatar);
+      onLoadedRef.current?.(nextAvatar.object3D);
     })();
 
     return () => {
@@ -371,31 +397,84 @@ export function ThreeAvatar({
     };
   }, [gl, url]);
 
-    const sitWeight = useRef(0);
+  const sitWeight = useRef(0);
 
-    // Fidget state
-    const fidgetTargetRef = useRef({
-      neck: new THREE.Vector2(),
-      spine: new THREE.Vector2(),
-      leftArm: new THREE.Vector2(),
-      rightArm: new THREE.Vector2(),
-      leftLeg: new THREE.Vector2(),
-      rightLeg: new THREE.Vector2(),
-    });
-    const fidgetCurrentRef = useRef({
-      neck: new THREE.Vector2(),
-      spine: new THREE.Vector2(),
-      leftArm: new THREE.Vector2(),
-      rightArm: new THREE.Vector2(),
-      leftLeg: new THREE.Vector2(),
-      rightLeg: new THREE.Vector2(),
-    });
-    const nextFidgetTimeRef = useRef(0);
+  // Fidget state
+  const fidgetTargetRef = useRef({
+    neck: new THREE.Vector2(),
+    spine: new THREE.Vector2(),
+    leftArm: new THREE.Vector2(),
+    rightArm: new THREE.Vector2(),
+    leftLeg: new THREE.Vector2(),
+    rightLeg: new THREE.Vector2(),
+  });
+  const fidgetCurrentRef = useRef({
+    neck: new THREE.Vector2(),
+    spine: new THREE.Vector2(),
+    leftArm: new THREE.Vector2(),
+    rightArm: new THREE.Vector2(),
+    leftLeg: new THREE.Vector2(),
+    rightLeg: new THREE.Vector2(),
+  });
+  const nextFidgetTimeRef = useRef(0);
 
-    useFrame((state, dt) => {
+  useFrame((state, dt) => {
     const a = avatarRef.current;
     if (!a) return;
     a.tick(dt);
+
+    // Small idle wiggle to help drive VRM spring bones (hair/cloth) in previews.
+    // This is applied on top of the current animation pose.
+    if (
+      idleWiggle &&
+      pose === "stand" &&
+      (movingSpeed ?? 0) < 0.05 &&
+      Number.isFinite(idleWiggleStrength) &&
+      idleWiggleStrength > 0
+    ) {
+      const t = state.clock.elapsedTime;
+      const s = Math.min(2.5, Math.max(0.05, idleWiggleStrength));
+
+      const ax = Math.sin(t * 1.25) * 0.05 * s;
+      const ay = Math.sin(t * 0.95 + 1.3) * 0.085 * s;
+      const az = Math.sin(t * 1.15 + 2.1) * 0.03 * s;
+
+      const wiggleQ = tmpWiggleQuatRef.current;
+      wiggleQ.setFromEuler(new THREE.Euler(ax, ay, az));
+
+      const vrm = a.vrm;
+      const humanoid = vrm?.humanoid;
+      const k = Math.min(1, dt * 5);
+
+      const applyToNode = (node: THREE.Object3D | undefined | null) => {
+        if (!node) return false;
+        const target = tmpTargetQuatRef.current;
+        target.copy(node.quaternion).multiply(wiggleQ);
+        node.quaternion.slerp(target, k);
+        return true;
+      };
+
+      let applied = false;
+      if (humanoid) {
+        const getNorm = (humanoid.getNormalizedBoneNode as any)?.bind(humanoid);
+        if (typeof getNorm === "function") {
+          const nodes = [
+            getNorm("spine"),
+            getNorm("chest"),
+            getNorm("upperChest"),
+            getNorm("neck"),
+            getNorm("head"),
+          ];
+          for (const n of nodes) applied = applyToNode(n) || applied;
+        }
+      }
+      if (!applied) {
+        // Heuristic fallback for non-VRM rigs.
+        const m = heuristicHumanoidRef.current;
+        const nodes = [m.get("spine"), m.get("chest"), m.get("hips")];
+        for (const n of nodes) applied = applyToNode(n) || applied;
+      }
+    }
 
     // Procedural sit pose using Normalized Bones (VRM Humanoid).
     // This ensures consistent behavior across different VRM models (VRM 0.0 vs 1.0).
@@ -411,14 +490,19 @@ export function ThreeAvatar({
     if (sitWeight.current < 0.001) return;
 
     // Helper to apply rotation to a normalized bone
-    const applyNormalized = (boneName: string, x: number, y: number, z: number) => {
+    const applyNormalized = (
+      boneName: string,
+      x: number,
+      y: number,
+      z: number
+    ) => {
       if (!humanoid) return;
       const node = (humanoid.getNormalizedBoneNode as any)?.(boneName);
       if (!node) return;
 
       const targetQ = tmpTargetQuatRef.current;
       targetQ.setFromEuler(new THREE.Euler(x, y, z));
-      
+
       // Slerp from current animation state (or rest) to target
       node.quaternion.slerp(targetQ, sitWeight.current);
     };
@@ -428,7 +512,7 @@ export function ThreeAvatar({
       // Procedural breathing/idle noise
       const t = state.clock.elapsedTime;
       const breathe = Math.sin(t * 1.5) * 0.04; // Chest rise/fall
-      const sway = Math.sin(t * 0.8) * 0.02;    // Slight body sway
+      const sway = Math.sin(t * 0.8) * 0.02; // Slight body sway
 
       // Fidget logic
       if (t > nextFidgetTimeRef.current) {
@@ -437,24 +521,24 @@ export function ThreeAvatar({
           (Math.random() - 0.5) * 0.5
         );
         fidgetTargetRef.current.spine.set((Math.random() - 0.5) * 0.3, 0); // Increased range
-        
+
         // Random arm movements (scratching leg, adjusting position)
         fidgetTargetRef.current.leftArm.set(
-          (Math.random() - 0.5) * 0.2, 
+          (Math.random() - 0.5) * 0.2,
           (Math.random() - 0.5) * 0.2
         );
         fidgetTargetRef.current.rightArm.set(
-          (Math.random() - 0.5) * 0.2, 
+          (Math.random() - 0.5) * 0.2,
           (Math.random() - 0.5) * 0.2
         );
 
         // Random leg shifts (crossing/uncrossing slightly or tapping foot)
         fidgetTargetRef.current.leftLeg.set(
-          (Math.random() - 0.5) * 0.1, 
+          (Math.random() - 0.5) * 0.1,
           (Math.random() - 0.5) * 0.1
         );
         fidgetTargetRef.current.rightLeg.set(
-          (Math.random() - 0.5) * 0.1, 
+          (Math.random() - 0.5) * 0.1,
           (Math.random() - 0.5) * 0.1
         );
 
@@ -469,10 +553,22 @@ export function ThreeAvatar({
         fidgetTargetRef.current.spine,
         lerpFactor
       );
-      fidgetCurrentRef.current.leftArm.lerp(fidgetTargetRef.current.leftArm, lerpFactor);
-      fidgetCurrentRef.current.rightArm.lerp(fidgetTargetRef.current.rightArm, lerpFactor);
-      fidgetCurrentRef.current.leftLeg.lerp(fidgetTargetRef.current.leftLeg, lerpFactor);
-      fidgetCurrentRef.current.rightLeg.lerp(fidgetTargetRef.current.rightLeg, lerpFactor);
+      fidgetCurrentRef.current.leftArm.lerp(
+        fidgetTargetRef.current.leftArm,
+        lerpFactor
+      );
+      fidgetCurrentRef.current.rightArm.lerp(
+        fidgetTargetRef.current.rightArm,
+        lerpFactor
+      );
+      fidgetCurrentRef.current.leftLeg.lerp(
+        fidgetTargetRef.current.leftLeg,
+        lerpFactor
+      );
+      fidgetCurrentRef.current.rightLeg.lerp(
+        fidgetTargetRef.current.rightLeg,
+        lerpFactor
+      );
 
       const fNeck = fidgetCurrentRef.current.neck;
       const fSpine = fidgetCurrentRef.current.spine;
@@ -496,26 +592,26 @@ export function ThreeAvatar({
       applyNormalized("spine", 0.1 + sway + fSpine.x, 0, 0);
       applyNormalized("chest", 0.05 + breathe, 0, 0);
       applyNormalized("neck", fNeck.y, fNeck.x, 0); // Swapped x/y for neck rotation (yaw is Y)
-      
+
       // Legs: Lifted up (~80 deg) and Knees bent down (~90 deg)
-      applyNormalized("leftUpperLeg", -1.4 + fLLeg.x, 0.1 + fLLeg.y, 0); 
+      applyNormalized("leftUpperLeg", -1.4 + fLLeg.x, 0.1 + fLLeg.y, 0);
       applyNormalized("rightUpperLeg", -1.4 + fRLeg.x, -0.1 + fRLeg.y, 0);
-      
-      applyNormalized("leftLowerLeg", 1.5, 0, 0); 
+
+      applyNormalized("leftLowerLeg", 1.5, 0, 0);
       applyNormalized("rightLowerLeg", 1.5, 0, 0);
-      
-      applyNormalized("leftFoot", -0.2, 0, 0); 
+
+      applyNormalized("leftFoot", -0.2, 0, 0);
       applyNormalized("rightFoot", -0.2, 0, 0);
-      
+
       // Arms - relaxed on lap
       // Inverted Z rotation to bring arms DOWN instead of UP.
-      applyNormalized("leftUpperArm", 0.3 + fLArm.x, 0, -1.3 + fLArm.y); 
+      applyNormalized("leftUpperArm", 0.3 + fLArm.x, 0, -1.3 + fLArm.y);
       applyNormalized("rightUpperArm", 0.3 + fRArm.x, 0, 1.3 + fRArm.y);
-      
+
       // Bend elbows slightly to rest hands on thighs
       applyNormalized("leftLowerArm", -0.3, 0, 0);
       applyNormalized("rightLowerArm", -0.3, 0, 0);
-      
+
       // Force update to apply normalized bone changes to actual mesh
       vrm.update(0);
     }
@@ -542,8 +638,8 @@ export function ThreeAvatar({
           ? "walk"
           : "idle"
         : movingSpeed > walkOn
-          ? "walk"
-          : "idle";
+        ? "walk"
+        : "idle";
 
     if (lastClipRef.current !== next) {
       a.playClip(next);

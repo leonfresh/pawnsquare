@@ -35,6 +35,12 @@ export default function Home() {
   const handleJoin = () => {
     const name = inputValue.trim() || "Guest";
     setUsername(name);
+    try {
+      // World reads this on mount and uses it as the network display name.
+      window.sessionStorage.setItem("pawnsquare:name", name);
+    } catch {
+      // ignore
+    }
     localStorage.setItem(
       "pawnsquare-user",
       JSON.stringify({ username: name, gender })
@@ -167,58 +173,6 @@ export default function Home() {
             </button>
           </div>
 
-          <label
-            style={{
-              display: "block",
-              marginBottom: "12px",
-              fontWeight: "600",
-              color: "#333",
-              fontSize: "14px",
-            }}
-          >
-            Lobby Theme
-          </label>
-          <div style={{ display: "flex", gap: "12px", marginBottom: "30px" }}>
-            <button
-              onClick={() => setLobbyType("park")}
-              style={{
-                flex: 1,
-                padding: "16px",
-                fontSize: "16px",
-                fontWeight: "600",
-                border:
-                  lobbyType === "park" ? "3px solid #667eea" : "2px solid #e0e0e0",
-                borderRadius: "12px",
-                background: lobbyType === "park" ? "#f0f4ff" : "white",
-                color: lobbyType === "park" ? "#667eea" : "#666",
-                cursor: "pointer",
-                transition: "all 0.2s",
-              }}
-            >
-              🌳 Park
-            </button>
-            <button
-              onClick={() => setLobbyType("scifi")}
-              style={{
-                flex: 1,
-                padding: "16px",
-                fontSize: "16px",
-                fontWeight: "600",
-                border:
-                  lobbyType === "scifi"
-                    ? "3px solid #764ba2"
-                    : "2px solid #e0e0e0",
-                borderRadius: "12px",
-                background: lobbyType === "scifi" ? "#f8f0ff" : "white",
-                color: lobbyType === "scifi" ? "#764ba2" : "#666",
-                cursor: "pointer",
-                transition: "all 0.2s",
-              }}
-            >
-              🚀 Sci-Fi
-            </button>
-          </div>
-
           <button
             onClick={handleJoin}
             style={{
@@ -260,7 +214,7 @@ export default function Home() {
         initialGender={gender}
         lobbyType={lobbyType}
         onLobbyChange={setLobbyType}
-        onExit={() => {}}
+        onExit={() => setJoined(false)}
       />
     </div>
   );
