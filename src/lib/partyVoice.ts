@@ -32,12 +32,18 @@ export function usePartyVoice(opts: {
   selfId: string | null;
   onRemoteGainForPeerId: (peerId: string, gain: GainNode | null) => void;
 }) {
-  const { socket, selfId } = opts;
+  const { socket, selfId, onRemoteGainForPeerId } = opts;
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const peersRef = useRef<Map<string, PeerConnection>>(new Map());
   const micStreamRef = useRef<MediaStream | null>(null);
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
+  const onRemoteGainRef = useRef(onRemoteGainForPeerId);
+
+  // Keep callback ref updated
+  useEffect(() => {
+    onRemoteGainRef.current = onRemoteGainForPeerId;
+  }, [onRemoteGainForPeerId]);
 
   const [micAvailable, setMicAvailable] = useState(false);
   const [micMuted, setMicMuted] = useState(true);
@@ -172,7 +178,7 @@ export function usePartyVoice(opts: {
           conn.gain = gain;
 
           setRemoteStreamCount((c) => c + 1);
-          opts.onRemoteGainForPeerId(peerId, gain);
+          onRemoteGainRef.current(peerId, gain);
 
           console.log("[party-voice] ✓ Audio pipeline for", peerId);
         } catch (e) {
@@ -197,7 +203,7 @@ export function usePartyVoice(opts: {
 
       return pc;
     },
-    [ensureAudio, opts, socket]
+    [ensureAudio, socket]
   );
 
   const cleanup = useCallback((peerId: string) => {
@@ -217,8 +223,8 @@ export function usePartyVoice(opts: {
     if (conn.stream) {
       setRemoteStreamCount((c) => Math.max(0, c - 1));
     }
-    opts.onRemoteGainForPeerId(peerId, null);
-  }, [opts]);
+    onRemoteGainRef.current(peerId, null);
+  }, []);
 
   const handleOffer = useCallback(
     async (from: string, offer: RTCSessionDescriptionInit) => {
@@ -350,6 +356,11 @@ export function usePartyVoice(opts: {
   // Request connections to all existing players when socket connects
   useEffect(() => {
     if (!socket || !selfId) return;
+
+    console.log("[party-voice] Socket & selfId ready:", {
+      socketState: socket.readyState,
+      selfId,
+    });
 
     const onOpen = () => {
       console.log("[party-voice] Socket connected, requesting voice setup");

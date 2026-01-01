@@ -3089,12 +3089,24 @@ export default function World({
   const peerGainMapRef = useRef<Map<string, GainNode | null>>(new Map());
 
   const voice = usePartyVoice({
-    socket: socketRef?.current || null,
+    socket: socketRef.current,
     selfId: self?.id || null,
     onRemoteGainForPeerId: (peerId, gain) => {
       peerGainMapRef.current.set(peerId, gain);
     },
   });
+
+  // Debug: log when voice system initializes
+  useEffect(() => {
+    console.log("[world] Voice system state:", {
+      hasSocket: !!socketRef.current,
+      socketState: socketRef.current?.readyState,
+      selfId: self?.id,
+      micMuted: voice.micMuted,
+      peerCount: voice.peerCount,
+      streamCount: voice.remoteStreamCount,
+    });
+  }, [socketRef.current, self?.id, voice.micMuted, voice.peerCount, voice.remoteStreamCount]);
 
   const keysRef = useWASDKeys();
 
