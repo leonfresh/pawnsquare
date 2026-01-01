@@ -28,11 +28,12 @@ const RTC_CONFIG: RTCConfiguration = {
 };
 
 export function usePartyVoice(opts: {
-  socket: PartySocket | null;
+  socketRef: React.RefObject<PartySocket | null>;
   selfId: string | null;
   onRemoteGainForPeerId: (peerId: string, gain: GainNode | null) => void;
 }) {
-  const { socket, selfId, onRemoteGainForPeerId } = opts;
+  const { socketRef, selfId, onRemoteGainForPeerId } = opts;
+  const socket = socketRef.current;
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const peersRef = useRef<Map<string, PeerConnection>>(new Map());
@@ -187,8 +188,15 @@ export function usePartyVoice(opts: {
       };
 
       pc.onconnectionstatechange = () => {
-        console.log("[party-voice] Connection state:", peerId, pc.connectionState);
-        if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+        console.log(
+          "[party-voice] Connection state:",
+          peerId,
+          pc.connectionState
+        );
+        if (
+          pc.connectionState === "failed" ||
+          pc.connectionState === "closed"
+        ) {
           cleanup(peerId);
         }
       };
@@ -328,6 +336,7 @@ export function usePartyVoice(opts: {
 
   // Handle incoming voice messages from PartyKit
   useEffect(() => {
+    const socket = socketRef.current;
     if (!socket) return;
 
     const handleMessage = (event: MessageEvent) => {
@@ -349,7 +358,11 @@ export function usePartyVoice(opts: {
         } else if (msg.type === "voice:ice" && msg.from && msg.candidate) {
           void handleIceCandidate(msg.from, msg.candidate);
         } else if (msg.type === "voice:request-connection" && msg.from) {
-          console.log("[party-voice] ⏩ Peer", msg.from, "requesting connection");
+          console.log(
+            "[party-voice] ⏩ Peer",
+            msg.from,
+            "requesting connection"
+          );
           void initiateConnectionTo(msg.from);
         }
       } catch (e) {
@@ -359,10 +372,18 @@ export function usePartyVoice(opts: {
 
     socket.addEventListener("message", handleMessage);
     return () => socket.removeEventListener("message", handleMessage);
-  }, [socket, handleOffer, handleAnswer, handleIceCandidate, initiateConnectionTo]);
+  }, [
+    socketRef,
+    handleOffer,
+    handleAnswer,
+    handleIceCandidate,
+    initiateConnectionTo,
+  ]);
 
   // Request connections to all existing players when socket connects
   useEffect(() => {
+    const socket = socketRef.current;
+
     if (!socket) {
       console.log("[party-voice] Waiting for socket...");
       return;
@@ -393,7 +414,7 @@ export function usePartyVoice(opts: {
       socket.addEventListener("open", requestConnections, { once: true });
       return () => socket.removeEventListener("open", requestConnections);
     }
-  }, [socket, selfId]);
+  }, [socketRef, selfId]);
 
   // Cleanup on unmount
   useEffect(() => {

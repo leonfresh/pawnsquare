@@ -37,25 +37,25 @@ type Message =
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
   chat: ChatMessage[] = [];
-  
+
   constructor(readonly room: Party.Room) {}
 
   onConnect(conn: Party.Connection) {
     console.log(`[PartyKit] Player connected: ${conn.id}`);
-    
+
     // Send current state to new connection
     const players: Record<string, Player> = {};
     this.players.forEach((player, id) => {
       players[id] = player;
     });
-    
+
     conn.send(JSON.stringify({ type: "sync", players, chat: this.chat }));
   }
 
   onMessage(message: string, sender: Party.Connection) {
     try {
       const msg = JSON.parse(message) as Message;
-      
+
       if (msg.type === "hello") {
         // New player joined
         const player: Player = {
@@ -68,19 +68,18 @@ export default class RoomServer implements Party.Server {
           rotY: 0,
         };
         this.players.set(sender.id, player);
-        
+
         // Broadcast to all except sender
-        this.room.broadcast(
-          JSON.stringify({ type: "player-joined", player }),
-          [sender.id]
-        );
+        this.room.broadcast(JSON.stringify({ type: "player-joined", player }), [
+          sender.id,
+        ]);
       } else if (msg.type === "state") {
         // Update player position
         const player = this.players.get(sender.id);
         if (player) {
           player.position = msg.position;
           player.rotY = msg.rotY;
-          
+
           // Broadcast position update
           this.room.broadcast(
             JSON.stringify({
@@ -100,7 +99,9 @@ export default class RoomServer implements Party.Server {
         if (!text) return;
 
         const chatMsg: ChatMessage = {
-          id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          id: `${Date.now().toString(36)}-${Math.random()
+            .toString(36)
+            .slice(2, 8)}`,
           fromId: sender.id,
           fromName: player.name,
           text,
@@ -113,30 +114,64 @@ export default class RoomServer implements Party.Server {
         this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
       } else if (msg.type === "voice:offer" && msg.to) {
         // Relay WebRTC offer to target peer
-        console.log(`[PartyKit Voice] Relaying offer: ${sender.id} -> ${msg.to}`);
-        this.room.getConnection(msg.to)?.send(
-          JSON.stringify({ type: "voice:offer", from: sender.id, offer: msg.offer })
+        console.log(
+          `[PartyKit Voice] Relaying offer: ${sender.id} -> ${msg.to}`
         );
+        this.room
+          .getConnection(msg.to)
+          ?.send(
+            JSON.stringify({
+              type: "voice:offer",
+              from: sender.id,
+              offer: msg.offer,
+            })
+          );
       } else if (msg.type === "voice:answer" && msg.to) {
         // Relay WebRTC answer to target peer
-        console.log(`[PartyKit Voice] Relaying answer: ${sender.id} -> ${msg.to}`);
-        this.room.getConnection(msg.to)?.send(
-          JSON.stringify({ type: "voice:answer", from: sender.id, answer: msg.answer })
+        console.log(
+          `[PartyKit Voice] Relaying answer: ${sender.id} -> ${msg.to}`
         );
+        this.room
+          .getConnection(msg.to)
+          ?.send(
+            JSON.stringify({
+              type: "voice:answer",
+              from: sender.id,
+              answer: msg.answer,
+            })
+          );
       } else if (msg.type === "voice:ice" && msg.to) {
         // Relay ICE candidate to target peer
-        this.room.getConnection(msg.to)?.send(
-          JSON.stringify({ type: "voice:ice", from: sender.id, candidate: msg.candidate })
-        );
+        this.room
+          .getConnection(msg.to)
+          ?.send(
+            JSON.stringify({
+              type: "voice:ice",
+              from: sender.id,
+              candidate: msg.candidate,
+            })
+          );
       } else if (msg.type === "voice:request-connections") {
         // Tell all other peers to initiate connection to this sender
-        const others = Array.from(this.players.keys()).filter((id) => id !== sender.id);
-        console.log(`[PartyKit Voice] ${sender.id} requesting connections to ${others.length} peers:`, others);
+        const others = Array.from(this.players.keys()).filter(
+          (id) => id !== sender.id
+        );
+        console.log(
+          `[PartyKit Voice] ${sender.id} requesting connections to ${others.length} peers:`,
+          others
+        );
         for (const peerId of others) {
-          console.log(`[PartyKit Voice] Telling ${peerId} to connect to ${sender.id}`);
-          this.room.getConnection(peerId)?.send(
-            JSON.stringify({ type: "voice:request-connection", from: sender.id })
+          console.log(
+            `[PartyKit Voice] Telling ${peerId} to connect to ${sender.id}`
           );
+          this.room
+            .getConnection(peerId)
+            ?.send(
+              JSON.stringify({
+                type: "voice:request-connection",
+                from: sender.id,
+              })
+            );
         }
       }
     } catch (err) {
@@ -147,11 +182,9 @@ export default class RoomServer implements Party.Server {
   onClose(conn: Party.Connection) {
     console.log(`[PartyKit] Player disconnected: ${conn.id}`);
     this.players.delete(conn.id);
-    
+
     // Notify others
-    this.room.broadcast(
-      JSON.stringify({ type: "player-left", id: conn.id })
-    );
+    this.room.broadcast(JSON.stringify({ type: "player-left", id: conn.id }));
   }
 }
 
