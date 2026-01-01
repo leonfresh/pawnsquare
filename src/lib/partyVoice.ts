@@ -141,6 +141,11 @@ export function usePartyVoice(opts: {
 
       // Add track to all existing peer connections
       for (const [peerId, conn] of peersRef.current.entries()) {
+        const state = conn.pc.connectionState;
+        if (state === "closed" || state === "failed" || state === "disconnected") {
+          console.log("[party-voice] Skipping disconnected peer:", peerId, state);
+          continue;
+        }
         console.log("[party-voice] Adding mic track to existing peer:", peerId);
         conn.pc.addTrack(track, stream);
       }
