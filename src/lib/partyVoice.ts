@@ -69,17 +69,21 @@ export function usePartyVoice(opts: {
         // ignore
       }
     }
-    
+
     // Process any pending tracks now that AudioContext is ready
     if (ctx.state === "running" && pendingTracksRef.current.size > 0) {
-      console.log("[party-voice] Processing", pendingTracksRef.current.size, "pending tracks");
+      console.log(
+        "[party-voice] Processing",
+        pendingTracksRef.current.size,
+        "pending tracks"
+      );
       const pending = Array.from(pendingTracksRef.current.entries());
       pendingTracksRef.current.clear();
-      
+
       for (const [peerId, stream] of pending) {
         const conn = peersRef.current.get(peerId);
         if (!conn || conn.stream) continue; // Skip if already processed
-        
+
         try {
           const source = ctx.createMediaStreamSource(stream);
           const gain = ctx.createGain();
@@ -91,13 +95,20 @@ export function usePartyVoice(opts: {
           conn.source = source;
           conn.gain = gain;
 
-          console.log("[party-voice] ✓ Audio pipeline created for pending", peerId);
+          console.log(
+            "[party-voice] ✓ Audio pipeline created for pending",
+            peerId
+          );
           onRemoteGainRef.current(peerId, gain);
         } catch (err) {
-          console.warn("[party-voice] Failed to create audio pipeline for", peerId, err);
+          console.warn(
+            "[party-voice] Failed to create audio pipeline for",
+            peerId,
+            err
+          );
         }
       }
-      
+
       // Update stream count
       const streamCount = Array.from(peersRef.current.values()).filter(
         (c) => c.stream
@@ -143,12 +154,23 @@ export function usePartyVoice(opts: {
       // Add track to all existing peer connections
       for (const [peerId, conn] of peersRef.current.entries()) {
         const state = conn.pc.connectionState;
-        if (state === "closed" || state === "failed" || state === "disconnected") {
-          console.log("[party-voice] Skipping disconnected peer:", peerId, state);
+        if (
+          state === "closed" ||
+          state === "failed" ||
+          state === "disconnected"
+        ) {
+          console.log(
+            "[party-voice] Skipping disconnected peer:",
+            peerId,
+            state
+          );
           continue;
         }
         if (conn.audioTransceiver) {
-          console.log("[party-voice] Replacing mic track for existing peer:", peerId);
+          console.log(
+            "[party-voice] Replacing mic track for existing peer:",
+            peerId
+          );
           try {
             void conn.audioTransceiver.sender.replaceTrack(track);
           } catch (e) {
@@ -228,10 +250,14 @@ export function usePartyVoice(opts: {
 
         const stream = event.streams[0] || new MediaStream([event.track]);
         const ctx = audioCtxRef.current;
-        
+
         // If AudioContext not ready or suspended, store track for later
         if (!ctx || ctx.state !== "running") {
-          console.log("[party-voice] ⏸️ Storing track for", peerId, "until AudioContext ready");
+          console.log(
+            "[party-voice] ⏸️ Storing track for",
+            peerId,
+            "until AudioContext ready"
+          );
           pendingTracksRef.current.set(peerId, stream);
           return;
         }
