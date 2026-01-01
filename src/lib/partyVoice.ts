@@ -15,6 +15,7 @@ function getAudioContext(): AudioContext {
 
 type PeerConnection = {
   pc: RTCPeerConnection;
+  audioTransceiver?: RTCRtpTransceiver;
   stream?: MediaStream;
   source?: MediaStreamAudioSourceNode;
   gain?: GainNode;
@@ -146,8 +147,25 @@ export function usePartyVoice(opts: {
           console.log("[party-voice] Skipping disconnected peer:", peerId, state);
           continue;
         }
-        console.log("[party-voice] Adding mic track to existing peer:", peerId);
-        conn.pc.addTrack(track, stream);
+        if (conn.audioTransceiver) {
+          console.log("[party-voice] Replacing mic track for existing peer:", peerId);
+          try {
+            void conn.audioTransceiver.sender.replaceTrack(track);
+          } catch (e) {
+            console.warn(
+              "[party-voice] replaceTrack failed; falling back to addTrack for",
+              peerId,
+              e
+            );
+            conn.pc.addTrack(track, stream);
+          }
+        } else {
+          console.log(
+            "[party-voice] No audio transceiver; adding mic track to existing peer:",
+            peerId
+          );
+          conn.pc.addTrack(track, stream);
+        }
       }
     } catch (e) {
       console.error("[party-voice] getUserMedia failed", e);
@@ -179,8 +197,14 @@ export function usePartyVoice(opts: {
   }, [ensureAudio, ensureMic, micMuted]);
 
   const createPeerConnection = useCallback(
-    (peerId: string): RTCPeerConnection => {
+    (peerId: string): PeerConnection => {
       const pc = new RTCPeerConnection(RTC_CONFIG);
+
+      // Always negotiate an audio m-line up front.
+      // Later, when the user enables mic, we can replaceTrack() without renegotiation.
+      const audioTransceiver = pc.addTransceiver("audio", {
+        direction: "sendrecv",
+      });
 
       pc.onicecandidate = (event) => {
         if (event.candidate && socket) {
@@ -253,11 +277,20 @@ export function usePartyVoice(opts: {
       const track = micTrackRef.current;
       const stream = micStreamRef.current;
       if (track && stream) {
-        console.log("[party-voice] Adding mic track to new peer:", peerId);
-        pc.addTrack(track, stream);
+        console.log("[party-voice] Replacing mic track for new peer:", peerId);
+        try {
+          void audioTransceiver.sender.replaceTrack(track);
+        } catch (e) {
+          console.warn(
+            "[party-voice] replaceTrack failed; falling back to addTrack for",
+            peerId,
+            e
+          );
+          pc.addTrack(track, stream);
+        }
       }
 
-      return pc;
+      return { pc, audioTransceiver };
     },
     [ensureAudio, socket]
   );
@@ -286,12 +319,14 @@ export function usePartyVoice(opts: {
     async (from: string, offer: RTCSessionDescriptionInit) => {
       console.log("[party-voice] ← Received offer from", from);
 
-      let pc = peersRef.current.get(from)?.pc;
-      if (!pc) {
-        pc = createPeerConnection(from);
-        peersRef.current.set(from, { pc });
+      let conn = peersRef.current.get(from);
+      if (!conn) {
+        conn = createPeerConnection(from);
+        peersRef.current.set(from, conn);
         setPeerCount((c) => c + 1);
       }
+
+      const pc = conn.pc;
 
       try {
         await pc.setRemoteDescription(offer);
@@ -351,8 +386,9 @@ export function usePartyVoice(opts: {
 
       console.log("[party-voice] → Initiating connection to", peerId);
 
-      const pc = createPeerConnection(peerId);
-      peersRef.current.set(peerId, { pc });
+      const conn = createPeerConnection(peerId);
+      const pc = conn.pc;
+      peersRef.current.set(peerId, conn);
       setPeerCount((c) => c + 1);
 
       try {
