@@ -113,11 +113,13 @@ export default class RoomServer implements Party.Server {
         this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
       } else if (msg.type === "voice:offer" && msg.to) {
         // Relay WebRTC offer to target peer
+        console.log(`[PartyKit Voice] Relaying offer: ${sender.id} -> ${msg.to}`);
         this.room.getConnection(msg.to)?.send(
           JSON.stringify({ type: "voice:offer", from: sender.id, offer: msg.offer })
         );
       } else if (msg.type === "voice:answer" && msg.to) {
         // Relay WebRTC answer to target peer
+        console.log(`[PartyKit Voice] Relaying answer: ${sender.id} -> ${msg.to}`);
         this.room.getConnection(msg.to)?.send(
           JSON.stringify({ type: "voice:answer", from: sender.id, answer: msg.answer })
         );
@@ -129,8 +131,9 @@ export default class RoomServer implements Party.Server {
       } else if (msg.type === "voice:request-connections") {
         // Tell all other peers to initiate connection to this sender
         const others = Array.from(this.players.keys()).filter((id) => id !== sender.id);
-        console.log(`[PartyKit] Voice setup: ${sender.id} connecting to ${others.length} peers`);
+        console.log(`[PartyKit Voice] ${sender.id} requesting connections to ${others.length} peers:`, others);
         for (const peerId of others) {
+          console.log(`[PartyKit Voice] Telling ${peerId} to connect to ${sender.id}`);
           this.room.getConnection(peerId)?.send(
             JSON.stringify({ type: "voice:request-connection", from: sender.id })
           );

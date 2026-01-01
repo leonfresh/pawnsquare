@@ -334,6 +334,14 @@ export function usePartyVoice(opts: {
       try {
         const msg = JSON.parse(event.data);
 
+        // Log all voice-related messages
+        if (msg.type?.startsWith?.("voice:")) {
+          console.log("[party-voice] ← Received message:", msg.type, {
+            from: msg.from,
+            to: msg.to,
+          });
+        }
+
         if (msg.type === "voice:offer" && msg.from && msg.offer) {
           void handleOffer(msg.from, msg.offer);
         } else if (msg.type === "voice:answer" && msg.from && msg.answer) {
@@ -341,7 +349,7 @@ export function usePartyVoice(opts: {
         } else if (msg.type === "voice:ice" && msg.from && msg.candidate) {
           void handleIceCandidate(msg.from, msg.candidate);
         } else if (msg.type === "voice:request-connection" && msg.from) {
-          // Another peer is asking us to initiate
+          console.log("[party-voice] ⏩ Peer", msg.from, "requesting connection");
           void initiateConnectionTo(msg.from);
         }
       } catch (e) {
@@ -355,15 +363,22 @@ export function usePartyVoice(opts: {
 
   // Request connections to all existing players when socket connects
   useEffect(() => {
-    if (!socket || !selfId) return;
+    if (!socket) {
+      console.log("[party-voice] Waiting for socket...");
+      return;
+    }
+    if (!selfId) {
+      console.log("[party-voice] Waiting for selfId...");
+      return;
+    }
 
-    console.log("[party-voice] Socket & selfId ready:", {
+    console.log("[party-voice] ✅ Socket & selfId ready:", {
       socketState: socket.readyState,
       selfId,
     });
 
-    const onOpen = () => {
-      console.log("[party-voice] Socket connected, requesting voice setup");
+    const requestConnections = () => {
+      console.log("[party-voice] → Requesting voice connections from server");
       socket.send(
         JSON.stringify({
           type: "voice:request-connections",
@@ -372,10 +387,11 @@ export function usePartyVoice(opts: {
     };
 
     if (socket.readyState === WebSocket.OPEN) {
-      onOpen();
+      requestConnections();
     } else {
-      socket.addEventListener("open", onOpen);
-      return () => socket.removeEventListener("open", onOpen);
+      console.log("[party-voice] Socket not open yet, waiting...");
+      socket.addEventListener("open", requestConnections, { once: true });
+      return () => socket.removeEventListener("open", requestConnections);
     }
   }, [socket, selfId]);
 
