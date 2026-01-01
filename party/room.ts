@@ -32,7 +32,7 @@ type Message =
   | { type: "voice:offer"; to: string; offer: RTCSessionDescriptionInit }
   | { type: "voice:answer"; to: string; answer: RTCSessionDescriptionInit }
   | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
-  | { type: "voice:request-connections" };
+  | { type: "voice:request-connections"; deviceId?: string };
 
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
@@ -123,6 +123,7 @@ export default class RoomServer implements Party.Server {
             JSON.stringify({
               type: "voice:offer",
               from: sender.id,
+              fromDeviceId: (msg as any).deviceId ?? null,
               offer: msg.offer,
             })
           );
@@ -137,6 +138,7 @@ export default class RoomServer implements Party.Server {
             JSON.stringify({
               type: "voice:answer",
               from: sender.id,
+              fromDeviceId: (msg as any).deviceId ?? null,
               answer: msg.answer,
             })
           );
@@ -148,6 +150,7 @@ export default class RoomServer implements Party.Server {
             JSON.stringify({
               type: "voice:ice",
               from: sender.id,
+              fromDeviceId: (msg as any).deviceId ?? null,
               candidate: msg.candidate,
             })
           );
@@ -170,6 +173,7 @@ export default class RoomServer implements Party.Server {
               JSON.stringify({
                 type: "voice:request-connection",
                 from: sender.id,
+                fromDeviceId: (msg as any).deviceId ?? null,
               })
             );
         }

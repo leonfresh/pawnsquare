@@ -20,6 +20,8 @@ type PeerConnection = {
   audioEl?: HTMLAudioElement;
   source?: MediaStreamAudioSourceNode;
   gain?: GainNode;
+  iceRestarting?: boolean;
+  lastIceRestartAt?: number;
 };
 
 const RTC_CONFIG: RTCConfiguration = {
@@ -44,6 +46,8 @@ export function usePartyVoice(opts: {
   const onRemoteGainRef = useRef(onRemoteGainForPeerId);
   const pendingTracksRef = useRef<Map<string, MediaStream>>(new Map());
   const gestureUnlockedRef = useRef(false);
+  const deviceIdRef = useRef<string>("");
+  const cleanupRef = useRef<(peerId: string) => void>(() => {});
 
   // Keep callback ref updated
   useEffect(() => {
@@ -58,36 +62,71 @@ export function usePartyVoice(opts: {
 
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-  const ensureRemoteAudioEl = useCallback((peerId: string): HTMLAudioElement | null => {
-    if (typeof window === "undefined") return null;
-    const conn = peersRef.current.get(peerId);
-    if (!conn) return null;
-    if (conn.audioEl) return conn.audioEl;
+  const recomputeCounts = useCallback(() => {
+    const peers = peersRef.current;
+    setPeerCount(peers.size);
 
-    const el = document.createElement("audio");
-    el.autoplay = true;
-    // iOS/Safari: playsinline is an attribute (TS doesn't type playsInline on audio).
-    el.setAttribute("playsinline", "true");
-    el.muted = false;
-    el.volume = 1;
-    // Avoid display:none (some browsers behave oddly); keep it effectively invisible.
-    el.style.position = "fixed";
-    el.style.left = "0";
-    el.style.top = "0";
-    el.style.width = "1px";
-    el.style.height = "1px";
-    el.style.opacity = "0";
-    el.style.pointerEvents = "none";
+    const streamCount = Array.from(peers.values()).filter((c) => {
+      const stream =
+        c.stream ?? (c.audioEl?.srcObject as MediaStream | null | undefined);
+      const tracks = stream?.getAudioTracks?.() ?? [];
+      return tracks.some((t) => t.readyState === "live");
+    }).length;
 
-    try {
-      document.body.appendChild(el);
-    } catch {
-      // ignore
-    }
-
-    conn.audioEl = el;
-    return el;
+    setRemoteStreamCount(streamCount);
   }, []);
+
+  // Stable per-device id (prevents self-echo if multiple tabs open on same device).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = "pawnsquare:voiceDeviceId";
+    let id = "";
+    try {
+      id = window.localStorage.getItem(key) ?? "";
+      if (!id) {
+        const cryptoAny = globalThis.crypto as Crypto | undefined;
+        id = cryptoAny?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+        window.localStorage.setItem(key, id);
+      }
+    } catch {
+      id = `${Date.now()}-${Math.random()}`;
+    }
+    deviceIdRef.current = id;
+  }, []);
+
+  const ensureRemoteAudioEl = useCallback(
+    (peerId: string): HTMLAudioElement | null => {
+      if (typeof window === "undefined") return null;
+      const conn = peersRef.current.get(peerId);
+      if (!conn) return null;
+      if (conn.audioEl) return conn.audioEl;
+
+      const el = document.createElement("audio");
+      el.autoplay = true;
+      // iOS/Safari: playsinline is an attribute (TS doesn't type playsInline on audio).
+      el.setAttribute("playsinline", "true");
+      el.muted = false;
+      el.volume = 1;
+      // Avoid display:none (some browsers behave oddly); keep it effectively invisible.
+      el.style.position = "fixed";
+      el.style.left = "0";
+      el.style.top = "0";
+      el.style.width = "1px";
+      el.style.height = "1px";
+      el.style.opacity = "0";
+      el.style.pointerEvents = "none";
+
+      try {
+        document.body.appendChild(el);
+      } catch {
+        // ignore
+      }
+
+      conn.audioEl = el;
+      return el;
+    },
+    []
+  );
 
   const attachAndPlayRemoteStream = useCallback(
     async (peerId: string, stream: MediaStream) => {
@@ -115,13 +154,9 @@ export function usePartyVoice(opts: {
         );
       }
 
-      // Update stream count (count peers with a stream attached)
-      const streamCount = Array.from(peersRef.current.values()).filter(
-        (c) => c.stream
-      ).length;
-      setRemoteStreamCount(streamCount);
+      recomputeCounts();
     },
-    [ensureRemoteAudioEl]
+    [ensureRemoteAudioEl, recomputeCounts]
   );
 
   const ensureAudio = useCallback(async () => {
@@ -278,8 +313,45 @@ export function usePartyVoice(opts: {
               type: "voice:ice",
               to: peerId,
               candidate: event.candidate,
+              deviceId: deviceIdRef.current,
             })
           );
+        }
+      };
+
+      const maybeRestartIce = async () => {
+        const conn = peersRef.current.get(peerId);
+        if (!conn) return;
+
+        const now = Date.now();
+        const last = conn.lastIceRestartAt ?? 0;
+        if (conn.iceRestarting) return;
+        // Avoid restart loops.
+        if (now - last < 8000) return;
+        if (!socket) return;
+        if (pc.signalingState !== "stable") return;
+
+        conn.iceRestarting = true;
+        conn.lastIceRestartAt = now;
+        console.warn("[party-voice] ICE failed; restarting ICE for", peerId);
+
+        try {
+          const offer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(offer);
+          socket.send(
+            JSON.stringify({
+              type: "voice:offer",
+              to: peerId,
+              offer,
+              deviceId: deviceIdRef.current,
+            })
+          );
+          console.log("[party-voice] → Sent ICE-restart offer to", peerId);
+        } catch (e) {
+          console.error("[party-voice] ICE restart failed for", peerId, e);
+        } finally {
+          const latest = peersRef.current.get(peerId);
+          if (latest) latest.iceRestarting = false;
         }
       };
 
@@ -316,11 +388,27 @@ export function usePartyVoice(opts: {
           peerId,
           pc.connectionState
         );
-        if (
-          pc.connectionState === "failed" ||
-          pc.connectionState === "closed"
-        ) {
-          cleanup(peerId);
+
+        if (pc.connectionState === "failed") {
+          void maybeRestartIce();
+          // Give ICE restart a moment; cleanup only if it stays failed.
+          globalThis.setTimeout(() => {
+            const cur = peersRef.current.get(peerId);
+            if (!cur) return;
+            if (cur.pc.connectionState === "failed") {
+              cleanupRef.current(peerId);
+            }
+          }, 12000);
+        }
+
+        if (pc.connectionState === "closed") {
+          cleanupRef.current(peerId);
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === "failed") {
+          void maybeRestartIce();
         }
       };
 
@@ -377,12 +465,13 @@ export function usePartyVoice(opts: {
     }
 
     peersRef.current.delete(peerId);
-    setPeerCount((c) => Math.max(0, c - 1));
-    if (conn.stream) {
-      setRemoteStreamCount((c) => Math.max(0, c - 1));
-    }
+    recomputeCounts();
     onRemoteGainRef.current(peerId, null);
-  }, []);
+  }, [recomputeCounts]);
+
+  useEffect(() => {
+    cleanupRef.current = cleanup;
+  }, [cleanup]);
 
   const handleOffer = useCallback(
     async (from: string, offer: RTCSessionDescriptionInit) => {
@@ -392,7 +481,7 @@ export function usePartyVoice(opts: {
       if (!conn) {
         conn = createPeerConnection(from);
         peersRef.current.set(from, conn);
-        setPeerCount((c) => c + 1);
+        recomputeCounts();
       }
 
       const pc = conn.pc;
@@ -416,7 +505,7 @@ export function usePartyVoice(opts: {
         console.error("[party-voice] Failed to handle offer:", e);
       }
     },
-    [createPeerConnection, socket]
+    [createPeerConnection, socket, recomputeCounts]
   );
 
   const handleAnswer = useCallback(
@@ -458,7 +547,7 @@ export function usePartyVoice(opts: {
       const conn = createPeerConnection(peerId);
       const pc = conn.pc;
       peersRef.current.set(peerId, conn);
-      setPeerCount((c) => c + 1);
+      recomputeCounts();
 
       try {
         const offer = await pc.createOffer();
@@ -469,6 +558,7 @@ export function usePartyVoice(opts: {
             type: "voice:offer",
             to: peerId,
             offer,
+            deviceId: deviceIdRef.current,
           })
         );
 
@@ -477,7 +567,7 @@ export function usePartyVoice(opts: {
         console.error("[party-voice] Failed to create offer:", e);
       }
     },
-    [createPeerConnection, selfId, socket]
+    [createPeerConnection, selfId, socket, recomputeCounts]
   );
 
   const setRemoteGainForPeerId = useCallback((peerId: string, gain: number) => {
@@ -517,6 +607,18 @@ export function usePartyVoice(opts: {
         } else if (msg.type === "voice:ice" && msg.from && msg.candidate) {
           void handleIceCandidate(msg.from, msg.candidate);
         } else if (msg.type === "voice:request-connection" && msg.from) {
+          // If two tabs are open on the same device, avoid connecting (prevents local self-echo).
+          if (
+            typeof msg.fromDeviceId === "string" &&
+            msg.fromDeviceId &&
+            msg.fromDeviceId === deviceIdRef.current
+          ) {
+            console.log(
+              "[party-voice] Skipping same-device peer connection request from",
+              msg.from
+            );
+            return;
+          }
           console.log(
             "[party-voice] ⏩ Peer",
             msg.from,
@@ -562,6 +664,7 @@ export function usePartyVoice(opts: {
       socket.send(
         JSON.stringify({
           type: "voice:request-connections",
+          deviceId: deviceIdRef.current,
         })
       );
     };
