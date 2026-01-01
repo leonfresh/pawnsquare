@@ -4075,13 +4075,14 @@ export default function World({
             cursor: "pointer",
           }}
           title={
-            voice.micMuted
-              ? "Tap to unmute mic (V)"
-              : "Tap to mute mic (V)"
+            voice.micMuted ? "Tap to unmute mic (V)" : "Tap to mute mic (V)"
           }
         >
-          {voice.micMuted ? "Mic: Muted" : "Mic: Live"} (V) · peers:{" "}
-          {voice.peerCount} · streams: {voice.remoteStreamCount}
+          {voice.micMuted ? "🔇 Muted" : "🎤 Live"}
+          {voice.micDeviceLabel && !voice.micMuted
+            ? ` · ${voice.micDeviceLabel.slice(0, 20)}`
+            : ""}{" "}
+          · P:{voice.peerCount} S:{voice.remoteStreamCount}
         </button>
       </div>
 

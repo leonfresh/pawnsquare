@@ -3,13 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { joinRoom } from "trystero/torrent";
 
-type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json }
-  | Json[];
+type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 
 type VoiceHello = {
   partyId: string;
@@ -68,6 +62,7 @@ export function useProximityVoice(opts: {
 
   const [micAvailable, setMicAvailable] = useState(false);
   const [micMuted, setMicMuted] = useState(true);
+  const [micDeviceLabel, setMicDeviceLabel] = useState<string>("");
   const [lastError, setLastError] = useState<string | null>(null);
   const [peerCount, setPeerCount] = useState(0);
   const [remoteStreamCount, setRemoteStreamCount] = useState(0);
@@ -107,19 +102,30 @@ export function useProximityVoice(opts: {
       const track = stream.getAudioTracks()[0] || null;
       if (!track) throw new Error("No audio track available");
 
+      const deviceLabel = track.label || "Unknown Microphone";
+      console.log("[voice] ✓ Mic acquired:", {
+        label: deviceLabel,
+        id: track.id,
+        enabled: track.enabled,
+        muted: track.muted,
+        readyState: track.readyState,
+      });
+
       micStreamRef.current = stream;
       micTrackRef.current = track;
       track.enabled = !micMuted;
-
+      setMicDeviceLabel(deviceLabel);
       setMicAvailable(true);
 
       const room = roomRef.current;
       if (room) {
-        // Send the stream to everyone currently connected.
-        void room.addStream(stream, undefined, {
+        console.log("[voice] Broadcasting mic track to all peers (addTrack)");
+        // Use addTrack for more reliable audio transmission
+        const promises = room.addTrack(track, stream, undefined, {
           partyId: partySelfId ?? null,
           kind: "mic",
         });
+        console.log("[voice] addTrack returned", promises.length, "promises");
       }
     } catch (e) {
       console.error("[voice] getUserMedia failed", e);
@@ -134,7 +140,14 @@ export function useProximityVoice(opts: {
   // Keep the underlying track enabled state consistent with micMuted.
   useEffect(() => {
     const track = micTrackRef.current;
-    if (track) track.enabled = !micMuted;
+    if (track) {
+      track.enabled = !micMuted;
+      console.log("[voice] Track enabled state:", {
+        enabled: track.enabled,
+        muted: micMuted,
+        readyState: track.readyState,
+      });
+    }
   }, [micMuted]);
 
   const toggleMic = useCallback(async () => {
@@ -158,13 +171,16 @@ export function useProximityVoice(opts: {
     if (track) track.enabled = !nextMuted;
   }, [ensureAudio, ensureMic, micMuted]);
 
-  const setRemoteGainForPartyId = useCallback((partyId: string, gain: number) => {
-    const peerId = partyIdToPeerIdRef.current.get(partyId);
-    if (!peerId) return;
-    const peer = peersRef.current.get(peerId);
-    if (!peer) return;
-    peer.gain.gain.value = gain;
-  }, []);
+  const setRemoteGainForPartyId = useCallback(
+    (partyId: string, gain: number) => {
+      const peerId = partyIdToPeerIdRef.current.get(partyId);
+      if (!peerId) return;
+      const peer = peersRef.current.get(peerId);
+      if (!peer) return;
+      peer.gain.gain.value = gain;
+    },
+    []
+  );
 
   const setRemoteGainForPeerId = useCallback((peerId: string, gain: number) => {
     const peer = peersRef.current.get(peerId);
@@ -192,15 +208,19 @@ export function useProximityVoice(opts: {
     );
     roomRef.current = room;
 
+    console.log("[voice] Voice room initialized for roomId:", roomId);
+
     // If the user granted mic permission before the room finished booting,
     // broadcast the existing stream now.
     const existingMic = micStreamRef.current;
-    if (existingMic) {
-      console.log("[voice] room ready; broadcasting existing mic stream");
-      void room.addStream(existingMic, undefined, {
+    const existingTrack = micTrackRef.current;
+    if (existingMic && existingTrack) {
+      console.log("[voice] Room ready; broadcasting existing mic track");
+      const promises = room.addTrack(existingTrack, existingMic, undefined, {
         partyId: partySelfId ?? null,
         kind: "mic",
       });
+      console.log("[voice] Broadcasted to", promises.length, "existing peers");
     }
 
     const [sendHello, onHello] = room.makeAction<VoiceHello>("voice:hello");
@@ -232,17 +252,25 @@ export function useProximityVoice(opts: {
 
     room.onPeerJoin((peerId) => {
       setPeerCount((c) => c + 1);
-      console.log("[voice] peer joined", peerId);
+      console.log("[voice] ✓ Peer joined:", peerId);
       sendMyHello(peerId);
 
-      // If we already have mic permission, ensure new peers get the stream.
+      // If we already have mic permission, ensure new peers get the track.
       const stream = micStreamRef.current;
-      if (stream) {
-        console.log("[voice] sending mic stream to", peerId);
-        void room.addStream(stream, peerId, {
+      const track = micTrackRef.current;
+      if (stream && track) {
+        console.log("[voice] → Sending mic track to peer:", peerId, {
+          trackId: track.id,
+          trackEnabled: track.enabled,
+          trackReadyState: track.readyState,
+        });
+        const promises = room.addTrack(track, stream, peerId, {
           partyId: partySelfId ?? null,
           kind: "mic",
         });
+        console.log("[voice] addTrack promise count:", promises.length);
+      } else {
+        console.log("[voice] ⚠ No mic track to send to", peerId);
       }
     });
 
@@ -268,15 +296,37 @@ export function useProximityVoice(opts: {
       }
     });
 
-    room.onPeerStream((stream, peerId, metadata: Json) => {
-      // Lazily create audio context; try to resume on first stream.
+    // Handle incoming audio tracks from peers
+    room.onPeerTrack((track, stream, peerId, metadata: Json) => {
+      if (track.kind !== "audio") {
+        console.log("[voice] ⚠ Ignoring non-audio track:", track.kind);
+        return;
+      }
+
+      console.log("[voice] ← Received audio track from peer:", peerId, {
+        trackId: track.id,
+        trackLabel: track.label,
+        trackEnabled: track.enabled,
+        trackMuted: track.muted,
+        trackReadyState: track.readyState,
+        streamId: stream.id,
+        metadata,
+      });
+
+      // Lazily create audio context; try to resume on first track.
       void ensureAudio();
 
       const ctx = audioCtxRef.current;
-      if (!ctx) return;
+      if (!ctx) {
+        console.error("[voice] No audio context available");
+        return;
+      }
 
       // Only one audio pipeline per peer.
-      if (peers.has(peerId)) return;
+      if (peers.has(peerId)) {
+        console.log("[voice] ⚠ Already have audio for peer", peerId);
+        return;
+      }
 
       try {
         const source = ctx.createMediaStreamSource(stream);
@@ -299,13 +349,55 @@ export function useProximityVoice(opts: {
         });
 
         setRemoteStreamCount((c) => c + 1);
-        console.log("[voice] received peer stream", {
-          peerId,
+        console.log("[voice] ✓ Audio pipeline created for peer:", peerId, {
           partyId: existingPartyId,
-          tracks: stream.getTracks().map((t) => ({ kind: t.kind, id: t.id })),
+          gainValue: gain.gain.value,
         });
       } catch (e) {
-        console.error("[voice] failed to attach stream", e);
+        console.error("[voice] ✗ Failed to attach audio:", e);
+      }
+    });
+
+    // Also keep onPeerStream as fallback (some browsers might send streams)
+    room.onPeerStream((stream, peerId, metadata: Json) => {
+      console.log("[voice] ← Received peer stream (fallback):", peerId);
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        console.log("[voice] ⚠ Stream has no audio tracks");
+        return;
+      }
+
+      // If we don't already have this peer, set up audio
+      if (peers.has(peerId)) return;
+
+      void ensureAudio();
+      const ctx = audioCtxRef.current;
+      if (!ctx) return;
+
+      try {
+        const source = ctx.createMediaStreamSource(stream);
+        const gain = ctx.createGain();
+        gain.gain.value = 1;
+        source.connect(gain);
+        gain.connect(ctx.destination);
+
+        const existingPartyId = getPartyIdFromMetadata(metadata);
+        if (existingPartyId) {
+          partyIdToPeerId.set(existingPartyId, peerId);
+        }
+
+        peers.set(peerId, {
+          peerId,
+          partyId: existingPartyId,
+          stream,
+          source,
+          gain,
+        });
+
+        setRemoteStreamCount((c) => c + 1);
+        console.log("[voice] ✓ Audio from stream (fallback):", peerId);
+      } catch (e) {
+        console.error("[voice] ✗ Stream fallback failed:", e);
       }
     });
 
@@ -383,6 +475,7 @@ export function useProximityVoice(opts: {
   return {
     micAvailable,
     micMuted,
+    micDeviceLabel,
     lastError,
     peerCount,
     remoteStreamCount,
