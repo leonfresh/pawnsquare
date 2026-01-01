@@ -70,6 +70,7 @@ export function useProximityVoice(opts: {
   const [micMuted, setMicMuted] = useState(true);
   const [lastError, setLastError] = useState<string | null>(null);
   const [peerCount, setPeerCount] = useState(0);
+  const [remoteStreamCount, setRemoteStreamCount] = useState(0);
 
   const ensureAudio = useCallback(async () => {
     if (typeof window === "undefined") return;
@@ -191,6 +192,17 @@ export function useProximityVoice(opts: {
     );
     roomRef.current = room;
 
+    // If the user granted mic permission before the room finished booting,
+    // broadcast the existing stream now.
+    const existingMic = micStreamRef.current;
+    if (existingMic) {
+      console.log("[voice] room ready; broadcasting existing mic stream");
+      void room.addStream(existingMic, undefined, {
+        partyId: partySelfId ?? null,
+        kind: "mic",
+      });
+    }
+
     const [sendHello, onHello] = room.makeAction<VoiceHello>("voice:hello");
     sendHelloRef.current = sendHello;
 
@@ -220,11 +232,13 @@ export function useProximityVoice(opts: {
 
     room.onPeerJoin((peerId) => {
       setPeerCount((c) => c + 1);
+      console.log("[voice] peer joined", peerId);
       sendMyHello(peerId);
 
       // If we already have mic permission, ensure new peers get the stream.
       const stream = micStreamRef.current;
       if (stream) {
+        console.log("[voice] sending mic stream to", peerId);
         void room.addStream(stream, peerId, {
           partyId: partySelfId ?? null,
           kind: "mic",
@@ -234,6 +248,7 @@ export function useProximityVoice(opts: {
 
     room.onPeerLeave((peerId) => {
       setPeerCount((c) => Math.max(0, c - 1));
+      console.log("[voice] peer left", peerId);
       const peer = peers.get(peerId);
       if (peer) {
         try {
@@ -282,6 +297,13 @@ export function useProximityVoice(opts: {
           source,
           gain,
         });
+
+        setRemoteStreamCount((c) => c + 1);
+        console.log("[voice] received peer stream", {
+          peerId,
+          partyId: existingPartyId,
+          tracks: stream.getTracks().map((t) => ({ kind: t.kind, id: t.id })),
+        });
       } catch (e) {
         console.error("[voice] failed to attach stream", e);
       }
@@ -314,6 +336,7 @@ export function useProximityVoice(opts: {
       peers.clear();
       partyIdToPeerId.clear();
       setPeerCount(0);
+      setRemoteStreamCount(0);
 
       // Close audio context
       if (audioCtxRef.current) {
@@ -362,6 +385,7 @@ export function useProximityVoice(opts: {
     micMuted,
     lastError,
     peerCount,
+    remoteStreamCount,
     toggleMic,
     ensureMic,
     ensureAudio,

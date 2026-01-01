@@ -4080,7 +4080,8 @@ export default function World({
               : "Tap to mute mic (V)"
           }
         >
-          {voice.micMuted ? "Mic: Muted (V)" : "Mic: Live (V)"}
+          {voice.micMuted ? "Mic: Muted" : "Mic: Live"} (V) · peers:{" "}
+          {voice.peerCount} · streams: {voice.remoteStreamCount}
         </button>
       </div>
 
