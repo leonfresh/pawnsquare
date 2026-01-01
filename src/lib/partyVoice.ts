@@ -40,6 +40,7 @@ export function usePartyVoice(opts: {
   const micStreamRef = useRef<MediaStream | null>(null);
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
   const onRemoteGainRef = useRef(onRemoteGainForPeerId);
+  const pendingTracksRef = useRef<Map<string, MediaStream>>(new Map());
 
   // Keep callback ref updated
   useEffect(() => {
@@ -56,14 +57,51 @@ export function usePartyVoice(opts: {
     if (typeof window === "undefined") return;
     if (!audioCtxRef.current) {
       audioCtxRef.current = getAudioContext();
+      console.log("[party-voice] ✓ AudioContext created");
     }
     const ctx = audioCtxRef.current;
     if (ctx.state !== "running") {
       try {
         await ctx.resume();
+        console.log("[party-voice] ✓ AudioContext resumed from", ctx.state);
       } catch {
         // ignore
       }
+    }
+    
+    // Process any pending tracks now that AudioContext is ready
+    if (ctx.state === "running" && pendingTracksRef.current.size > 0) {
+      console.log("[party-voice] Processing", pendingTracksRef.current.size, "pending tracks");
+      const pending = Array.from(pendingTracksRef.current.entries());
+      pendingTracksRef.current.clear();
+      
+      for (const [peerId, stream] of pending) {
+        const conn = peersRef.current.get(peerId);
+        if (!conn || conn.stream) continue; // Skip if already processed
+        
+        try {
+          const source = ctx.createMediaStreamSource(stream);
+          const gain = ctx.createGain();
+          gain.gain.value = 1;
+          source.connect(gain);
+          gain.connect(ctx.destination);
+
+          conn.stream = stream;
+          conn.source = source;
+          conn.gain = gain;
+
+          console.log("[party-voice] ✓ Audio pipeline created for pending", peerId);
+          onRemoteGainRef.current(peerId, gain);
+        } catch (err) {
+          console.warn("[party-voice] Failed to create audio pipeline for", peerId, err);
+        }
+      }
+      
+      // Update stream count
+      const streamCount = Array.from(peersRef.current.values()).filter(
+        (c) => c.stream
+      ).length;
+      setRemoteStreamCount(streamCount);
     }
   }, []);
 
@@ -159,15 +197,20 @@ export function usePartyVoice(opts: {
 
         if (event.track.kind !== "audio") return;
 
-        await ensureAudio();
+        const stream = event.streams[0] || new MediaStream([event.track]);
         const ctx = audioCtxRef.current;
-        if (!ctx) return;
+        
+        // If AudioContext not ready or suspended, store track for later
+        if (!ctx || ctx.state !== "running") {
+          console.log("[party-voice] ⏸️ Storing track for", peerId, "until AudioContext ready");
+          pendingTracksRef.current.set(peerId, stream);
+          return;
+        }
 
         const conn = peersRef.current.get(peerId);
         if (!conn) return;
 
         try {
-          const stream = event.streams[0] || new MediaStream([event.track]);
           const source = ctx.createMediaStreamSource(stream);
           const gain = ctx.createGain();
           gain.gain.value = 1;
@@ -445,7 +488,10 @@ export function usePartyVoice(opts: {
   // Unlock audio on first gesture
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const onGesture = () => void ensureAudio();
+    const onGesture = async () => {
+      await ensureAudio();
+      console.log("[party-voice] ✓ AudioContext ready after user gesture");
+    };
     window.addEventListener("pointerdown", onGesture, { once: true });
     window.addEventListener("keydown", onGesture, { once: true });
     return () => {
