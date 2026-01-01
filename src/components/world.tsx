@@ -1,14 +1,23 @@
 "use client";
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Billboard, Plane, Text } from "@react-three/drei";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Billboard, Plane, Text, Line } from "@react-three/drei";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import {
   usePartyRoom as useP2PRoom,
   type ChatMessage,
+  type Player,
   type Vec3,
 } from "@/lib/partyRoom";
+import { useProximityVoice } from "@/lib/proximityVoice";
 import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
@@ -69,6 +78,16 @@ function hash2(x: number, y: number, seed: number) {
 
 function smoothstep01(t: number) {
   return t * t * (3 - 2 * t);
+}
+
+function voiceGainFromDistanceMeters(d: number) {
+  // Simple VRChat-like rolloff: full volume nearby, fades out to silence.
+  const NEAR = 2.0;
+  const FAR = 18.0;
+  if (d <= NEAR) return 1;
+  if (d >= FAR) return 0;
+  const t = (d - NEAR) / (FAR - NEAR);
+  return 1 - smoothstep01(t);
 }
 
 function valueNoise2(x: number, y: number, seed: number) {
@@ -2097,6 +2116,7 @@ function SelfAvatar({
   gender,
   avatarUrl,
   sittingRef,
+  bubbleText,
 }: {
   color: string;
   name: string;
@@ -2106,6 +2126,7 @@ function SelfAvatar({
   gender: "male" | "female";
   avatarUrl?: string;
   sittingRef?: React.RefObject<boolean>;
+  bubbleText?: string;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const [movingSpeed, setMovingSpeed] = useState(0);
@@ -2136,6 +2157,7 @@ function SelfAvatar({
 
   return (
     <group ref={groupRef}>
+      {bubbleText ? <SpeechBubble text={bubbleText} /> : null}
       <PlayerAvatar
         id={name}
         movingSpeed={movingSpeed}
@@ -2144,6 +2166,98 @@ function SelfAvatar({
         pose={pose}
       />
     </group>
+  );
+}
+
+function SpeechBubble({ text }: { text: string }) {
+  const t = (text ?? "").toString();
+  // Estimate lines more generously and allow more lines
+  const approxLines = Math.max(1, Math.min(10, Math.ceil(t.length / 26)));
+  const width = clamp(0.9 + t.length * 0.045, 1.2, 3.6);
+  // Allow height to grow larger
+  const height = clamp(0.42 + (approxLines - 1) * 0.22, 0.42, 2.5);
+
+  const { shape, points } = useMemo(() => {
+    const s = new THREE.Shape();
+    const r = 0.15; // corner radius
+    const w = width;
+    const h = height;
+    const x = -w / 2;
+    const y = 0;
+
+    const tailWidth = 0.2;
+    const tailHeight = 0.2;
+
+    // Start at top-left corner (after curve)
+    s.moveTo(x, y + h - r);
+
+    // Top edge
+    s.lineTo(x, y + h - r);
+    s.quadraticCurveTo(x, y + h, x + r, y + h);
+    s.lineTo(x + w - r, y + h);
+    s.quadraticCurveTo(x + w, y + h, x + w, y + h - r);
+
+    // Right edge
+    s.lineTo(x + w, y + r);
+    s.quadraticCurveTo(x + w, y, x + w - r, y);
+
+    // Bottom edge with tail
+    s.lineTo(tailWidth / 2, y);
+    s.lineTo(0, y - tailHeight); // Tail tip
+    s.lineTo(-tailWidth / 2, y); // Left side of tail
+
+    // Continue to bottom-left corner
+    s.lineTo(x + r, y);
+    s.quadraticCurveTo(x, y, x, y + r);
+
+    // Close loop (left edge)
+    s.lineTo(x, y + h - r);
+
+    const p = s
+      .getPoints()
+      .map((v) => [v.x, v.y, 0] as [number, number, number]);
+    return { shape: s, points: p };
+  }, [width, height]);
+
+  return (
+    <Billboard position={[0, 2.62, 0]}>
+      <group position={[0, 0.2, 0]}>
+        {/* Bubble Body & Tail */}
+        <mesh>
+          <shapeGeometry args={[shape]} />
+          <meshBasicMaterial
+            color="#ffffff"
+            transparent
+            opacity={0.95}
+            depthWrite={false}
+            depthTest={false}
+          />
+        </mesh>
+
+        {/* Outline */}
+        <Line
+          points={points}
+          color="black"
+          lineWidth={2}
+          position={[0, 0, 0.002]}
+          transparent
+          opacity={0.8}
+        />
+
+        {/* Text */}
+        <Text
+          position={[0, height * 0.5, 0.01]}
+          fontSize={0.18}
+          color="#1a1a1a"
+          anchorX="center"
+          anchorY="middle"
+          maxWidth={Math.max(0.6, width - 0.25)}
+          textAlign="center"
+        >
+          {t}
+        </Text>
+      </group>
+    </Billboard>
   );
 }
 
@@ -2233,22 +2347,7 @@ function RemoteAvatar({
         </Text>
       </Billboard>
 
-      {bubbleText ? (
-        <Billboard position={[0, 2.65, 0]}>
-          <Text
-            fontSize={0.2}
-            color="#ffffff"
-            outlineWidth={0.012}
-            outlineColor="rgba(0,0,0,0.75)"
-            anchorX="center"
-            anchorY="bottom"
-            maxWidth={4.6}
-            textAlign="center"
-          >
-            {bubbleText}
-          </Text>
-        </Billboard>
-      ) : null}
+      {bubbleText ? <SpeechBubble text={bubbleText} /> : null}
 
       <PlayerAvatar
         id={id}
@@ -2271,6 +2370,7 @@ function FollowCamera({
   const draggingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   const pinchRef = useRef<{ dist: number; radius: number } | null>(null);
+  const touchIdsRef = useRef<Set<number>>(new Set());
 
   // Camera orbit state (spherical)
   const thetaRef = useRef(0); // azimuth around Y
@@ -2297,8 +2397,28 @@ function FollowCamera({
 
     const onContextMenu = (e: MouseEvent) => e.preventDefault();
     const onDown = (e: PointerEvent) => {
-      // Right mouse button only
-      if (e.button !== 2) return;
+      // Desktop: right mouse drag rotates camera.
+      if (e.pointerType !== "touch") {
+        if (e.button !== 2) return;
+        draggingRef.current = true;
+        lastRef.current = { x: e.clientX, y: e.clientY };
+        try {
+          el.setPointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      // Mobile: one-finger drag rotates camera.
+      touchIdsRef.current.add(e.pointerId);
+      if (touchIdsRef.current.size !== 1) {
+        // If a second finger is down, stop orbit drag (pinch zoom takes over).
+        draggingRef.current = false;
+        lastRef.current = null;
+        return;
+      }
+
       draggingRef.current = true;
       lastRef.current = { x: e.clientX, y: e.clientY };
       try {
@@ -2308,9 +2428,23 @@ function FollowCamera({
       }
     };
     const onUp = (e: PointerEvent) => {
-      if (e.button !== 2) return;
-      draggingRef.current = false;
-      lastRef.current = null;
+      if (e.pointerType !== "touch") {
+        if (e.button !== 2) return;
+        draggingRef.current = false;
+        lastRef.current = null;
+        try {
+          el.releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      touchIdsRef.current.delete(e.pointerId);
+      if (touchIdsRef.current.size === 0) {
+        draggingRef.current = false;
+        lastRef.current = null;
+      }
       try {
         el.releasePointerCapture(e.pointerId);
       } catch {
@@ -2319,6 +2453,11 @@ function FollowCamera({
     };
     const onMove = (e: PointerEvent) => {
       if (!draggingRef.current) return;
+
+      if (e.pointerType === "touch") {
+        // Only rotate on single-finger drag.
+        if (touchIdsRef.current.size !== 1) return;
+      }
       const last = lastRef.current;
       if (!last) return;
       const dx = e.clientX - last.x;
@@ -2420,6 +2559,47 @@ function FollowCamera({
   return null;
 }
 
+// FPS Tracker Component
+function FpsTracker({
+  labelRef,
+}: {
+  labelRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const lastSampleMsRef = useRef(0);
+  const framesSinceSampleRef = useRef(0);
+  const lastReportedFpsRef = useRef(-1);
+
+  useFrame(() => {
+    const now = performance.now();
+    framesSinceSampleRef.current += 1;
+
+    const last = lastSampleMsRef.current;
+    if (last === 0) {
+      lastSampleMsRef.current = now;
+      framesSinceSampleRef.current = 0;
+      return;
+    }
+
+    // Throttle React updates: sample ~4 times/sec.
+    const elapsed = now - last;
+    if (elapsed < 250) return;
+
+    const fpsNow = Math.round((framesSinceSampleRef.current * 1000) / elapsed);
+    framesSinceSampleRef.current = 0;
+    lastSampleMsRef.current = now;
+
+    // Avoid redundant DOM updates.
+    if (fpsNow === lastReportedFpsRef.current) return;
+    lastReportedFpsRef.current = fpsNow;
+
+    const el = labelRef.current;
+    if (!el) return;
+    el.textContent = `FPS: ${fpsNow}`;
+  });
+
+  return null;
+}
+
 const DEBUG_AVATAR_URLS = {
   defaultMale: "/three-avatar/avatars/default_male.vrm",
   cherryRoseOptimized5mb: "/three-avatar/avatars/cherry_rose_optimized_5mb.vrm",
@@ -2448,24 +2628,31 @@ const SHOP_ITEMS = [
     type: "avatar",
   },
   {
+    id: "kawaii",
+    name: "Kawaii",
+    url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb,
+    price: 200,
+    type: "avatar",
+  },
+  {
+    id: "ren",
+    name: "Ren",
+    url: DEBUG_AVATAR_URLS.renOptimized7mb,
+    price: 200,
+    type: "avatar",
+  },
+  {
     id: "cherry",
     name: "Cherry Rose",
     url: DEBUG_AVATAR_URLS.cherryRoseOptimized5mb,
-    price: 900,
+    price: 800,
     type: "avatar",
   },
   {
     id: "fuyuki",
     name: "Fuyuki",
     url: DEBUG_AVATAR_URLS.fuyukiOptimized,
-    price: 900,
-    type: "avatar",
-  },
-  {
-    id: "kawaii",
-    name: "Kawaii",
-    url: DEBUG_AVATAR_URLS.kawaiiOptimized5mb,
-    price: 650,
+    price: 800,
     type: "avatar",
   },
   {
@@ -2473,13 +2660,6 @@ const SHOP_ITEMS = [
     name: "Miu",
     url: DEBUG_AVATAR_URLS.miuOptimized,
     price: 1200,
-    type: "avatar",
-  },
-  {
-    id: "ren",
-    name: "Ren",
-    url: DEBUG_AVATAR_URLS.renOptimized7mb,
-    price: 650,
     type: "avatar",
   },
   {
@@ -2494,7 +2674,7 @@ const SHOP_ITEMS = [
     id: "theme_scifi",
     name: "Sci-Fi World",
     url: "",
-    price: 1500,
+    price: 1200,
     type: "theme",
     previewImage: "/shop/theme-scifi.png",
   },
@@ -2507,10 +2687,10 @@ const SHOP_ITEMS = [
     chessKind: "set",
   },
   {
-    id: "chess_classic",
-    name: "Classic Chess Set",
+    id: "chess_marble",
+    name: "Marble Chess Set",
     url: "",
-    price: 0,
+    price: 200,
     type: "chess",
     chessKind: "set",
   },
@@ -2518,7 +2698,7 @@ const SHOP_ITEMS = [
     id: "chess_glass",
     name: "Glass Chess Set",
     url: "",
-    price: 350,
+    price: 300,
     type: "chess",
     chessKind: "set",
   },
@@ -2526,7 +2706,7 @@ const SHOP_ITEMS = [
     id: "chess_gold",
     name: "Gold Chess Set",
     url: "",
-    price: 500,
+    price: 400,
     type: "chess",
     chessKind: "set",
   },
@@ -2542,7 +2722,7 @@ const SHOP_ITEMS = [
     id: "board_marble",
     name: "Marble Chess Board",
     url: "",
-    price: 250,
+    price: 200,
     type: "chess",
     chessKind: "board",
   },
@@ -2556,21 +2736,56 @@ const SHOP_ITEMS = [
   },
 ] as const;
 
+function normalizeOwnedItemIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v !== "string") continue;
+    // If it's already a stable ID, keep it.
+    if (SHOP_ITEMS.some((i) => i.id === v)) {
+      out.push(v);
+      continue;
+    }
+    // Back-compat: map avatar URL -> its item ID.
+    const avatarMatch = SHOP_ITEMS.find(
+      (i) => i.type === "avatar" && i.url && i.url === v
+    );
+    if (avatarMatch) {
+      out.push(avatarMatch.id);
+      continue;
+    }
+    // Unknown string (future item ID or other identifier): keep.
+    out.push(v);
+  }
+  return Array.from(new Set(out));
+}
+
+function toLegacyOwnedAvatarsValues(ownedItemIds: string[]): string[] {
+  const out: string[] = [];
+  for (const id of ownedItemIds) {
+    out.push(id);
+    const item = SHOP_ITEMS.find((i) => i.id === id);
+    if (item?.type === "avatar" && item.url) out.push(item.url);
+  }
+  return Array.from(new Set(out));
+}
+
 function isShopItemOwned(
   item: (typeof SHOP_ITEMS)[number],
-  ownedAvatarUrls: string[]
+  ownedItemIds: string[]
 ) {
   // Treat all price=0 items as always owned (defaults), even if not in DB.
   if (item.price === 0) return true;
-  if (ownedAvatarUrls.includes(item.id)) return true;
-  if (item.url && ownedAvatarUrls.includes(item.url)) return true;
+  if (ownedItemIds.includes(item.id)) return true;
+  // Back-compat: some rows historically stored avatar URLs.
+  if (item.url && ownedItemIds.includes(item.url)) return true;
   return false;
 }
 
 const COIN_PACKS = [
-  { id: "p80", coins: 80, priceLabel: "$1" },
-  { id: "p450", coins: 450, priceLabel: "$5" },
-  { id: "p1000", coins: 1000, priceLabel: "$10" },
+  { id: "p80", coins: 200, priceLabel: "$1" },
+  { id: "p450", coins: 1200, priceLabel: "$5" },
+  { id: "p1000", coins: 3000, priceLabel: "$10" },
 ] as const;
 
 function safeParseJson<T>(raw: string | null): T | null {
@@ -2586,15 +2801,9 @@ const SHOP_TAB_STORAGE_KEY = "pawnsquare:shopTab";
 
 function isShopItemLocked(
   item: (typeof SHOP_ITEMS)[number],
-  ownedAvatarUrls: string[]
+  ownedItemIds: string[]
 ): boolean {
-  // Buying the Sci‑Fi world unlocks Sci‑Fi pieces + board.
-  // (Currently mapped to Glass set + Neon board.)
-  const sciFiUnlocked = ownedAvatarUrls.includes("theme_scifi");
-  if (!sciFiUnlocked) {
-    if (item.id === "chess_glass") return true;
-    if (item.id === "board_neon") return true;
-  }
+  // All items are directly purchasable
   return false;
 }
 
@@ -2793,6 +3002,8 @@ import {
   ShopIcon,
   CloseIcon,
   UserIcon,
+  PaletteIcon,
+  ChessPieceIcon,
   ThemeIcon,
   CoinsIcon,
   MenuIcon,
@@ -2873,7 +3084,18 @@ export default function World({
     initialGender,
     paused: isDuplicateSession,
   });
+
+  const voice = useProximityVoice({
+    roomId,
+    partySelfId: self?.id,
+    selfName: self?.name,
+  });
+
   const keysRef = useWASDKeys();
+
+  const [showFps, setShowFps] = useState(false);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const fpsLabelRef = useRef<HTMLDivElement | null>(null);
 
   const [chatInput, setChatInput] = useState("");
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -2888,6 +3110,35 @@ export default function World({
     el.scrollTop = el.scrollHeight;
   }, [chat]);
 
+  // FPS counter toggle with tilde key
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "`" || e.key === "~") {
+        // Don't toggle if typing in chat
+        if (document.activeElement === chatInputRef.current) return;
+        e.preventDefault();
+        setShowFps((prev) => !prev);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Push-to-talk toggle with V key
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "v" && e.key !== "V") return;
+      // Don't toggle if typing in chat or other input.
+      const ae = document.activeElement as HTMLElement | null;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      void voice.toggleMic();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [voice.toggleMic]);
+
   useEffect(() => {
     const last = chat[chat.length - 1];
     if (!last) return;
@@ -2896,7 +3147,10 @@ export default function World({
 
     setBubbles((prev) => ({
       ...prev,
-      [last.fromId]: { text: last.text, until: Date.now() + 4500 },
+      [last.fromId]: {
+        text: last.text,
+        until: Date.now() + Math.max(3000, 1500 + last.text.length * 80),
+      },
     }));
   }, [chat]);
 
@@ -2954,9 +3208,9 @@ export default function World({
     const chosenGender = readStartScreenGender();
     const defaultAvatarUrl = defaultAvatarUrlForGender(chosenGender);
     setCoins(500);
-    setOwnedAvatarUrls([
-      DEBUG_AVATAR_URLS.defaultMale,
-      DEBUG_AVATAR_URLS.defaultFemale,
+    setOwnedItemIds([
+      "default_male",
+      "default_female",
       "chess_wood",
       "board_classic",
     ]);
@@ -2973,9 +3227,9 @@ export default function World({
   >("avatar");
   const [shopSelectedId, setShopSelectedId] = useState<string | null>(null);
   const [coins, setCoins] = useState<number>(500);
-  const [ownedAvatarUrls, setOwnedAvatarUrls] = useState<string[]>([
-    DEBUG_AVATAR_URLS.defaultMale,
-    DEBUG_AVATAR_URLS.defaultFemale,
+  const [ownedItemIds, setOwnedItemIds] = useState<string[]>([
+    "default_male",
+    "default_female",
     "chess_wood", // Default chess set
     "board_classic", // Default chess board
   ]);
@@ -2991,12 +3245,22 @@ export default function World({
   const [menuOpen, setMenuOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => setIsMobile(window.innerWidth < 640);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const equippedThemeId = lobbyType === "scifi" ? "theme_scifi" : "theme_park";
   const isItemEquipped = (item: (typeof SHOP_ITEMS)[number]) => {
     if (item.type === "avatar") return item.url === debugAvatarUrl;
     if (item.type === "theme") return item.id === equippedThemeId;
     if (item.type === "chess") {
-      if ((item as any).chessKind === "board") return item.id === chessBoardTheme;
+      if ((item as any).chessKind === "board")
+        return item.id === chessBoardTheme;
       return item.id === chessTheme;
     }
     return false;
@@ -3216,7 +3480,15 @@ export default function World({
         .then(({ data }) => {
           if (data) {
             setCoins(data.coins ?? 0);
-            setOwnedAvatarUrls((data.owned_avatars as string[]) ?? []);
+            const ownedFromItems = Array.isArray((data as any).owned_items)
+              ? ((data as any).owned_items as string[])
+              : null;
+            const ownedFromLegacy = Array.isArray((data as any).owned_avatars)
+              ? ((data as any).owned_avatars as string[])
+              : null;
+            setOwnedItemIds(
+              normalizeOwnedItemIds(ownedFromItems ?? ownedFromLegacy ?? [])
+            );
 
             const equippedAvatarUrl =
               typeof (data as any).equipped_avatar_url === "string"
@@ -3263,14 +3535,23 @@ export default function World({
           (payload) => {
             const newRow = payload.new as {
               coins: number;
-              owned_avatars: any;
+              owned_items?: any;
+              owned_avatars?: any;
               equipped_avatar_url?: any;
               equipped_theme?: any;
               equipped_chess_set?: any;
               equipped_chess_board?: any;
             };
             setCoins(newRow.coins ?? 0);
-            setOwnedAvatarUrls((newRow.owned_avatars as string[]) ?? []);
+            const ownedFromItems = Array.isArray(newRow.owned_items)
+              ? (newRow.owned_items as string[])
+              : null;
+            const ownedFromLegacy = Array.isArray(newRow.owned_avatars)
+              ? (newRow.owned_avatars as string[])
+              : null;
+            setOwnedItemIds(
+              normalizeOwnedItemIds(ownedFromItems ?? ownedFromLegacy ?? [])
+            );
 
             if (typeof newRow.equipped_chess_set === "string") {
               setChessTheme(newRow.equipped_chess_set);
@@ -3300,17 +3581,14 @@ export default function World({
     } else {
       // Guest: No coins, only default avatars.
       setCoins(0);
-      setOwnedAvatarUrls([
-        DEBUG_AVATAR_URLS.defaultMale,
-        DEBUG_AVATAR_URLS.defaultFemale,
-      ]);
+      setOwnedItemIds(["default_male", "default_female"]);
     }
   }, [supabaseUser, isDuplicateSession]);
 
   // Persist shop state (Supabase handles this, no localStorage fallback).
   useEffect(() => {
     // No-op
-  }, [coins, ownedAvatarUrls, supabaseUser]);
+  }, [coins, ownedItemIds, supabaseUser]);
 
   // Listen for Stripe payment success from popup.
   useEffect(() => {
@@ -3711,6 +3989,16 @@ export default function World({
 
           <FollowCamera target={selfPosRef} lookAtOverride={lookAtTargetRef} />
 
+          <VoiceProximityUpdater
+            enabled={!!self}
+            selfId={self?.id}
+            players={players}
+            selfPosRef={selfPosRef}
+            setRemoteGainForPartyId={voice.setRemoteGainForPartyId}
+          />
+
+          {showFps && <FpsTracker labelRef={fpsLabelRef} />}
+
           <SelfSimulation
             enabled={!!self}
             keysRef={keysRef}
@@ -3737,6 +4025,7 @@ export default function World({
                   avatarSystem === "three-avatar" ? debugAvatarUrl : undefined
                 }
                 sittingRef={sittingRef}
+                bubbleText={bubbles[self.id]?.text}
               />
             </Suspense>
           ) : null}
@@ -3758,6 +4047,42 @@ export default function World({
           </Suspense>
         </group>
       </Canvas>
+
+      {/* Voice toggle (V) */}
+      <div
+        style={{
+          position: "fixed",
+          right: 12,
+          bottom: 12,
+          zIndex: 15,
+          pointerEvents: "auto",
+        }}
+      >
+        <button
+          onClick={() => void voice.toggleMic()}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.18)",
+            background: voice.micMuted
+              ? "rgba(0,0,0,0.55)"
+              : "rgba(0,0,0,0.75)",
+            color: "white",
+            fontSize: 12,
+            fontWeight: 700,
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+            cursor: "pointer",
+          }}
+          title={
+            voice.micMuted
+              ? "Tap to unmute mic (V)"
+              : "Tap to mute mic (V)"
+          }
+        >
+          {voice.micMuted ? "Mic: Muted (V)" : "Mic: Live (V)"}
+        </button>
+      </div>
 
       {contextLost ? (
         <div
@@ -3806,11 +4131,35 @@ export default function World({
         </div>
       ) : null}
 
+      {/* FPS Counter */}
+      {showFps && (
+        <div
+          ref={fpsLabelRef}
+          style={{
+            position: "fixed",
+            top: 12,
+            left: 12,
+            padding: "8px 12px",
+            borderRadius: 8,
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(8px)",
+            color: "#fff",
+            fontSize: 14,
+            fontWeight: 600,
+            fontFamily: "monospace",
+            pointerEvents: "none",
+            zIndex: 9999,
+          }}
+        >
+          FPS: --
+        </div>
+      )}
+
       {/* Top Left HUD */}
       <div
         style={{
           position: "fixed",
-          top: 12,
+          top: showFps ? 52 : 12,
           left: 12,
           display: "flex",
           flexDirection: "column",
@@ -4049,6 +4398,7 @@ export default function World({
         </div>
 
         <input
+          ref={chatInputRef}
           value={chatInput}
           placeholder={connected ? "Chat..." : "Connecting..."}
           onChange={(e) => setChatInput(e.target.value)}
@@ -4078,8 +4428,9 @@ export default function World({
           top: 12,
           right: 12,
           display: "flex",
-          gap: 12,
-          alignItems: "center",
+          flexDirection: isMobile ? "column" : "row",
+          gap: isMobile ? 10 : 12,
+          alignItems: isMobile ? "flex-end" : "center",
           pointerEvents: "auto",
         }}
         data-pawnsquare-menu-root
@@ -4429,20 +4780,20 @@ export default function World({
             background: "rgba(0,0,0,0.7)",
             backdropFilter: "blur(4px)",
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            alignItems: isMobile ? "stretch" : "center",
+            justifyContent: isMobile ? "stretch" : "center",
             zIndex: 50,
           }}
           onClick={() => setShopOpen(false)}
         >
           <div
             style={{
-              width: 800,
-              maxWidth: "90vw",
-              height: 600,
-              maxHeight: "90vh",
+              width: isMobile ? "100vw" : 800,
+              maxWidth: isMobile ? "100vw" : "90vw",
+              height: isMobile ? "100vh" : 600,
+              maxHeight: isMobile ? "100vh" : "90vh",
               background: "#1a1a1a",
-              borderRadius: 16,
+              borderRadius: isMobile ? 0 : 16,
               border: "1px solid rgba(255,255,255,0.1)",
               display: "flex",
               flexDirection: "column",
@@ -4454,44 +4805,23 @@ export default function World({
             {/* Header */}
             <div
               style={{
-                padding: "16px 24px",
+                padding: isMobile ? "12px 14px" : "16px 24px",
                 borderBottom: "1px solid rgba(255,255,255,0.1)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
+                gap: 10,
               }}
             >
-              <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: isMobile ? 10 : 24,
+                  alignItems: "center",
+                  flexWrap: isMobile ? "wrap" : "nowrap",
+                }}
+              >
                 <div style={{ fontSize: 20, fontWeight: 600 }}>Shop</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {(["avatar", "theme", "chess"] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => {
-                        setShopTab(t);
-                        setShopSelectedId(null);
-                      }}
-                      style={{
-                        padding: "6px 12px",
-                        borderRadius: 8,
-                        background:
-                          shopTab === t
-                            ? "rgba(255,255,255,0.2)"
-                            : "transparent",
-                        color:
-                          shopTab === t ? "white" : "rgba(255,255,255,0.6)",
-                        border: "none",
-                        cursor: "pointer",
-                        fontSize: 14,
-                        textTransform: "capitalize",
-                      }}
-                    >
-                      {t === "chess"
-                        ? "Chess"
-                        : `${t.slice(0, 1).toUpperCase()}${t.slice(1)}s`}
-                    </button>
-                  ))}
-                </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                 <div
@@ -4524,6 +4854,8 @@ export default function World({
                       fontSize: 14,
                       lineHeight: 1,
                     }}
+                    title="Buy coins"
+                    aria-label="Buy coins"
                   >
                     +
                   </button>
@@ -4543,8 +4875,65 @@ export default function World({
               </div>
             </div>
 
+            {/* Tabs Row */}
+            <div
+              style={{
+                padding: isMobile ? "10px 14px" : "10px 24px",
+                borderBottom: "1px solid rgba(255,255,255,0.08)",
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              {(["avatar", "theme", "chess"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => {
+                    setShopTab(t);
+                    setShopSelectedId(null);
+                  }}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 10,
+                    background:
+                      shopTab === t
+                        ? "rgba(255,255,255,0.18)"
+                        : "rgba(255,255,255,0.06)",
+                    color: shopTab === t ? "white" : "rgba(255,255,255,0.75)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    fontWeight: 700,
+                    textTransform: "capitalize",
+                    lineHeight: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  {t === "avatar" ? (
+                    <UserIcon size={16} />
+                  ) : t === "theme" ? (
+                    <PaletteIcon size={16} />
+                  ) : (
+                    <ChessPieceIcon size={16} />
+                  )}
+                  {t === "chess"
+                    ? "Chess"
+                    : `${t.slice(0, 1).toUpperCase()}${t.slice(1)}s`}
+                </button>
+              ))}
+            </div>
+
             {/* Content */}
-            <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+            <div
+              style={{
+                flex: 1,
+                display: "flex",
+                overflow: "hidden",
+                flexDirection: isMobile ? "column" : "row",
+              }}
+            >
               {shopTab === "coins" ? (
                 <div
                   style={{
@@ -4687,21 +5076,31 @@ export default function World({
                   {/* Sidebar / List */}
                   <div
                     style={{
-                      width: 280,
-                      borderRight: "1px solid rgba(255,255,255,0.1)",
+                      width: isMobile ? "100%" : 280,
+                      borderRight: isMobile
+                        ? "none"
+                        : "1px solid rgba(255,255,255,0.1)",
+                      borderBottom: isMobile
+                        ? "1px solid rgba(255,255,255,0.1)"
+                        : "none",
                       overflowY: "auto",
-                      padding: 16,
-                      display: "flex",
-                      flexDirection: "column",
+                      overflowX: "hidden",
+                      padding: isMobile ? 12 : 16,
+                      display: isMobile ? "grid" : "flex",
+                      gridTemplateColumns: isMobile ? "1fr 1fr" : undefined,
+                      alignContent: "start",
+                      flexDirection: isMobile ? undefined : "column",
                       gap: 8,
+                      flex: isMobile ? "0 0 45%" : undefined,
+                      minHeight: 0,
                     }}
                   >
-                    {SHOP_ITEMS.filter(
-                      (i) =>
-                        i.type === shopTab &&
-                        !isShopItemLocked(i, ownedAvatarUrls)
-                    ).map((item) => {
-                      const owned = isShopItemOwned(item, ownedAvatarUrls);
+                    {SHOP_ITEMS.filter((i) => {
+                      if (i.type !== shopTab) return false;
+                      if (isShopItemLocked(i, ownedItemIds)) return false;
+                      return true;
+                    }).map((item) => {
+                      const owned = isShopItemOwned(item, ownedItemIds);
                       const selected = shopSelectedId === item.id;
                       const equipped = isItemEquipped(item);
                       return (
@@ -4712,7 +5111,7 @@ export default function World({
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "space-between",
-                            padding: "12px",
+                            padding: isMobile ? "10px" : "12px",
                             borderRadius: 8,
                             background: selected
                               ? "rgba(255,255,255,0.1)"
@@ -4722,6 +5121,7 @@ export default function World({
                             cursor: "pointer",
                             textAlign: "left",
                             transition: "background 0.2s",
+                            minHeight: isMobile ? 54 : undefined,
                           }}
                         >
                           <div
@@ -4742,7 +5142,13 @@ export default function World({
                               gap: 4,
                             }}
                           >
-                            {owned ? (equipped ? "Equipped" : "Owned") : (
+                            {owned ? (
+                              equipped ? (
+                                "Equipped"
+                              ) : (
+                                "Owned"
+                              )
+                            ) : (
                               <>
                                 <CoinsIcon size={12} />
                                 {item.price}
@@ -4757,26 +5163,29 @@ export default function World({
                   {/* Preview Area */}
                   <div
                     style={{
-                      flex: 1,
-                      padding: 24,
+                      flex: isMobile ? "1 1 55%" : 1,
+                      padding: isMobile ? 14 : 24,
                       display: "flex",
                       flexDirection: "column",
                       alignItems: "center",
                       justifyContent: "center",
                       gap: 24,
+                      minHeight: 0,
                       background:
                         "radial-gradient(circle at center, rgba(255,255,255,0.05) 0%, transparent 70%)",
                     }}
                   >
                     {(() => {
+                      const previewW = isMobile ? 240 : 300;
+                      const previewH = isMobile ? 240 : 400;
                       const item = SHOP_ITEMS.find(
                         (i) => i.id === shopSelectedId
                       );
-                      if (!item || isShopItemLocked(item, ownedAvatarUrls))
+                      if (!item || isShopItemLocked(item, ownedItemIds))
                         return (
                           <div style={{ opacity: 0.5 }}>Select an item</div>
                         );
-                      const owned = isShopItemOwned(item, ownedAvatarUrls);
+                      const owned = isShopItemOwned(item, ownedItemIds);
                       const canBuy = !owned && coins >= item.price;
                       const equipped = isItemEquipped(item);
 
@@ -4784,8 +5193,8 @@ export default function World({
                         <>
                           <div
                             style={{
-                              width: 300,
-                              height: 400,
+                              width: previewW,
+                              height: previewH,
                               background: "rgba(0,0,0,0.2)",
                               borderRadius: 12,
                               overflow: "hidden",
@@ -4798,8 +5207,8 @@ export default function World({
                             {item.type === "avatar" ? (
                               <VrmPreview
                                 url={item.url}
-                                width={300}
-                                height={400}
+                                width={previewW}
+                                height={previewH}
                               />
                             ) : item.type === "chess" ? (
                               <div style={{ width: "100%", height: "100%" }}>
@@ -4824,8 +5233,8 @@ export default function World({
                                     src={(item as any).previewImage}
                                     alt={item.name}
                                     style={{
-                                      width: 240,
-                                      height: 240,
+                                      width: isMobile ? 180 : 240,
+                                      height: isMobile ? 180 : 240,
                                       objectFit: "cover",
                                       borderRadius: 12,
                                       border:
@@ -4859,25 +5268,23 @@ export default function World({
                                     0,
                                     coins - item.price
                                   );
-                                  const idToStore =
-                                    item.type === "theme" ||
-                                    item.type === "chess"
-                                      ? item.id
-                                      : item.url;
-                                  const newOwned = [
-                                    ...ownedAvatarUrls,
-                                    idToStore,
-                                  ];
+                                  const newOwnedItems = normalizeOwnedItemIds([
+                                    ...ownedItemIds,
+                                    item.id,
+                                  ]);
+                                  const newOwnedLegacy =
+                                    toLegacyOwnedAvatarsValues(newOwnedItems);
 
                                   setCoins(newCoins);
-                                  setOwnedAvatarUrls(newOwned);
+                                  setOwnedItemIds(newOwnedItems);
 
                                   const supabase = getSupabaseBrowserClient();
                                   supabase
                                     .from("profiles")
                                     .update({
                                       coins: newCoins,
-                                      owned_avatars: newOwned,
+                                      owned_items: newOwnedItems,
+                                      owned_avatars: newOwnedLegacy,
                                     })
                                     .eq("id", supabaseUser.id)
                                     .then(({ error }) => {
@@ -4887,7 +5294,7 @@ export default function World({
                                           `Purchase failed: ${error.message}`
                                         );
                                         setCoins(coins);
-                                        setOwnedAvatarUrls(ownedAvatarUrls);
+                                        setOwnedItemIds(ownedItemIds);
                                       }
                                     });
                                 }}
@@ -5132,7 +5539,9 @@ export default function World({
                       }
                     } catch (e) {
                       setAuthMsg(
-                        e instanceof Error ? e.message : "Could not start sign-in."
+                        e instanceof Error
+                          ? e.message
+                          : "Could not start sign-in."
                       );
                     } finally {
                       setAuthBusy(false);
@@ -5170,9 +5579,21 @@ export default function World({
                   opacity: 0.8,
                 }}
               >
-                <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.12)" }} />
+                <div
+                  style={{
+                    height: 1,
+                    flex: 1,
+                    background: "rgba(255,255,255,0.12)",
+                  }}
+                />
                 <div style={{ fontSize: 12 }}>or</div>
-                <div style={{ height: 1, flex: 1, background: "rgba(255,255,255,0.12)" }} />
+                <div
+                  style={{
+                    height: 1,
+                    flex: 1,
+                    background: "rgba(255,255,255,0.12)",
+                  }}
+                />
               </div>
 
               <div style={{ display: "flex", gap: 8 }}>
@@ -5184,13 +5605,14 @@ export default function World({
                     try {
                       const supabase = getSupabaseBrowserClient();
                       const redirectTo = `${window.location.origin}/auth/popup`;
-                      const { data, error } = await supabase.auth.signInWithOAuth({
-                        provider: "google",
-                        options: {
-                          redirectTo,
-                          skipBrowserRedirect: true,
-                        },
-                      });
+                      const { data, error } =
+                        await supabase.auth.signInWithOAuth({
+                          provider: "google",
+                          options: {
+                            redirectTo,
+                            skipBrowserRedirect: true,
+                          },
+                        });
 
                       if (error || !data?.url) {
                         setAuthMsg(
@@ -5204,7 +5626,9 @@ export default function World({
                         "pawnsquare-oauth"
                       );
                       if (!popup) {
-                        setAuthMsg("Popup blocked. Allow popups and try again.");
+                        setAuthMsg(
+                          "Popup blocked. Allow popups and try again."
+                        );
                         return;
                       }
                       setAuthMsg("Complete sign-in in the popup...");
@@ -5265,7 +5689,9 @@ export default function World({
                         "pawnsquare-oauth"
                       );
                       if (!popup) {
-                        setAuthMsg("Popup blocked. Allow popups and try again.");
+                        setAuthMsg(
+                          "Popup blocked. Allow popups and try again."
+                        );
                         return;
                       }
                       setAuthMsg("Complete sign-in in the popup...");
@@ -5309,4 +5735,44 @@ export default function World({
       ) : null}
     </div>
   );
+}
+
+function VoiceProximityUpdater({
+  enabled,
+  selfId,
+  players,
+  selfPosRef,
+  setRemoteGainForPartyId,
+}: {
+  enabled: boolean;
+  selfId?: string;
+  players: Record<string, Player>;
+  selfPosRef: React.RefObject<THREE.Vector3>;
+  setRemoteGainForPartyId: (partyId: string, gain: number) => void;
+}) {
+  const lastTickRef = useRef(0);
+
+  useFrame(() => {
+    if (!enabled) return;
+    if (!selfId) return;
+    const selfPos = selfPosRef.current;
+    if (!selfPos) return;
+
+    const now = performance.now();
+    // 10Hz update is plenty for volume.
+    if (now - lastTickRef.current < 100) return;
+    lastTickRef.current = now;
+
+    for (const [partyId, p] of Object.entries(players)) {
+      if (partyId === selfId) continue;
+      const dx = (p.position?.[0] ?? 0) - selfPos.x;
+      const dy = (p.position?.[1] ?? 0) - selfPos.y;
+      const dz = (p.position?.[2] ?? 0) - selfPos.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const g = voiceGainFromDistanceMeters(d);
+      setRemoteGainForPartyId(partyId, g);
+    }
+  });
+
+  return null;
 }

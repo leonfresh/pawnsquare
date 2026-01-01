@@ -1,0 +1,326 @@
+// PBR Marble
+// by Hazel Quantock
+
+//#define PLANE 1
+
+const float tau = 6.283185;
+
+void TestChecks(
+    out float depth,
+    out vec3 albedo,
+    out vec3 specCol,
+    out float roughness,
+    in vec2 uv,
+    in vec3 pos // for 3D materials
+    )
+{
+    depth = 0.;
+    albedo = mix( vec3(.9), vec3(0), step(.5,fract(uv.y/.7)) );
+    float ior = 1.33;
+    float F0 = abs(ior-1.)/(ior+1.);
+    specCol = mix( vec3(F0), vec3(.99), step(.5,fract(uv.y/.7)) );
+    roughness = exp2(-7. + 4.*step(0.,sin(uv.x*tau*1.5)));
+}
+
+
+float Noise( vec3 p )
+{
+    vec3 f = fract(p);
+    f = smoothstep(0.,1.,f) - f;
+    p += f;
+	return textureLod(iChannel0,(p+.5)/32.,-16.).x;
+}
+
+
+float Granite( vec3 pos )
+{
+    const int n = 4;
+    float o = 0.;
+    for ( int i=0; i < n; i++ )
+    {
+    	o = o*2. + abs(Noise(pos)*2.-1.);
+        pos *= 2.;
+    }
+    return o / float((1<<(n))-1);
+}
+
+
+void MetallisedMarble(
+    out float depth,
+    out vec3 albedo,
+    out vec3 specCol,
+    out float roughness,
+    in vec2 uv,
+    in vec3 pos // for 3D materials
+    )
+{
+//    vec3 tilev = fract(pos)*2.-1.; // this is saw tooth, i want matching triangle wave
+    vec3 tilev = abs(fract(pos+.25)*2.-1.)-.5;
+    float tile = tilev.x*tilev.y*tilev.z;
+    float tileFlip = sign(tile);
+    
+    vec3 v = normalize(vec3(tileFlip,1,1)); // squash pattern on this axis
+    //float pattern = Noise(pos*10.);
+    float pattern = 1.-Granite( (pos+v*dot(v,pos)*(2.5+.5*tileFlip-1.))*4. );
+//    pattern = pow(pattern,4.);
+    
+    float met = .1;//.05; // point where it becomes metallic
+    float mask = smoothstep(met*1.4,met*.7,1.-pattern);
+    
+    if ( tile > 0. ) mask = 0.; // remove from the white tiles
+
+    float metalNoise = clamp(-.3+2.5*Granite(pos*100.),0.,1.);
+//    float metalNoise = clamp(-.3+1.6*Noise(pos*200.),0.,1.);
+//    float metalNoise = Noise(pos*200.*metalScale);
+    depth = mix(
+        	// try to make it look like the tool that cut the marble reacted to the changes in density at a higher frequency
+        	.95+.05*sin(pattern*6.283*2.), // wow this really works!
+        	// make metal a bit sparkly
+	       	.9-(1.-metalNoise)*.4, 
+        	mask );
+    
+    depth = min(depth,min(min(abs(tilev.x),abs(tilev.y)),abs(tilev.z))/.02);
+    
+    albedo =
+        mix(
+        	mix(vec3(.3,.05,.05),vec3(.8,.87,.9),pow(pattern/(1.-met*.7),30.)),
+        	mix(vec3(.9),vec3(.0),pow(pattern,5.)),
+            step(0.,tile)
+        );
+    albedo *= 1.-mask;
+    
+    float ior = 1.48;
+    float F0 = abs(ior-1.)/(ior+1.);
+    specCol = mix( vec3(F0), pow(vec3(.95,.55,.02),vec3(1.-metalNoise*metalNoise))*(metalNoise*.7+.3)/*mask*/, mask );
+    
+    roughness = exp2(-mix(7.,2.,pow(pattern,1.))); // really nice wibbling, but no normal => should be smoother
+//    roughness = exp2(-mix(14.,7.,pow(pattern,1.)));
+	roughness = mix(roughness,.2,mask);
+}
+
+// maybe material should just return actual depth values - seems sensible but it's not how maps would work
+const float depthScale = .004;
+
+//#define SampleMaterial TestChecks
+#define SampleMaterial MetallisedMarble
+
+
+void SampleMaterialAndNormal(
+    out float depth,
+    out vec3 albedo,
+    out vec3 specCol,
+    out float roughness,
+    inout vec3 normal,
+    in vec3 tangent,
+    in vec3 binormal,
+    in vec2 uv,
+    in vec3 pos // for 3D materials
+)
+{
+	SampleMaterial( depth, albedo, specCol, roughness, uv, pos );
+
+// this isn't working, but I'm using a 3D texture at the moment so just need 2 perpendicular vectors
+tangent = normalize(tangent-normal*dot(tangent,normal));
+binormal = normalize(cross(normal,tangent));
+
+    // read surface normal
+    float ignore1;
+    vec3 ignore3;
+    vec2 d = vec2(0,1)*.001;
+    float depth2;
+    vec3 pos2 = pos+tangent*d.x+binormal*d.y;
+    SampleMaterial( depth2, ignore3, ignore3, ignore1, uv+d, pos2 );
+    
+    d = d.yx;
+    float depth3;
+    vec3 pos3 = pos+tangent*d.x+binormal*d.y;
+    SampleMaterial( depth3, ignore3, ignore3, ignore1, uv+d, pos3 );
+    
+    vec3 p = pos + normal*depth*depthScale;
+    pos2 = pos2 + normal*depth2*depthScale - p;
+    pos3 = pos3 + normal*depth3*depthScale - p;
+    normal = normalize(cross(pos3,pos2)); //hmm... slow build and vanishes
+//    n = n2*sign(dot(n2,n)); // hmm
+}
+
+
+
+// BRDF
+
+// PBR specular from: https://learnopengl.com/#!PBR/Theory
+float DistributionGGX(vec3 N, vec3 H, float a)
+{
+    float a2     = a*a;
+    float NdotH  = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+	
+    float nom    = a2;
+    float denom  = NdotH2 * (a2 - 1.0) + 1.0;
+    denom        = max( denom * denom * tau/2., .00000001 );
+    // ^HQ this max causes problems, too big and highlights can't be small and bright,
+    // too small and apparently monte carlo blew up (though that could be amplifying other issues)
+    // test with a dim light and a polished surface to see the clamping, even when very low
+
+// n.b. this fix is why I had a bokeh-like fade, and why monte carlo tests were going weird on shiny surfaces    
+    
+    return nom / denom;
+}
+
+float GeometrySchlickGGX(float NdotV, float k)
+{
+    float nom   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+	
+    return nom / denom;
+}
+  
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float k)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx1 = GeometrySchlickGGX(NdotV, k);
+    float ggx2 = GeometrySchlickGGX(NdotL, k);
+	
+    return ggx1 * ggx2;
+}
+
+
+// tangent and binormal are difference in pos for an infinitesimal step along u and v respectively
+vec3 BRDF(
+    vec3 pos,
+    float depth,
+    vec3 albedo,
+    vec3 specCol,
+    float roughness,
+    vec3 n,
+    vec3 i,
+    vec3 l,
+    vec3 lcol )
+{
+    float nDotL = max(0.,dot(n,l));
+    vec3 diffuse = albedo*nDotL;
+    
+	// the maths says it needs this, but I don't really understand why
+	diffuse /= (tau*.5);
+   
+    vec3 h = normalize(-i+l);
+    
+    float spec = DistributionGGX(n,h,roughness)
+        		* GeometrySmith(n,-i,l,(roughness+1.)*(roughness+1.)/8.)
+        		/ max( .0001, 4. * dot(n,-i) * dot(n,l) );
+
+// this doesn't have a soft falloff - looks like it expects *lambertian    
+// hmm... seems like the integral (For monte carlo/env map) includes this, but the brdf doesn't?
+// BAH, MATHS!
+spec *= nDotL;
+    
+    vec3 fresnel = mix( specCol, vec3(1), pow(1.-dot(n,-i),5.) );
+
+    return mix( diffuse, vec3(spec), fresnel )*lcol;
+}
+
+
+vec3 mainImage2( in vec2 fragCoord )
+{
+    vec3 fragColour = vec3(0);
+    
+    // simple test scene: sphere/plane and light(s)
+#if defined(PLANE)
+	float zoom = 3.0;
+    vec3 camp = vec3(1,1.5,-3);
+    vec3 target = vec3(0,0,0);
+#else    
+	float zoom = 2.5;
+    vec3 camp = vec3(0,1.5,-5)+.5*sin(iTime*vec3(1,1,0)/4.+vec2(tau*.25,0).xyy);
+    vec3 target = vec3(0,0,0);
+#endif
+    if ( iMouse.z > .0 )
+    {
+        vec2 a = 2.*(iMouse.xy-iResolution.xy*.5)/iResolution.y;
+        camp.yz = camp.yz*cos(a.y)+camp.zy*vec2(1,-1)*sin(a.y);
+        camp.xz = camp.xz*cos(a.x)+camp.zx*vec2(1,-1)*sin(a.x);
+    }
+    
+    vec3 ray = normalize(vec3( (fragCoord-iResolution.xy*.5)/iResolution.y, zoom ));
+    vec3 pos = camp;
+    vec3 camk = normalize( target - pos );
+    vec3 cami = normalize( cross( vec3(0,1,0), camk ) );
+    vec3 camj = cross( camk, cami );
+    
+    ray = ray.x*cami + ray.y*camj + ray.z*camk;
+
+#if defined(PLANE)
+    // intersect with plane
+    vec4 plane = vec4(0,1,0,-.25); // n,n.p for any p in plane
+    float t = (plane.w - dot(pos,plane.xyz)) / dot(ray,plane.xyz);
+    if ( t <= 0. ) return fragColour;
+    pos += t*ray;
+	vec3 normal = plane.xyz;
+    vec2 uv = (pos.xz-.5)/1.;
+    vec3 tangent = vec3(1,0,0);
+    vec3 binormal = vec3(0,0,1);
+#else    
+    // or, intersect with sphere
+	vec4 sphere = vec4(0,0,0,.95); // centre,radius
+	vec3 d = sphere.xyz-pos;
+    vec3 p = ray*dot(ray,d); // vector from pos to closest point to centre
+    float e = sphere.w*sphere.w - dot(p-d,p-d);
+    if ( e < 0. ) return fragColour;
+    pos += p - ray*sqrt(e);
+	vec3 normal = normalize(pos - sphere.xyz);
+//    vec2 uv = atan(pos.xy,-pos.zz)*7./6.283; // polar coords, to try to reduce distortion
+    vec2 uv = pos.xy;
+    vec3 tangent = vec3(1,0,abs(normal.x/normal.z));
+    vec3 binormal = vec3(0,-1,abs(normal.y/normal.z));
+#endif
+    
+    // add each light
+    float a = iTime*6.283/20.;
+    vec3 toLight = normalize(vec3(2,3,1));
+    toLight.xz = toLight.xz*cos(a)+toLight.zx*vec2(1,-1)*sin(a);
+
+    float depth;
+    vec3 albedo;
+    vec3 specCol;
+    float roughness;
+	SampleMaterialAndNormal( depth, albedo, specCol, roughness, normal, tangent, binormal, uv, pos );
+    
+    fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, toLight, vec3(2) );
+
+#if defined(PLANE)
+  	fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, normalize(vec3(-.2,1,.7)), vec3(.06,.05,.04) );
+  	fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, normalize(vec3(-.3,.5,1)), .5*vec3(.05,.2,.3) );
+  	fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, normalize(vec3(-.1,.5,1)), .5*vec3(.1) );
+#else
+  	fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, normalize(vec3(.5,0,1)), vec3(.05,.2,.5) );
+  	fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, normalize(vec3(-.5,1,-1)), vec3(.05,.2,.3) );
+  	fragColour.rgb += BRDF( pos, depth, albedo, specCol, roughness, normal, ray, normalize(vec3(.5,-.5,-1)), vec3(.1) );
+#endif
+    
+    // exposure
+    fragColour *= 2.;
+    
+    return fragColour;
+}
+
+
+void mainImage( out vec4 fragColour, in vec2 fragCoord )
+{
+    if ( true )
+    {
+        // rotated grid AA (hurts compile time but looks nice)
+        fragColour.rgb = (
+            clamp(mainImage2(fragCoord+vec2(-3,-1)/8.),0.,1.) +
+            clamp(mainImage2(fragCoord+vec2(-1, 3)/8.),0.,1.) +
+            clamp(mainImage2(fragCoord+vec2( 1,-3)/8.),0.,1.) +
+            clamp(mainImage2(fragCoord+vec2( 3, 1)/8.),0.,1.)
+            )/4.;
+    }
+    else
+    {
+    	fragColour.rgb = mainImage2(fragCoord);
+    }
+    
+    fragColour.rgb = pow(fragColour.rgb,vec3(1./2.2));
+    fragColour.a = 1.;
+}

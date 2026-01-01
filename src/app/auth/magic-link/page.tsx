@@ -13,9 +13,10 @@ export default function MagicLinkPage() {
 
     const announceAuthToOtherTabs = () => {
       try {
+        const targetOrigin = window.location.origin;
         window.opener?.postMessage(
           { type: "pawnsquare:auth", ok: true, source: "magic-link" },
-          "*"
+          targetOrigin
         );
         window.opener?.focus?.();
       } catch {

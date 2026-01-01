@@ -153,12 +153,17 @@ function applyFresnelRim(
   material.needsUpdate = true;
 }
 
-function applyFrostedGlassShader(
+function applyClearGlassShader(
   material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  opts?: { scale?: number; strength?: number }
+  opts?: {
+    scale?: number;
+    absorbStrength?: number;
+    bottomTint?: THREE.Color;
+  }
 ) {
-  const scale = opts?.scale ?? 18.0;
-  const strength = opts?.strength ?? 0.22;
+  const scale = opts?.scale ?? 1.0;
+  const absorbStrength = opts?.absorbStrength ?? 0.35;
+  const bottomTint = opts?.bottomTint ?? new THREE.Color("#e9f2ff");
 
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -168,37 +173,85 @@ function applyFrostedGlassShader(
       // ignore
     }
 
-    shader.uniforms.uFrostScale = { value: scale };
-    shader.uniforms.uFrostStrength = { value: strength };
+    shader.uniforms.uGlassScale = { value: scale };
+    shader.uniforms.uGlassAbsorb = { value: absorbStrength };
+    shader.uniforms.uGlassBottomTint = { value: bottomTint };
 
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vFrostWorldPos;`
+        `#include <common>\nvarying vec3 vGlassWorldPos;`
       )
       .replace(
         "#include <begin_vertex>",
-        `#include <begin_vertex>\nvec4 wsPosF = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosF = instanceMatrix * wsPosF;\n#endif\nwsPosF = modelMatrix * wsPosF;\nvFrostWorldPos = wsPosF.xyz;`
+        `#include <begin_vertex>\nvec4 wsPosG = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosG = instanceMatrix * wsPosG;\n#endif\nwsPosG = modelMatrix * wsPosG;\nvGlassWorldPos = wsPosG.xyz;`
       );
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vFrostWorldPos;\nuniform float uFrostScale;\nuniform float uFrostStrength;\nfloat frostHash(vec2 p){\n  // cheap stable hash\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);\n}`
-      )
-      .replace(
-        "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>\n// frosted micro-variation (kept cheap)
-float nF = frostHash(vFrostWorldPos.xz * uFrostScale);\nroughnessFactor = clamp(roughnessFactor + (nF - 0.5) * uFrostStrength, 0.02, 1.0);`
+        `#include <common>\nvarying vec3 vGlassWorldPos;\nuniform float uGlassScale;\nuniform float uGlassAbsorb;\nuniform vec3 uGlassBottomTint;`
       )
       .replace(
         "#include <color_fragment>",
-        `#include <color_fragment>\n// subtle cloudiness + density so it reads as solid glass
-float nC = frostHash((vFrostWorldPos.zy + vFrostWorldPos.xz) * (uFrostScale * 0.65));\nfloat cloud = mix(0.90, 1.02, nC);\ndiffuseColor.rgb *= cloud;\ndiffuseColor.a *= mix(0.92, 1.02, nC);`
+        `#include <color_fragment>\nfloat gy = clamp(vGlassWorldPos.y * uGlassScale, 0.0, 1.0);\n// Slight base tint, clearer towards the top\ndiffuseColor.rgb = mix(uGlassBottomTint, diffuseColor.rgb, smoothstep(0.0, 1.0, gy));`
       )
       .replace(
         "#include <output_fragment>",
-        `// view-dependent absorption so it doesn't read like a hologram\nfloat ndvF = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);\nfloat absorb = mix(0.92, 1.0, pow(1.0 - ndvF, 1.6));\noutgoingLight *= absorb;\n#include <output_fragment>`
+        `// Gentle absorption at grazing angles\nfloat ndv = clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0);\nfloat fres = pow(1.0 - ndv, 2.0);\noutgoingLight *= (1.0 - fres * uGlassAbsorb);\n#include <output_fragment>`
+      );
+  };
+
+  material.needsUpdate = true;
+}
+
+function applyMilkGlassShader(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  opts?: {
+    milkiness?: number;
+    bottomTint?: THREE.Color;
+  }
+) {
+  const milkiness = opts?.milkiness ?? 0.75;
+  const bottomTint = opts?.bottomTint ?? new THREE.Color("#ffffff");
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    try {
+      (prev as any).call(material as any, shader, renderer);
+    } catch {
+      // ignore
+    }
+
+    shader.uniforms.uMilkiness = { value: milkiness };
+    shader.uniforms.uMilkBottomTint = { value: bottomTint };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vMilkWorldPos;`
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\nvec4 wsPosM = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosM = instanceMatrix * wsPosM;\n#endif\nwsPosM = modelMatrix * wsPosM;\nvMilkWorldPos = wsPosM.xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vMilkWorldPos;\nuniform float uMilkiness;\nuniform vec3 uMilkBottomTint;`
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>\n// Smooth frosted roughness (no dotty noise)\nroughnessFactor = clamp(max(roughnessFactor, 0.75) + uMilkiness * 0.15, 0.0, 1.0);`
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>\n// Subtle vertical density: slightly denser near base\nfloat g = clamp(vMilkWorldPos.y, 0.0, 1.0);\ndiffuseColor.rgb = mix(uMilkBottomTint, diffuseColor.rgb, smoothstep(0.0, 1.0, g));`
+      )
+      .replace(
+        "#include <output_fragment>",
+        `float ndv = clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0);\n// More scattering at grazing angles\nfloat scatter = clamp(uMilkiness * 0.75 + (1.0 - ndv) * 0.35, 0.0, 1.0);\noutgoingLight = mix(outgoingLight, vec3(1.0), scatter);\n#include <output_fragment>`
       );
   };
 
@@ -209,8 +262,8 @@ function applyWoodGrainShader(
   material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
   opts?: { scale?: number; intensity?: number }
 ) {
-  const scale = opts?.scale ?? 9.5;
-  const intensity = opts?.intensity ?? 0.22;
+  const scale = opts?.scale ?? 6.0;
+  const intensity = opts?.intensity ?? 0.4;
 
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -235,23 +288,59 @@ function applyWoodGrainShader(
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vWorldPos;\nuniform float uWoodScale;\nuniform float uWoodIntensity;\nfloat woodNoise(vec2 p){\n  // cheap pseudo-noise using layered sines\n  float n = 0.0;\n  n += sin(p.x * 1.9 + sin(p.y * 1.2)) * 0.55;\n  n += sin(p.x * 3.7 + p.y * 0.7) * 0.25;\n  n += sin(p.x * 8.1 - p.y * 2.3) * 0.12;\n  return n * 0.5 + 0.5;\n}`
+        `#include <common>
+varying vec3 vWorldPos;
+uniform float uWoodScale;
+uniform float uWoodIntensity;
+
+float woodHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float woodNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(woodHash(i + vec2(0.0,0.0)), woodHash(i + vec2(1.0,0.0)), f.x),
+               mix(woodHash(i + vec2(0.0,1.0)), woodHash(i + vec2(1.0,1.0)), f.x), f.y);
+}
+
+float fbmWood(vec2 p) {
+    float v = 0.0;
+    v += 0.5 * woodNoise(p); p *= 2.0;
+    v += 0.25 * woodNoise(p); p *= 2.0;
+    return v;
+}`
       )
       .replace(
         "#include <color_fragment>",
-        `#include <color_fragment>\n// Procedural wood grain in world-space so it works even without UVs.\nvec2 wp = vWorldPos.xz * uWoodScale;\nfloat n = woodNoise(wp);\nfloat grain = smoothstep(0.25, 0.85, n);\n// Add long streaks (growth rings-ish)\nfloat rings = sin((vWorldPos.x + vWorldPos.z) * uWoodScale * 0.35 + n * 3.14);\nrings = rings * 0.5 + 0.5;\nfloat streak = smoothstep(0.2, 0.95, rings);\nfloat shade = mix(0.88, 1.08, grain) * mix(0.92, 1.06, streak);\ndiffuseColor.rgb *= mix(1.0, shade, uWoodIntensity);`
+        `#include <color_fragment>
+vec2 wp = vWorldPos.xz * uWoodScale;
+// Distort domain for organic look
+float n = fbmWood(wp);
+wp += n * 0.5;
+
+// Wood rings
+float ring = sin(wp.x * 10.0 + wp.y * 2.0);
+ring = smoothstep(-0.4, 0.4, ring);
+
+// Fibers
+float fiber = fbmWood(wp * vec2(20.0, 1.0));
+
+float grain = mix(ring, fiber, 0.3);
+float shade = mix(0.7, 1.1, grain);
+
+diffuseColor.rgb *= mix(1.0, shade, uWoodIntensity);
+`
       );
   };
 
   material.needsUpdate = true;
 }
 
-function applyBrushedMetalShader(
+function applyHammeredMetalShader(
   material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
   opts?: { strength?: number; scale?: number }
 ) {
-  const strength = opts?.strength ?? 0.05;
-  const scale = opts?.scale ?? 10.0;
+  const strength = opts?.strength ?? 0.15;
+  const scale = opts?.scale ?? 12.0;
 
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -276,15 +365,42 @@ function applyBrushedMetalShader(
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vWorldPos2;\nuniform float uMetalVarStrength;\nuniform float uMetalVarScale;`
+        `#include <common>
+varying vec3 vWorldPos2;
+uniform float uMetalVarStrength;
+uniform float uMetalVarScale;
+
+float metalHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+float hammeredNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float md = 1.0;
+    for(int y=-1; y<=1; y++)
+    for(int x=-1; x<=1; x++) {
+        vec2 g = vec2(float(x), float(y));
+        vec2 o = vec2(metalHash(i + g), metalHash(i + g + 57.0));
+        vec2 r = g + o - f;
+        float d = length(r);
+        if(d < md) md = d;
+    }
+    return md;
+}`
       )
       .replace(
         "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>\n// subtle brushed variation\nfloat v = sin((vWorldPos2.x + vWorldPos2.z) * uMetalVarScale) * 0.5 + 0.5;\nroughnessFactor = clamp(roughnessFactor + (v - 0.5) * uMetalVarStrength, 0.02, 1.0);`
+        `#include <roughnessmap_fragment>
+float dents = hammeredNoise(vWorldPos2.xz * uMetalVarScale);
+float dentFactor = smoothstep(0.2, 0.8, dents);
+roughnessFactor = clamp(roughnessFactor + (dentFactor - 0.5) * uMetalVarStrength, 0.05, 0.9);`
       )
       .replace(
         "#include <color_fragment>",
-        `#include <color_fragment>\nfloat c = sin((vWorldPos2.x - vWorldPos2.z) * uMetalVarScale * 0.6) * 0.5 + 0.5;\ndiffuseColor.rgb *= (1.0 + (c - 0.5) * (uMetalVarStrength * 0.9));`
+        `#include <color_fragment>
+float cDents = hammeredNoise(vWorldPos2.xz * uMetalVarScale);
+float cFactor = smoothstep(0.25, 0.75, cDents);
+// High contrast for hammered look
+diffuseColor.rgb *= mix(0.7, 1.3, cFactor);`
       );
   };
 
@@ -322,22 +438,23 @@ function PieceModel({
 
       if (chessTheme === "chess_glass") {
         const isWhite = side === "w";
-        // Denser frosted glass (lighter than true transmission/refraction).
+        // Match ref: white = frosted/milky, black = clear glass.
         const base = isWhite
-          ? new THREE.Color("#cfefff")
-          : new THREE.Color("#07101d");
+          ? new THREE.Color("#f7fbff")
+          : new THREE.Color("#0f141b");
         const rim = isWhite
           ? new THREE.Color("#ffffff")
-          : new THREE.Color("#bfe7ff");
+          : new THREE.Color("#e9f2ff");
 
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(base);
         if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.0;
         if (typeof clonedMat.roughness === "number")
-          clonedMat.roughness = isWhite ? 0.62 : 0.48;
+          clonedMat.roughness = isWhite ? 0.92 : 0.03;
         clonedMat.transparent = true;
-        clonedMat.opacity = isWhite ? 0.68 : 0.58;
-        clonedMat.depthWrite = true;
+        clonedMat.opacity = isWhite ? 0.86 : 0.42;
+        // Clear glass blends better without writing depth.
+        clonedMat.depthWrite = isWhite;
         (clonedMat as any).premultipliedAlpha = true;
         if (clonedMat.emissive && clonedMat.emissive.isColor) {
           clonedMat.emissive = clonedMat.emissive.clone();
@@ -345,12 +462,22 @@ function PieceModel({
           clonedMat.emissiveIntensity = isWhite ? 0.02 : 0.04;
         }
         if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = 0.65;
-        applyFrostedGlassShader(clonedMat, {
-          scale: 22.0,
-          strength: isWhite ? 0.20 : 0.24,
-        });
-        applyFresnelRim(clonedMat, rim, 2.4, isWhite ? 0.33 : 0.38);
+          clonedMat.envMapIntensity = isWhite ? 0.8 : 1.6;
+
+        if (isWhite) {
+          applyMilkGlassShader(clonedMat, {
+            milkiness: 0.85,
+            bottomTint: new THREE.Color("#eef4ff"),
+          });
+          applyFresnelRim(clonedMat, rim, 2.2, 0.25);
+        } else {
+          applyClearGlassShader(clonedMat, {
+            scale: 1.0,
+            absorbStrength: 0.7,
+            bottomTint: new THREE.Color("#050607"),
+          });
+          applyFresnelRim(clonedMat, rim, 2.8, 0.22);
+        }
       } else if (chessTheme === "chess_gold") {
         const isWhite = side === "w";
         // Shader-based metals: white side = silver, black side = gold.
@@ -374,20 +501,130 @@ function PieceModel({
         }
         if (typeof clonedMat.envMapIntensity === "number")
           clonedMat.envMapIntensity = isWhite ? 1.1 : 1.25;
-        applyBrushedMetalShader(clonedMat, {
-          strength: isWhite ? 0.04 : 0.05,
-          scale: 12.0,
+        applyHammeredMetalShader(clonedMat, {
+          strength: isWhite ? 0.15 : 0.2,
+          scale: 14.0,
         });
         applyFresnelRim(clonedMat, rim, 2.8, isWhite ? 0.24 : 0.28);
       } else if (chessTheme === "chess_wood") {
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(tint);
-        // Wood: low metalness, higher roughness.
+        // Wood: low metalness, higher roughness, with procedural grain shader
         if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.05;
         if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.85;
         if (typeof clonedMat.envMapIntensity === "number")
           clonedMat.envMapIntensity = 0.35;
+        if (clonedMat.emissive && clonedMat.emissive.isColor) {
+          clonedMat.emissive = clonedMat.emissive.clone();
+          clonedMat.emissive.copy(tint.clone().multiplyScalar(0.02));
+          clonedMat.emissiveIntensity = 0.25;
+        }
         applyWoodGrainShader(clonedMat, { scale: 11.5, intensity: 0.55 });
+      } else if (chessTheme === "chess_marble") {
+        const isWhite = side === "w";
+        // Marble shader using the same technique as the marble board
+        const darkBase = isWhite
+          ? new THREE.Color("#e8e8e8")
+          : new THREE.Color("#5e5e5e");
+        const lightBase = isWhite
+          ? new THREE.Color("#6a6560")
+          : new THREE.Color("#c0c0c0");
+
+        if (clonedMat.color && clonedMat.color.isColor)
+          clonedMat.color.copy(darkBase);
+        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.12;
+        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.25;
+        if (typeof clonedMat.envMapIntensity === "number")
+          clonedMat.envMapIntensity = 0.85;
+
+        // Apply marble shader
+        const prev = clonedMat.onBeforeCompile;
+        clonedMat.onBeforeCompile = (shader: any, renderer: any) => {
+          try {
+            (prev as any).call(clonedMat as any, shader, renderer);
+          } catch {
+            // ignore
+          }
+
+          shader.uniforms.uDarkBase = { value: darkBase };
+          shader.uniforms.uLightBase = { value: lightBase };
+          shader.uniforms.uIsWhite = { value: isWhite ? 1.0 : 0.0 };
+
+          shader.vertexShader = shader.vertexShader
+            .replace(
+              "#include <common>",
+              `#include <common>\nvarying vec3 vWorldPos;`
+            )
+            .replace(
+              "#include <begin_vertex>",
+              `#include <begin_vertex>\nvec4 wsPos = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos = instanceMatrix * wsPos;\n#endif\nwsPos = modelMatrix * wsPos;\nvWorldPos = wsPos.xyz;`
+            );
+
+          shader.fragmentShader = shader.fragmentShader
+            .replace(
+              "#include <common>",
+              `#include <common>
+varying vec3 vWorldPos;
+uniform vec3 uDarkBase;
+uniform vec3 uLightBase;
+uniform float uIsWhite;
+
+vec2 hash2(vec2 p) {
+    p = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)));
+    return fract(sin(p)*43758.5453);
+}
+
+float voronoiCracks(vec2 p) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float md = 8.0;
+    vec2 mg, mr;
+    
+    for(int j=-1; j<=1; j++)
+    for(int i=-1; i<=1; i++) {
+        vec2 g = vec2(float(i),float(j));
+        vec2 o = hash2(n + g);
+        vec2 r = g + o - f;
+        float d = dot(r,r);
+        if(d < md) {
+            md = d;
+            mr = r;
+            mg = g;
+        }
+    }
+    
+    md = 8.0;
+    for(int j=-1; j<=1; j++)
+    for(int i=-1; i<=1; i++) {
+        vec2 g = vec2(float(i),float(j));
+        vec2 o = hash2(n + g);
+        vec2 r = g + o - f;
+        if(dot(mr-r,mr-r) > 0.00001) {
+            md = min(md, dot(0.5*(mr+r), normalize(r-mr)));
+        }
+    }
+    return md;
+}`
+            )
+            .replace(
+              "#include <color_fragment>",
+              `#include <color_fragment>
+vec3 p = vWorldPos * 4.0;
+float cracks = voronoiCracks(p.xz + p.y * 0.5);
+float crackLine = 1.0 - smoothstep(0.0, 0.04, cracks);
+
+float noise = 0.0;
+vec2 np = p.xz * 0.5;
+noise += (sin(np.x * 3.0 + sin(np.y * 2.0)) + 1.0) * 0.5;
+
+vec3 baseColor = uDarkBase * (0.85 + noise * 0.3); // Subtle variance
+vec3 crackColor = uIsWhite > 0.5 ? vec3(0.2, 0.2, 0.25) : vec3(0.9, 0.9, 0.95);
+
+diffuseColor.rgb = mix(baseColor, crackColor, crackLine * 0.65);
+`
+            );
+        };
+        clonedMat.needsUpdate = true;
       } else {
         if (clonedMat.color && clonedMat.color.isColor)
           clonedMat.color.copy(tint);
@@ -831,26 +1068,36 @@ function MarbleTileMaterial({ color, ...props }: { color: string } & any) {
   const vein = useMemo(() => new THREE.Color("#ffffff"), []);
 
   const onBeforeCompile = (shader: any) => {
-    shader.uniforms.uTime = { value: 0 };
     shader.uniforms.uBase = { value: base };
     shader.uniforms.uVein = { value: vein };
+    shader.uniforms.uSquareSize = { value: 0.6 };
 
     shader.vertexShader = `
       varying vec3 vPos;
+      varying vec2 vMarbleUv;
       ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
+    `
+      .replace(
+        "#include <uv_vertex>",
+        `
+      #include <uv_vertex>
+      vMarbleUv = uv;
       `
-      #include <worldpos_vertex>
-      vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      `
-    );
+      )
+      .replace(
+        "#include <worldpos_vertex>",
+        `
+        #include <worldpos_vertex>
+        vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        `
+      );
 
     shader.fragmentShader = `
       varying vec3 vPos;
-      uniform float uTime;
+      varying vec2 vMarbleUv;
       uniform vec3 uBase;
       uniform vec3 uVein;
+      uniform float uSquareSize;
 
       float hash21(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -865,13 +1112,21 @@ function MarbleTileMaterial({ color, ...props }: { color: string } & any) {
         float d = hash21(i + vec2(1.0, 1.0));
         return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
       }
-      float fbm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise2(p); p *= 2.02;
-        f += 0.2500 * noise2(p); p *= 2.03;
-        f += 0.1250 * noise2(p); p *= 2.01;
-        f += 0.0625 * noise2(p);
-        return f;
+
+      // Granite: layered abs noise (from reference shader)
+      float granite(vec2 p) {
+        float o = 0.0;
+        for (int i = 0; i < 4; i++) {
+          o = o * 2.0 + abs(noise2(p) * 2.0 - 1.0);
+          p *= 2.0;
+        }
+        return o / 15.0; // normalize (2^4 - 1)
+      }
+
+      mat2 rot(float a) {
+        float s = sin(a);
+        float c = cos(a);
+        return mat2(c, -s, s, c);
       }
 
       ${shader.fragmentShader}
@@ -880,19 +1135,37 @@ function MarbleTileMaterial({ color, ...props }: { color: string } & any) {
       `
       #include <color_fragment>
 
-      // Marble: layered noise + thin veins, continuous in world space.
-      vec2 p = vPos.xz * 1.25;
-      float n = fbm(p);
-      float n2 = fbm(p * 2.3 + vec2(12.3, -4.7));
-      float flow = sin((p.x + p.y) * 2.5 + (n * 6.0) + uTime * 0.05);
-      float veins = smoothstep(0.55, 0.85, abs(flow)) * smoothstep(0.2, 0.8, n2);
+      // Per-square variation so tiles don't all look identical.
+      // Index in world space (board is centered near origin, squareSize=0.6).
+      vec2 idx = floor((vPos.xz / uSquareSize) + vec2(4.0));
+      float r0 = hash21(idx + vec2(1.7, 9.2));
+      float r1 = hash21(idx + vec2(7.3, 2.1));
+      float r2 = hash21(idx + vec2(3.1, 5.9));
 
-      vec3 baseCol = uBase;
-      vec3 darkCol = baseCol * 0.82;
-      vec3 lightCol = mix(baseCol, uVein, 0.35);
+      float ang = r0 * 6.2831853;
+      vec2 uv = vMarbleUv - 0.5;
+      uv = rot(ang) * uv;
+      uv += 0.5;
 
-      vec3 col = mix(darkCol, lightCol, n * 0.55);
-      col = mix(col, uVein, veins * 0.35);
+      vec2 tileOffset = vec2(r1, r2) * 3.5;
+      vec2 p = (uv + tileOffset) * vec2(2.0, 2.0);
+
+      // Reference shader approach: squash vector + granite pattern
+      float tileFlip = r0 > 0.5 ? 1.0 : -1.0;
+      vec2 v = normalize(vec2(tileFlip, 1.0));
+      float squash = dot(v, p) * (2.5 + 0.5 * tileFlip);
+      float pattern = 1.0 - granite((p + v * squash) * 2.2);
+      
+      // Sharp color transition using power curve (like reference)
+      float veinThreshold = 0.12;
+      vec3 darkBase = uBase * 0.45;
+      vec3 lightBase = mix(uBase, uVein, 0.35);
+      float t = pow(clamp(pattern / (1.0 - veinThreshold * 0.7), 0.0, 1.0), 18.0);
+      vec3 col = mix(darkBase, lightBase, t);
+      
+      // Subtle per-tile brightness variation
+      col *= 1.0 + (r1 - 0.5) * 0.08;
+
       diffuseColor.rgb = col;
       `
     );
@@ -900,18 +1173,12 @@ function MarbleTileMaterial({ color, ...props }: { color: string } & any) {
     (materialRef.current as any).userData.shader = shader;
   };
 
-  useFrame(({ clock }) => {
-    const shader = (materialRef.current as any)?.userData?.shader;
-    if (shader?.uniforms?.uTime)
-      shader.uniforms.uTime.value = clock.getElapsedTime();
-  });
-
   return (
     <meshStandardMaterial
       ref={materialRef}
       onBeforeCompile={onBeforeCompile}
-      roughness={0.35}
-      metalness={0.25}
+      roughness={0.22}
+      metalness={0.0}
       {...props}
     />
   );

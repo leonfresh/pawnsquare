@@ -58,12 +58,17 @@ function applyFresnelRim(
   material.needsUpdate = true;
 }
 
-function applyFrostedGlassShader(
+function applyClearGlassShader(
   material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  opts?: { scale?: number; strength?: number }
+  opts?: {
+    scale?: number;
+    absorbStrength?: number;
+    bottomTint?: THREE.Color;
+  }
 ) {
-  const scale = opts?.scale ?? 18.0;
-  const strength = opts?.strength ?? 0.22;
+  const scale = opts?.scale ?? 1.0;
+  const absorbStrength = opts?.absorbStrength ?? 0.35;
+  const bottomTint = opts?.bottomTint ?? new THREE.Color("#e9f2ff");
 
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -73,35 +78,82 @@ function applyFrostedGlassShader(
       // ignore
     }
 
-    shader.uniforms.uFrostScale = { value: scale };
-    shader.uniforms.uFrostStrength = { value: strength };
+    shader.uniforms.uGlassScale = { value: scale };
+    shader.uniforms.uGlassAbsorb = { value: absorbStrength };
+    shader.uniforms.uGlassBottomTint = { value: bottomTint };
 
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vFrostWorldPos;`
+        `#include <common>\nvarying vec3 vGlassWorldPos;`
       )
       .replace(
         "#include <begin_vertex>",
-        `#include <begin_vertex>\nvec4 wsPosF = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosF = instanceMatrix * wsPosF;\n#endif\nwsPosF = modelMatrix * wsPosF;\nvFrostWorldPos = wsPosF.xyz;`
+        `#include <begin_vertex>\nvec4 wsPosG = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosG = instanceMatrix * wsPosG;\n#endif\nwsPosG = modelMatrix * wsPosG;\nvGlassWorldPos = wsPosG.xyz;`
       );
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vFrostWorldPos;\nuniform float uFrostScale;\nuniform float uFrostStrength;\nfloat frostHash(vec2 p){\n  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);\n}`
-      )
-      .replace(
-        "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>\nfloat nF = frostHash(vFrostWorldPos.xz * uFrostScale);\nroughnessFactor = clamp(roughnessFactor + (nF - 0.5) * uFrostStrength, 0.02, 1.0);`
+        `#include <common>\nvarying vec3 vGlassWorldPos;\nuniform float uGlassScale;\nuniform float uGlassAbsorb;\nuniform vec3 uGlassBottomTint;`
       )
       .replace(
         "#include <color_fragment>",
-        `#include <color_fragment>\nfloat nC = frostHash((vFrostWorldPos.zy + vFrostWorldPos.xz) * (uFrostScale * 0.65));\nfloat cloud = mix(0.90, 1.02, nC);\ndiffuseColor.rgb *= cloud;\ndiffuseColor.a *= mix(0.92, 1.02, nC);`
+        `#include <color_fragment>\nfloat gy = clamp(vGlassWorldPos.y * uGlassScale, 0.0, 1.0);\n// Slight base tint, clearer towards the top\ndiffuseColor.rgb = mix(uGlassBottomTint, diffuseColor.rgb, smoothstep(0.0, 1.0, gy));`
       )
       .replace(
         "#include <output_fragment>",
-        `float ndvF = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);\nfloat absorb = mix(0.92, 1.0, pow(1.0 - ndvF, 1.6));\noutgoingLight *= absorb;\n#include <output_fragment>`
+        `// Gentle absorption at grazing angles\nfloat ndv = clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0);\nfloat fres = pow(1.0 - ndv, 2.0);\noutgoingLight *= (1.0 - fres * uGlassAbsorb);\n#include <output_fragment>`
+      );
+  };
+
+  material.needsUpdate = true;
+}
+
+function applyMilkGlassShader(
+  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
+  opts?: { milkiness?: number; bottomTint?: THREE.Color }
+) {
+  const milkiness = opts?.milkiness ?? 0.75;
+  const bottomTint = opts?.bottomTint ?? new THREE.Color("#ffffff");
+
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    try {
+      (prev as any).call(material as any, shader, renderer);
+    } catch {
+      // ignore
+    }
+
+    shader.uniforms.uMilkiness = { value: milkiness };
+    shader.uniforms.uMilkBottomTint = { value: bottomTint };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vMilkWorldPos;`
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>\nvec4 wsPosM = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosM = instanceMatrix * wsPosM;\n#endif\nwsPosM = modelMatrix * wsPosM;\nvMilkWorldPos = wsPosM.xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>\nvarying vec3 vMilkWorldPos;\nuniform float uMilkiness;\nuniform vec3 uMilkBottomTint;`
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>\n// Smooth frosted roughness (no dotty noise)\nroughnessFactor = clamp(max(roughnessFactor, 0.75) + uMilkiness * 0.15, 0.0, 1.0);`
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>\n// Subtle vertical density: slightly denser near base\nfloat g = clamp(vMilkWorldPos.y, 0.0, 1.0);\ndiffuseColor.rgb = mix(uMilkBottomTint, diffuseColor.rgb, smoothstep(0.0, 1.0, g));`
+      )
+      .replace(
+        "#include <output_fragment>",
+        `float ndv = clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0);\n// More scattering at grazing angles\nfloat scatter = clamp(uMilkiness * 0.75 + (1.0 - ndv) * 0.35, 0.0, 1.0);\noutgoingLight = mix(outgoingLight, vec3(1.0), scatter);\n#include <output_fragment>`
       );
   };
 
@@ -112,8 +164,8 @@ function applyWoodGrainShader(
   material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
   opts?: { scale?: number; intensity?: number }
 ) {
-  const scale = opts?.scale ?? 9.5;
-  const intensity = opts?.intensity ?? 0.22;
+  const scale = opts?.scale ?? 6.0;
+  const intensity = opts?.intensity ?? 0.4;
 
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -138,23 +190,59 @@ function applyWoodGrainShader(
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vWorldPos;\nuniform float uWoodScale;\nuniform float uWoodIntensity;\nfloat woodNoise(vec2 p){\n  float n = 0.0;\n  n += sin(p.x * 1.9 + sin(p.y * 1.2)) * 0.55;\n  n += sin(p.x * 3.7 + p.y * 0.7) * 0.25;\n  n += sin(p.x * 8.1 - p.y * 2.3) * 0.12;\n  return n * 0.5 + 0.5;\n}`
+        `#include <common>
+varying vec3 vWorldPos;
+uniform float uWoodScale;
+uniform float uWoodIntensity;
+
+float woodHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float woodNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(woodHash(i + vec2(0.0,0.0)), woodHash(i + vec2(1.0,0.0)), f.x),
+               mix(woodHash(i + vec2(0.0,1.0)), woodHash(i + vec2(1.0,1.0)), f.x), f.y);
+}
+
+float fbmWood(vec2 p) {
+    float v = 0.0;
+    v += 0.5 * woodNoise(p); p *= 2.0;
+    v += 0.25 * woodNoise(p); p *= 2.0;
+    return v;
+}`
       )
       .replace(
         "#include <color_fragment>",
-        `#include <color_fragment>\nvec2 wp = vWorldPos.xz * uWoodScale;\nfloat n = woodNoise(wp);\nfloat grain = smoothstep(0.25, 0.85, n);\nfloat rings = sin((vWorldPos.x + vWorldPos.z) * uWoodScale * 0.35 + n * 3.14);\nrings = rings * 0.5 + 0.5;\nfloat streak = smoothstep(0.2, 0.95, rings);\nfloat shade = mix(0.88, 1.08, grain) * mix(0.92, 1.06, streak);\ndiffuseColor.rgb *= mix(1.0, shade, uWoodIntensity);`
+        `#include <color_fragment>
+vec2 wp = vWorldPos.xz * uWoodScale;
+// Distort domain for organic look
+float n = fbmWood(wp);
+wp += n * 0.5;
+
+// Wood rings
+float ring = sin(wp.x * 10.0 + wp.y * 2.0);
+ring = smoothstep(-0.4, 0.4, ring);
+
+// Fibers
+float fiber = fbmWood(wp * vec2(20.0, 1.0));
+
+float grain = mix(ring, fiber, 0.3);
+float shade = mix(0.7, 1.1, grain);
+
+diffuseColor.rgb *= mix(1.0, shade, uWoodIntensity);
+`
       );
   };
 
   material.needsUpdate = true;
 }
 
-function applyBrushedMetalShader(
+function applyHammeredMetalShader(
   material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
   opts?: { strength?: number; scale?: number }
 ) {
-  const strength = opts?.strength ?? 0.05;
-  const scale = opts?.scale ?? 10.0;
+  const strength = opts?.strength ?? 0.15;
+  const scale = opts?.scale ?? 12.0;
 
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -179,15 +267,42 @@ function applyBrushedMetalShader(
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        `#include <common>\nvarying vec3 vWorldPos2;\nuniform float uMetalVarStrength;\nuniform float uMetalVarScale;`
+        `#include <common>
+varying vec3 vWorldPos2;
+uniform float uMetalVarStrength;
+uniform float uMetalVarScale;
+
+float metalHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+float hammeredNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float md = 1.0;
+    for(int y=-1; y<=1; y++)
+    for(int x=-1; x<=1; x++) {
+        vec2 g = vec2(float(x), float(y));
+        vec2 o = vec2(metalHash(i + g), metalHash(i + g + 57.0));
+        vec2 r = g + o - f;
+        float d = length(r);
+        if(d < md) md = d;
+    }
+    return md;
+}`
       )
       .replace(
         "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>\nfloat v = sin((vWorldPos2.x + vWorldPos2.z) * uMetalVarScale) * 0.5 + 0.5;\nroughnessFactor = clamp(roughnessFactor + (v - 0.5) * uMetalVarStrength, 0.02, 1.0);`
+        `#include <roughnessmap_fragment>
+float dents = hammeredNoise(vWorldPos2.xz * uMetalVarScale);
+float dentFactor = smoothstep(0.2, 0.8, dents);
+roughnessFactor = clamp(roughnessFactor + (dentFactor - 0.5) * uMetalVarStrength, 0.05, 0.9);`
       )
       .replace(
         "#include <color_fragment>",
-        `#include <color_fragment>\nfloat c = sin((vWorldPos2.x - vWorldPos2.z) * uMetalVarScale * 0.6) * 0.5 + 0.5;\ndiffuseColor.rgb *= (1.0 + (c - 0.5) * (uMetalVarStrength * 0.9));`
+        `#include <color_fragment>
+float cDents = hammeredNoise(vWorldPos2.xz * uMetalVarScale);
+float cFactor = smoothstep(0.25, 0.75, cDents);
+// High contrast for hammered look
+diffuseColor.rgb *= mix(0.7, 1.3, cFactor);`
       );
   };
 
@@ -234,32 +349,44 @@ function ThemedPiece({
       const isWhite = side === "w";
 
       if (chessTheme === "chess_glass") {
+        // Match ref: white = frosted/milky, black = smoked glossy black glass.
         const base = isWhite
-          ? new THREE.Color("#cfefff")
-          : new THREE.Color("#07101d");
+          ? new THREE.Color("#f7fbff")
+          : new THREE.Color("#0f141b");
         const rim = isWhite
           ? new THREE.Color("#ffffff")
-          : new THREE.Color("#bfe7ff");
+          : new THREE.Color("#e9f2ff");
 
         if (mat.color && mat.color.isColor) mat.color.copy(base);
         if (typeof mat.metalness === "number") mat.metalness = 0.0;
         if (typeof mat.roughness === "number")
-          mat.roughness = isWhite ? 0.62 : 0.48;
+          mat.roughness = isWhite ? 0.92 : 0.03;
         mat.transparent = true;
-        mat.opacity = isWhite ? 0.68 : 0.58;
-        mat.depthWrite = true;
+        mat.opacity = isWhite ? 0.86 : 0.42;
+        mat.depthWrite = isWhite;
         (mat as any).premultipliedAlpha = true;
         if (mat.emissive && mat.emissive.isColor) {
           mat.emissive = mat.emissive.clone();
           mat.emissive.copy(rim);
           mat.emissiveIntensity = isWhite ? 0.02 : 0.04;
         }
-        if (typeof mat.envMapIntensity === "number") mat.envMapIntensity = 0.65;
-        applyFrostedGlassShader(mat, {
-          scale: 22.0,
-          strength: isWhite ? 0.20 : 0.24,
-        });
-        applyFresnelRim(mat, rim, 2.4, isWhite ? 0.33 : 0.38);
+        if (typeof mat.envMapIntensity === "number")
+          mat.envMapIntensity = isWhite ? 0.8 : 1.6;
+
+        if (isWhite) {
+          applyMilkGlassShader(mat, {
+            milkiness: 0.85,
+            bottomTint: new THREE.Color("#eef4ff"),
+          });
+          applyFresnelRim(mat, rim, 2.2, 0.25);
+        } else {
+          applyClearGlassShader(mat, {
+            scale: 1.0,
+            absorbStrength: 0.7,
+            bottomTint: new THREE.Color("#050607"),
+          });
+          applyFresnelRim(mat, rim, 2.8, 0.22);
+        }
       } else if (chessTheme === "chess_gold") {
         const base = isWhite
           ? new THREE.Color("#d8dee6")
@@ -280,9 +407,9 @@ function ThemedPiece({
         }
         if (typeof mat.envMapIntensity === "number")
           mat.envMapIntensity = isWhite ? 1.1 : 1.25;
-        applyBrushedMetalShader(mat, {
-          strength: isWhite ? 0.04 : 0.05,
-          scale: 12.0,
+        applyHammeredMetalShader(mat, {
+          strength: isWhite ? 0.15 : 0.2,
+          scale: 14.0,
         });
         applyFresnelRim(mat, rim, 2.8, isWhite ? 0.24 : 0.28);
       } else if (chessTheme === "chess_wood") {
@@ -295,6 +422,108 @@ function ThemedPiece({
         if (typeof mat.roughness === "number") mat.roughness = 0.85;
         if (typeof mat.envMapIntensity === "number") mat.envMapIntensity = 0.35;
         applyWoodGrainShader(mat, { scale: 11.5, intensity: 0.55 });
+      } else if (chessTheme === "chess_marble") {
+        // Marble shader using the same technique as the marble board
+        const darkBase = isWhite
+          ? new THREE.Color("#e8e8e8")
+          : new THREE.Color("#5e5e5e");
+        const lightBase = isWhite
+          ? new THREE.Color("#6a6560")
+          : new THREE.Color("#c0c0c0");
+
+        if (mat.color && mat.color.isColor) mat.color.copy(darkBase);
+        if (typeof mat.metalness === "number") mat.metalness = 0.12;
+        if (typeof mat.roughness === "number") mat.roughness = 0.25;
+        if (typeof mat.envMapIntensity === "number") mat.envMapIntensity = 0.85;
+
+        // Apply marble shader
+        const prev = mat.onBeforeCompile;
+        mat.onBeforeCompile = (shader: any, renderer: any) => {
+          try {
+            (prev as any).call(mat as any, shader, renderer);
+          } catch {
+            // ignore
+          }
+
+          shader.uniforms.uDarkBase = { value: darkBase };
+          shader.uniforms.uLightBase = { value: lightBase };
+          shader.uniforms.uIsWhite = { value: isWhite ? 1.0 : 0.0 };
+
+          shader.vertexShader = shader.vertexShader
+            .replace(
+              "#include <common>",
+              `#include <common>\nvarying vec3 vWorldPos;`
+            )
+            .replace(
+              "#include <begin_vertex>",
+              `#include <begin_vertex>\nvec4 wsPos = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos = instanceMatrix * wsPos;\n#endif\nwsPos = modelMatrix * wsPos;\nvWorldPos = wsPos.xyz;`
+            );
+
+          shader.fragmentShader = shader.fragmentShader
+            .replace(
+              "#include <common>",
+              `#include <common>
+varying vec3 vWorldPos;
+uniform vec3 uDarkBase;
+uniform vec3 uLightBase;
+uniform float uIsWhite;
+
+vec2 hash2(vec2 p) {
+    p = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)));
+    return fract(sin(p)*43758.5453);
+}
+
+float voronoiCracks(vec2 p) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float md = 8.0;
+    vec2 mg, mr;
+    
+    for(int j=-1; j<=1; j++)
+    for(int i=-1; i<=1; i++) {
+        vec2 g = vec2(float(i),float(j));
+        vec2 o = hash2(n + g);
+        vec2 r = g + o - f;
+        float d = dot(r,r);
+        if(d < md) {
+            md = d;
+            mr = r;
+            mg = g;
+        }
+    }
+    
+    md = 8.0;
+    for(int j=-1; j<=1; j++)
+    for(int i=-1; i<=1; i++) {
+        vec2 g = vec2(float(i),float(j));
+        vec2 o = hash2(n + g);
+        vec2 r = g + o - f;
+        if(dot(mr-r,mr-r) > 0.00001) {
+            md = min(md, dot(0.5*(mr+r), normalize(r-mr)));
+        }
+    }
+    return md;
+}`
+            )
+            .replace(
+              "#include <color_fragment>",
+              `#include <color_fragment>
+vec3 p = vWorldPos * 4.0;
+float cracks = voronoiCracks(p.xz + p.y * 0.5);
+float crackLine = 1.0 - smoothstep(0.0, 0.04, cracks);
+
+float noise = 0.0;
+vec2 np = p.xz * 0.5;
+noise += (sin(np.x * 3.0 + sin(np.y * 2.0)) + 1.0) * 0.5;
+
+vec3 baseColor = uDarkBase * (0.85 + noise * 0.3); // Subtle variance
+vec3 crackColor = uIsWhite > 0.5 ? vec3(0.2, 0.2, 0.25) : vec3(0.9, 0.9, 0.95);
+
+diffuseColor.rgb = mix(baseColor, crackColor, crackLine * 0.65);
+`
+            );
+        };
+        mat.needsUpdate = true;
       } else {
         const base = isWhite ? classicWhite : classicBlack;
         if (mat.color && mat.color.isColor) mat.color.copy(base);

@@ -76,6 +76,62 @@ export function UserIcon({
   );
 }
 
+export function PaletteIcon({
+  size = 20,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="13.5" cy="6.5" r=".5" />
+      <circle cx="17.5" cy="10.5" r=".5" />
+      <circle cx="8.5" cy="7.5" r=".5" />
+      <circle cx="6.5" cy="12.5" r=".5" />
+      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
+    </svg>
+  );
+}
+
+export function ChessPieceIcon({
+  size = 20,
+  className,
+}: {
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 2L8 6h8l-4-4z" />
+      <rect x="9" y="6" width="6" height="3" />
+      <path d="M8 9l-1 4h10l-1-4" />
+      <path d="M7 13l-1 6h12l-1-6" />
+      <rect x="5" y="19" width="14" height="3" rx="1" />
+    </svg>
+  );
+}
+
 export function ThemeIcon({
   size = 20,
   className,

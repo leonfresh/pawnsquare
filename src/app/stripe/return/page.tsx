@@ -33,13 +33,14 @@ function StripeReturnContent() {
         if (data.paid && data.coins && data.sessionId) {
           setMsg("Payment successful! Closing...");
           try {
+            const targetOrigin = window.location.origin;
             window.opener?.postMessage(
               {
                 type: "pawnsquare:payment-success",
                 coins: data.coins,
                 sessionId: data.sessionId,
               },
-              "*"
+              targetOrigin
             );
           } catch {
             // ignore

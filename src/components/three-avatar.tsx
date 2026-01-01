@@ -220,7 +220,8 @@ const ANIMATION_MAP: AvatarAnimationDataSource = {
   walk: "/three-avatar/asset/animation/walk.fbx",
 };
 
-const DEFAULT_AVATAR_URL = "/three-avatar/asset/avatar-example/default_female.vrm";
+const DEFAULT_AVATAR_URL =
+  "/three-avatar/asset/avatar-example/default_female.vrm";
 
 // Our world treats "forward" as -Z. The vendored three-avatar loader applies a
 // 180° rotation internally, so we add an offset here to keep the avatar facing
@@ -370,6 +371,20 @@ export function ThreeAvatar({
       const nameIndex = new Map<string, THREE.Object3D>();
       nextAvatar.object3D.traverse((obj) => {
         if (obj.name) nameIndex.set(obj.name.toLowerCase(), obj);
+
+        // Fix ghosting on sideways movement: ensure all materials have proper depth settings
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh && mesh.material) {
+          const materials = Array.isArray(mesh.material)
+            ? mesh.material
+            : [mesh.material];
+          materials.forEach((mat: any) => {
+            if (mat.transparent) {
+              mat.depthWrite = true;
+              mat.depthTest = true;
+            }
+          });
+        }
       });
       boneNameIndexRef.current = nameIndex;
 
@@ -500,8 +515,45 @@ export function ThreeAvatar({
       const node = (humanoid.getNormalizedBoneNode as any)?.(boneName);
       if (!node) return;
 
+      // Some VRMs (notably the Miu avatar) have normalized bone local axes that are
+      // permuted/flipped relative to the rest of the avatars. Our procedural sit pose
+      // assumes a consistent local axis basis when using Euler(x,y,z).
+      //
+      // Detect Miu via VRM meta and apply a minimal axis remap for the bones we pose.
+      const meta: any = (vrm as any)?.meta;
+      const metaTitle = meta?.title || meta?.name || meta?.author || "";
+      const isMiu = typeof metaTitle === "string" && metaTitle.toLowerCase() === "miu";
+
       const targetQ = tmpTargetQuatRef.current;
-      targetQ.setFromEuler(new THREE.Euler(x, y, z));
+
+      if (!isMiu) {
+        targetQ.setFromEuler(new THREE.Euler(x, y, z));
+      } else {
+        // Pragmatic fix for Miu: keep the same Euler convention as other avatars,
+        // but flip the axes that are mirrored on this specific rig.
+        // (This avoids axis-swapping artifacts like sideways/"T-pose" arms.)
+        const sign =
+          (
+            {
+              // Legs: fix "knees bend backwards" / legs going behind the bench
+              leftUpperLeg: { x: -1, y: 1, z: 1 },
+              rightUpperLeg: { x: -1, y: 1, z: 1 },
+              leftLowerLeg: { x: -1, y: 1, z: 1 },
+              rightLowerLeg: { x: -1, y: 1, z: 1 },
+              leftFoot: { x: -1, y: 1, z: 1 },
+              rightFoot: { x: -1, y: 1, z: 1 },
+
+              // Arms: fix "hands up" by mirroring the roll that brings arms down
+              leftUpperArm: { x: 1, y: 1, z: -1 },
+              rightUpperArm: { x: 1, y: 1, z: -1 },
+            } as const
+          )[boneName] ||
+          ({ x: 1, y: 1, z: 1 } as const);
+
+        targetQ.setFromEuler(
+          new THREE.Euler(x * sign.x, y * sign.y, z * sign.z)
+        );
+      }
 
       // Slerp from current animation state (or rest) to target
       node.quaternion.slerp(targetQ, sitWeight.current);

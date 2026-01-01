@@ -54,6 +54,7 @@ type ChessMessage =
 const DEFAULT_TIME_SECONDS = 5 * 60;
 const MIN_TIME_SECONDS = 30;
 const MAX_TIME_SECONDS = 60 * 60;
+const AUTO_RESET_AFTER_TIMEOUT_MS = 60 * 1000;
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -103,6 +104,8 @@ function computeDrawReason(chess: Chess): DrawReason {
 export default class ChessServer implements Party.Server {
   state: ChessState;
   timeoutCheck: ReturnType<typeof setInterval> | null = null;
+  autoResetTimer: ReturnType<typeof setTimeout> | null = null;
+  autoResetToken = 0;
 
   constructor(readonly room: Party.Room) {
     const baseMs = DEFAULT_TIME_SECONDS * 1000;
@@ -131,7 +134,38 @@ export default class ChessServer implements Party.Server {
       this.state.result = { type: "timeout", winner: otherSide(active) };
       this.state.seq++;
       this.room.broadcast(JSON.stringify({ type: "state", state: this.state }));
+
+      this.scheduleAutoResetAfterTimeout();
     }, 250);
+  }
+
+  cancelAutoReset() {
+    if (this.autoResetTimer) {
+      clearTimeout(this.autoResetTimer);
+      this.autoResetTimer = null;
+    }
+    this.autoResetToken++;
+  }
+
+  scheduleAutoResetAfterTimeout() {
+    if (this.state.result?.type !== "timeout") return;
+
+    // Only one timer at a time; reschedule replaces prior.
+    this.cancelAutoReset();
+    const token = this.autoResetToken;
+    const expectedSeq = this.state.seq;
+    const baseMs = this.state.clock.baseMs;
+
+    this.autoResetTimer = setTimeout(() => {
+      // If anything changed (manual reset, new game, etc.), do nothing.
+      if (token !== this.autoResetToken) return;
+      if (this.state.seq !== expectedSeq) return;
+      if (this.state.result?.type !== "timeout") return;
+
+      this.resetGame(baseMs);
+      this.state.seq++;
+      this.room.broadcast(JSON.stringify({ type: "state", state: this.state }));
+    }, AUTO_RESET_AFTER_TIMEOUT_MS);
   }
 
   getRemainingWithNow(nowMs: number) {
@@ -167,6 +201,7 @@ export default class ChessServer implements Party.Server {
       this.state.clock.running = false;
       this.state.clock.lastTickMs = null;
       this.state.result = { type: "timeout", winner: otherSide(active) };
+      this.scheduleAutoResetAfterTimeout();
       return true;
     }
     return false;
@@ -297,6 +332,9 @@ export default class ChessServer implements Party.Server {
           }
           this.state.clock.running = false;
           this.state.clock.lastTickMs = null;
+
+          // Only auto-reset on timeout; cancel any prior timeout timers on normal game end.
+          this.cancelAutoReset();
         } else {
           // Switch active side and continue timing.
           this.state.clock.active = chess.turn();
@@ -324,6 +362,7 @@ export default class ChessServer implements Party.Server {
           MAX_TIME_SECONDS
         );
         const baseMs = baseSeconds * 1000;
+        this.cancelAutoReset();
         this.resetGame(baseMs);
         this.state.seq++;
         this.room.broadcast(
@@ -333,6 +372,7 @@ export default class ChessServer implements Party.Server {
         // Only seated players can reset.
         if (!isPlayerInSeat(this.state, sender.id)) return;
         const baseMs = this.state.clock.baseMs;
+        this.cancelAutoReset();
         this.resetGame(baseMs);
         this.state.seq++;
         this.room.broadcast(

@@ -17,7 +17,12 @@ export type Player = {
   lastSeen: number;
 };
 
-type HelloPayload = { name: string; color: string; gender: "male" | "female"; avatarUrl?: string };
+type HelloPayload = {
+  name: string;
+  color: string;
+  gender: "male" | "female";
+  avatarUrl?: string;
+};
 type StatePayload = { p: Vec3; r: number };
 
 const APP_ID = "pawnsquare-v2";
@@ -27,7 +32,10 @@ function defaultName(selfId: string) {
   return `Player-${selfId.slice(0, 4)}`;
 }
 
-export function useP2PRoom(roomId: string, opts?: { initialName?: string; initialGender?: "male" | "female" }) {
+export function useP2PRoom(
+  roomId: string,
+  opts?: { initialName?: string; initialGender?: "male" | "female" }
+) {
   const roomRef = useRef<ReturnType<typeof joinRoom> | null>(null);
   const sendStateRef = useRef<
     ((data: any, targetPeers?: any) => Promise<any>) | null
@@ -41,10 +49,14 @@ export function useP2PRoom(roomId: string, opts?: { initialName?: string; initia
   const [selfId, setSelfId] = useState<string>("");
   const [selfName, setSelfName] = useState<string>("");
   const [selfGender, setSelfGender] = useState<"male" | "female">("male");
-  const [selfAvatarUrl, setSelfAvatarUrl] = useState<string | undefined>(undefined);
+  const [selfAvatarUrl, setSelfAvatarUrl] = useState<string | undefined>(
+    undefined
+  );
   const [players, setPlayers] = useState<Record<string, Player>>({});
 
-  console.log(`[P2P] useP2PRoom init - selfId: ${trysteroSelfId || '(not set)'}`);
+  console.log(
+    `[P2P] useP2PRoom init - selfId: ${trysteroSelfId || "(not set)"}`
+  );
 
   const self = useMemo(() => {
     if (!selfId) return null;
@@ -60,7 +72,7 @@ export function useP2PRoom(roomId: string, opts?: { initialName?: string; initia
   useEffect(() => {
     console.log(`[P2P] Joining room: ${roomId}`);
     const room = joinRoom(
-      { 
+      {
         appId: APP_ID,
         rtcConfig: {
           iceServers: [
@@ -68,7 +80,7 @@ export function useP2PRoom(roomId: string, opts?: { initialName?: string; initia
             { urls: "stun:stun1.l.google.com:19302" },
           ],
         },
-      }, 
+      },
       roomId
     );
     roomRef.current = room;

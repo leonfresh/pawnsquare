@@ -20,9 +20,10 @@ export function OAuthPopupGuard() {
 
         if (data.session) {
           try {
+            const targetOrigin = window.location.origin;
             window.opener?.postMessage(
               { type: "pawnsquare:auth", ok: true },
-              "*"
+              targetOrigin
             );
           } catch {
             // ignore

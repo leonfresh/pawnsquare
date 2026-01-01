@@ -119,7 +119,13 @@ function WoodGrainMaterial({
   );
 }
 
-function MarblePreviewMaterial({ color }: { color: string }) {
+function MarblePreviewMaterial({
+  color,
+  seed,
+}: {
+  color: string;
+  seed: number;
+}) {
   const matRef = useRef<THREE.ShaderMaterial>(null);
   const base = useMemo(() => new THREE.Color(color), [color]);
 
@@ -133,6 +139,7 @@ function MarblePreviewMaterial({ color }: { color: string }) {
       ref={matRef}
       uniforms={{
         uBase: { value: base },
+        uSeed: { value: seed },
       }}
       vertexShader={`
         varying vec2 vUv;
@@ -144,6 +151,7 @@ function MarblePreviewMaterial({ color }: { color: string }) {
       fragmentShader={`
         varying vec2 vUv;
         uniform vec3 uBase;
+        uniform float uSeed;
 
         float hash21(vec2 p) {
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -158,24 +166,52 @@ function MarblePreviewMaterial({ color }: { color: string }) {
           float d = hash21(i + vec2(1.0, 1.0));
           return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
         }
-        float fbm(vec2 p) {
-          float f = 0.0;
-          f += 0.5000 * noise2(p); p *= 2.02;
-          f += 0.2500 * noise2(p); p *= 2.03;
-          f += 0.1250 * noise2(p); p *= 2.01;
-          f += 0.0625 * noise2(p);
-          return f;
+
+        // Granite: layered abs noise (from reference shader)
+        float granite(vec2 p) {
+          float o = 0.0;
+          for (int i = 0; i < 4; i++) {
+            o = o * 2.0 + abs(noise2(p) * 2.0 - 1.0);
+            p *= 2.0;
+          }
+          return o / 15.0; // normalize (2^4 - 1)
+        }
+
+        mat2 rot(float a) {
+          float s = sin(a);
+          float c = cos(a);
+          return mat2(c, -s, s, c);
         }
 
         void main() {
-          vec2 p = vUv * vec2(2.0, 2.0);
-          float n = fbm(p * 2.0);
-          float n2 = fbm(p * 5.0 + vec2(1.2, -3.4));
-          float flow = sin((p.x + p.y) * 6.0 + n * 8.0);
-          float veins = smoothstep(0.65, 0.92, abs(flow)) * smoothstep(0.25, 0.8, n2);
+          // Per-tile randomization to avoid identical squares.
+          float r0 = fract(sin((uSeed + 1.0) * 12.9898) * 43758.5453);
+          float r1 = fract(sin((uSeed + 2.0) * 78.233) * 43758.5453);
+          float r2 = fract(sin((uSeed + 3.0) * 37.719) * 43758.5453);
 
-          vec3 col = mix(uBase * 0.82, uBase * 1.08, n);
-          col = mix(col, vec3(1.0), veins * 0.22);
+          float ang = r0 * 6.2831853;
+          vec2 uv = vUv - 0.5;
+          uv = rot(ang) * uv;
+          uv += 0.5;
+
+          vec2 tileOffset = vec2(r1, r2) * 3.5;
+          vec2 p = (uv + tileOffset) * vec2(2.0, 2.0);
+
+          // Reference shader approach: squash vector + granite pattern
+          float tileFlip = r0 > 0.5 ? 1.0 : -1.0;
+          vec2 v = normalize(vec2(tileFlip, 1.0));
+          float squash = dot(v, p) * (2.5 + 0.5 * tileFlip);
+          float pattern = 1.0 - granite((p + v * squash) * 2.2);
+          
+          // Sharp color transition using power curve (like reference)
+          float veinThreshold = 0.12;
+          vec3 darkBase = uBase * 0.45;
+          vec3 lightBase = mix(uBase, vec3(1.0), 0.35);
+          float t = pow(clamp(pattern / (1.0 - veinThreshold * 0.7), 0.0, 1.0), 18.0);
+          vec3 col = mix(darkBase, lightBase, t);
+          
+          // Subtle per-tile brightness variation
+          col *= 1.0 + (r1 - 0.5) * 0.08;
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -367,7 +403,10 @@ function BoardPatch({ boardTheme }: { boardTheme: string }) {
             {p.kind === "wood" ? (
               <WoodGrainMaterial color={isDark ? p.dark : p.light} />
             ) : p.kind === "marble" ? (
-              <MarblePreviewMaterial color={isDark ? p.dark : p.light} />
+              <MarblePreviewMaterial
+                color={isDark ? p.dark : p.light}
+                seed={idx}
+              />
             ) : (
               <NeonPreviewMaterial
                 color={isDark ? p.dark : p.light}

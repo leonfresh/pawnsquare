@@ -3,10 +3,13 @@ import { headers } from "next/headers";
 import { getStripe } from "@/lib/stripe";
 import { getSupabaseUserFromRequest } from "@/lib/supabaseServer";
 
+// Economy note:
+// Keep USD price tiers ($1/$5/$10) but increase coin amounts so the $1 pack
+// can actually buy items, and larger packs feel like better value.
 const COIN_PACKS = {
-  p80: { coins: 80, amountCents: 100, label: "80 Coins" },
-  p450: { coins: 450, amountCents: 500, label: "450 Coins" },
-  p1000: { coins: 1000, amountCents: 1000, label: "1000 Coins" },
+  p80: { coins: 200, amountCents: 100, label: "200 Coins" },
+  p450: { coins: 1200, amountCents: 500, label: "1200 Coins" },
+  p1000: { coins: 3000, amountCents: 1000, label: "3000 Coins" },
 } as const;
 
 type PackId = keyof typeof COIN_PACKS;
