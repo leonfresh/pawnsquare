@@ -1,0 +1,419 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type PartySocket from "partysocket";
+
+type WebkitAudioWindow = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+function getAudioContext(): AudioContext {
+  const w = window as WebkitAudioWindow;
+  const Ctx = window.AudioContext || w.webkitAudioContext;
+  return new Ctx();
+}
+
+type PeerConnection = {
+  pc: RTCPeerConnection;
+  stream?: MediaStream;
+  source?: MediaStreamAudioSourceNode;
+  gain?: GainNode;
+};
+
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ],
+};
+
+export function usePartyVoice(opts: {
+  socket: PartySocket | null;
+  selfId: string | null;
+  onRemoteGainForPeerId: (peerId: string, gain: GainNode | null) => void;
+}) {
+  const { socket, selfId } = opts;
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const peersRef = useRef<Map<string, PeerConnection>>(new Map());
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const micTrackRef = useRef<MediaStreamTrack | null>(null);
+
+  const [micAvailable, setMicAvailable] = useState(false);
+  const [micMuted, setMicMuted] = useState(true);
+  const [micDeviceLabel, setMicDeviceLabel] = useState<string>("");
+  const [peerCount, setPeerCount] = useState(0);
+  const [remoteStreamCount, setRemoteStreamCount] = useState(0);
+
+  const ensureAudio = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = getAudioContext();
+    }
+    const ctx = audioCtxRef.current;
+    if (ctx.state !== "running") {
+      try {
+        await ctx.resume();
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  const ensureMic = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (micStreamRef.current && micTrackRef.current) {
+      setMicAvailable(true);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+
+      const track = stream.getAudioTracks()[0] || null;
+      if (!track) throw new Error("No audio track available");
+
+      const deviceLabel = track.label || "Unknown Microphone";
+      console.log("[party-voice] ✓ Mic acquired:", {
+        label: deviceLabel,
+        id: track.id,
+        enabled: track.enabled,
+        readyState: track.readyState,
+      });
+
+      micStreamRef.current = stream;
+      micTrackRef.current = track;
+      track.enabled = !micMuted;
+      setMicDeviceLabel(deviceLabel);
+      setMicAvailable(true);
+
+      // Add track to all existing peer connections
+      for (const [peerId, conn] of peersRef.current.entries()) {
+        console.log("[party-voice] Adding mic track to existing peer:", peerId);
+        conn.pc.addTrack(track, stream);
+      }
+    } catch (e) {
+      console.error("[party-voice] getUserMedia failed", e);
+      setMicAvailable(false);
+      throw e;
+    }
+  }, [micMuted]);
+
+  const toggleMic = useCallback(async () => {
+    await ensureAudio();
+
+    const nextMuted = !micMuted;
+    setMicMuted(nextMuted);
+
+    if (nextMuted === false) {
+      try {
+        await ensureMic();
+      } catch {
+        setMicMuted(true);
+        return;
+      }
+    }
+
+    const track = micTrackRef.current;
+    if (track) {
+      track.enabled = !nextMuted;
+      console.log("[party-voice] Track enabled:", !nextMuted);
+    }
+  }, [ensureAudio, ensureMic, micMuted]);
+
+  const createPeerConnection = useCallback(
+    (peerId: string): RTCPeerConnection => {
+      const pc = new RTCPeerConnection(RTC_CONFIG);
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && socket) {
+          socket.send(
+            JSON.stringify({
+              type: "voice:ice",
+              to: peerId,
+              candidate: event.candidate,
+            })
+          );
+        }
+      };
+
+      pc.ontrack = async (event) => {
+        console.log("[party-voice] ← Received track from", peerId, {
+          kind: event.track.kind,
+          id: event.track.id,
+        });
+
+        if (event.track.kind !== "audio") return;
+
+        await ensureAudio();
+        const ctx = audioCtxRef.current;
+        if (!ctx) return;
+
+        const conn = peersRef.current.get(peerId);
+        if (!conn) return;
+
+        try {
+          const stream = event.streams[0] || new MediaStream([event.track]);
+          const source = ctx.createMediaStreamSource(stream);
+          const gain = ctx.createGain();
+          gain.gain.value = 1;
+          source.connect(gain);
+          gain.connect(ctx.destination);
+
+          conn.stream = stream;
+          conn.source = source;
+          conn.gain = gain;
+
+          setRemoteStreamCount((c) => c + 1);
+          opts.onRemoteGainForPeerId(peerId, gain);
+
+          console.log("[party-voice] ✓ Audio pipeline for", peerId);
+        } catch (e) {
+          console.error("[party-voice] Failed to attach audio:", e);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log("[party-voice] Connection state:", peerId, pc.connectionState);
+        if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+          cleanup(peerId);
+        }
+      };
+
+      // Add mic track if we already have it
+      const track = micTrackRef.current;
+      const stream = micStreamRef.current;
+      if (track && stream) {
+        console.log("[party-voice] Adding mic track to new peer:", peerId);
+        pc.addTrack(track, stream);
+      }
+
+      return pc;
+    },
+    [ensureAudio, opts, socket]
+  );
+
+  const cleanup = useCallback((peerId: string) => {
+    const conn = peersRef.current.get(peerId);
+    if (!conn) return;
+
+    try {
+      conn.source?.disconnect();
+      conn.gain?.disconnect();
+      conn.pc.close();
+    } catch (e) {
+      console.error("[party-voice] Cleanup error:", e);
+    }
+
+    peersRef.current.delete(peerId);
+    setPeerCount((c) => Math.max(0, c - 1));
+    if (conn.stream) {
+      setRemoteStreamCount((c) => Math.max(0, c - 1));
+    }
+    opts.onRemoteGainForPeerId(peerId, null);
+  }, [opts]);
+
+  const handleOffer = useCallback(
+    async (from: string, offer: RTCSessionDescriptionInit) => {
+      console.log("[party-voice] ← Received offer from", from);
+
+      let pc = peersRef.current.get(from)?.pc;
+      if (!pc) {
+        pc = createPeerConnection(from);
+        peersRef.current.set(from, { pc });
+        setPeerCount((c) => c + 1);
+      }
+
+      try {
+        await pc.setRemoteDescription(offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        if (socket) {
+          socket.send(
+            JSON.stringify({
+              type: "voice:answer",
+              to: from,
+              answer,
+            })
+          );
+          console.log("[party-voice] → Sent answer to", from);
+        }
+      } catch (e) {
+        console.error("[party-voice] Failed to handle offer:", e);
+      }
+    },
+    [createPeerConnection, socket]
+  );
+
+  const handleAnswer = useCallback(
+    async (from: string, answer: RTCSessionDescriptionInit) => {
+      console.log("[party-voice] ← Received answer from", from);
+
+      const conn = peersRef.current.get(from);
+      if (!conn) return;
+
+      try {
+        await conn.pc.setRemoteDescription(answer);
+      } catch (e) {
+        console.error("[party-voice] Failed to set answer:", e);
+      }
+    },
+    []
+  );
+
+  const handleIceCandidate = useCallback(
+    async (from: string, candidate: RTCIceCandidateInit) => {
+      const conn = peersRef.current.get(from);
+      if (!conn) return;
+
+      try {
+        await conn.pc.addIceCandidate(candidate);
+      } catch (e) {
+        console.error("[party-voice] Failed to add ICE candidate:", e);
+      }
+    },
+    []
+  );
+
+  const initiateConnectionTo = useCallback(
+    async (peerId: string) => {
+      if (!socket || !selfId || peerId === selfId) return;
+
+      console.log("[party-voice] → Initiating connection to", peerId);
+
+      const pc = createPeerConnection(peerId);
+      peersRef.current.set(peerId, { pc });
+      setPeerCount((c) => c + 1);
+
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        socket.send(
+          JSON.stringify({
+            type: "voice:offer",
+            to: peerId,
+            offer,
+          })
+        );
+
+        console.log("[party-voice] → Sent offer to", peerId);
+      } catch (e) {
+        console.error("[party-voice] Failed to create offer:", e);
+      }
+    },
+    [createPeerConnection, selfId, socket]
+  );
+
+  const setRemoteGainForPeerId = useCallback((peerId: string, gain: number) => {
+    const conn = peersRef.current.get(peerId);
+    if (conn?.gain) {
+      conn.gain.gain.value = gain;
+    }
+  }, []);
+
+  // Handle incoming voice messages from PartyKit
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === "voice:offer" && msg.from && msg.offer) {
+          void handleOffer(msg.from, msg.offer);
+        } else if (msg.type === "voice:answer" && msg.from && msg.answer) {
+          void handleAnswer(msg.from, msg.answer);
+        } else if (msg.type === "voice:ice" && msg.from && msg.candidate) {
+          void handleIceCandidate(msg.from, msg.candidate);
+        } else if (msg.type === "voice:request-connection" && msg.from) {
+          // Another peer is asking us to initiate
+          void initiateConnectionTo(msg.from);
+        }
+      } catch (e) {
+        // Not a voice message, ignore
+      }
+    };
+
+    socket.addEventListener("message", handleMessage);
+    return () => socket.removeEventListener("message", handleMessage);
+  }, [socket, handleOffer, handleAnswer, handleIceCandidate, initiateConnectionTo]);
+
+  // Request connections to all existing players when socket connects
+  useEffect(() => {
+    if (!socket || !selfId) return;
+
+    const onOpen = () => {
+      console.log("[party-voice] Socket connected, requesting voice setup");
+      socket.send(
+        JSON.stringify({
+          type: "voice:request-connections",
+        })
+      );
+    };
+
+    if (socket.readyState === WebSocket.OPEN) {
+      onOpen();
+    } else {
+      socket.addEventListener("open", onOpen);
+      return () => socket.removeEventListener("open", onOpen);
+    }
+  }, [socket, selfId]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      for (const [peerId] of peersRef.current.entries()) {
+        cleanup(peerId);
+      }
+
+      micTrackRef.current?.stop();
+      micTrackRef.current = null;
+      micStreamRef.current = null;
+
+      if (audioCtxRef.current) {
+        void audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+    };
+  }, [cleanup]);
+
+  // Keep track enabled state in sync
+  useEffect(() => {
+    const track = micTrackRef.current;
+    if (track) {
+      track.enabled = !micMuted;
+    }
+  }, [micMuted]);
+
+  // Unlock audio on first gesture
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onGesture = () => void ensureAudio();
+    window.addEventListener("pointerdown", onGesture, { once: true });
+    window.addEventListener("keydown", onGesture, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", onGesture);
+      window.removeEventListener("keydown", onGesture);
+    };
+  }, [ensureAudio]);
+
+  return {
+    micAvailable,
+    micMuted,
+    micDeviceLabel,
+    peerCount,
+    remoteStreamCount,
+    toggleMic,
+    setRemoteGainForPeerId,
+    initiateConnectionTo,
+  };
+}

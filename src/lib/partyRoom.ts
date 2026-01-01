@@ -238,5 +238,6 @@ export function usePartyRoom(
     sendChat,
     setName,
     setAvatarUrl,
+    socketRef, // Expose for voice integration
   };
 }

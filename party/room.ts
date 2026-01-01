@@ -28,7 +28,11 @@ type Message =
     }
   | { type: "state"; position: [number, number, number]; rotY: number }
   | { type: "chat"; text: string }
-  | { type: "sync"; players: Record<string, Player>; chat: ChatMessage[] };
+  | { type: "sync"; players: Record<string, Player>; chat: ChatMessage[] }
+  | { type: "voice:offer"; to: string; offer: RTCSessionDescriptionInit }
+  | { type: "voice:answer"; to: string; answer: RTCSessionDescriptionInit }
+  | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
+  | { type: "voice:request-connections" };
 
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
@@ -107,6 +111,30 @@ export default class RoomServer implements Party.Server {
         if (this.chat.length > 60) this.chat.splice(0, this.chat.length - 60);
 
         this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
+      } else if (msg.type === "voice:offer" && msg.to) {
+        // Relay WebRTC offer to target peer
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({ type: "voice:offer", from: sender.id, offer: msg.offer })
+        );
+      } else if (msg.type === "voice:answer" && msg.to) {
+        // Relay WebRTC answer to target peer
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({ type: "voice:answer", from: sender.id, answer: msg.answer })
+        );
+      } else if (msg.type === "voice:ice" && msg.to) {
+        // Relay ICE candidate to target peer
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({ type: "voice:ice", from: sender.id, candidate: msg.candidate })
+        );
+      } else if (msg.type === "voice:request-connections") {
+        // Tell all other peers to initiate connection to this sender
+        const others = Array.from(this.players.keys()).filter((id) => id !== sender.id);
+        console.log(`[PartyKit] Voice setup: ${sender.id} connecting to ${others.length} peers`);
+        for (const peerId of others) {
+          this.room.getConnection(peerId)?.send(
+            JSON.stringify({ type: "voice:request-connection", from: sender.id })
+          );
+        }
       }
     } catch (err) {
       console.error("[PartyKit] Error parsing message:", err);

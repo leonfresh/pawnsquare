@@ -17,7 +17,7 @@ import {
   type Player,
   type Vec3,
 } from "@/lib/partyRoom";
-import { useProximityVoice } from "@/lib/proximityVoice";
+import { usePartyVoice } from "@/lib/partyVoice";
 import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
@@ -3079,16 +3079,21 @@ export default function World({
     sendChat,
     setName,
     setAvatarUrl,
+    socketRef,
   } = useP2PRoom(roomId, {
     initialName,
     initialGender,
     paused: isDuplicateSession,
   });
 
-  const voice = useProximityVoice({
-    roomId,
-    partySelfId: self?.id,
-    selfName: self?.name,
+  const peerGainMapRef = useRef<Map<string, GainNode | null>>(new Map());
+
+  const voice = usePartyVoice({
+    socket: socketRef?.current || null,
+    selfId: self?.id || null,
+    onRemoteGainForPeerId: (peerId, gain) => {
+      peerGainMapRef.current.set(peerId, gain);
+    },
   });
 
   const keysRef = useWASDKeys();
@@ -3994,7 +3999,7 @@ export default function World({
             selfId={self?.id}
             players={players}
             selfPosRef={selfPosRef}
-            setRemoteGainForPartyId={voice.setRemoteGainForPartyId}
+            setRemoteGainForPeerId={voice.setRemoteGainForPeerId}
           />
 
           {showFps && <FpsTracker labelRef={fpsLabelRef} />}
@@ -5744,13 +5749,13 @@ function VoiceProximityUpdater({
   selfId,
   players,
   selfPosRef,
-  setRemoteGainForPartyId,
+  setRemoteGainForPeerId,
 }: {
   enabled: boolean;
   selfId?: string;
   players: Record<string, Player>;
   selfPosRef: React.RefObject<THREE.Vector3>;
-  setRemoteGainForPartyId: (partyId: string, gain: number) => void;
+  setRemoteGainForPeerId: (peerId: string, gain: number) => void;
 }) {
   const lastTickRef = useRef(0);
 
@@ -5765,14 +5770,14 @@ function VoiceProximityUpdater({
     if (now - lastTickRef.current < 100) return;
     lastTickRef.current = now;
 
-    for (const [partyId, p] of Object.entries(players)) {
-      if (partyId === selfId) continue;
+    for (const [peerId, p] of Object.entries(players)) {
+      if (peerId === selfId) continue;
       const dx = (p.position?.[0] ?? 0) - selfPos.x;
       const dy = (p.position?.[1] ?? 0) - selfPos.y;
       const dz = (p.position?.[2] ?? 0) - selfPos.z;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const g = voiceGainFromDistanceMeters(d);
-      setRemoteGainForPartyId(partyId, g);
+      setRemoteGainForPeerId(peerId, g);
     }
   });
 
