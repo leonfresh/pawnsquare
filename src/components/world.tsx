@@ -83,7 +83,9 @@ function smoothstep01(t: number) {
 function voiceGainFromDistanceMeters(d: number) {
   // Simple VRChat-like rolloff: full volume nearby, fades out to silence.
   const NEAR = 2.0;
-  const FAR = 18.0;
+  // NOTE: Our world coordinates span roughly [-18, 18] in X/Z.
+  // Use a larger FAR so players can still hear each other across the plaza while testing.
+  const FAR = 60.0;
   if (d <= NEAR) return 1;
   if (d >= FAR) return 0;
   const t = (d - NEAR) / (FAR - NEAR);
@@ -5790,11 +5792,23 @@ function VoiceProximityUpdater({
 
     for (const [peerId, p] of Object.entries(players)) {
       if (peerId === selfId) continue;
-      const dx = (p.position?.[0] ?? 0) - selfPos.x;
-      const dy = (p.position?.[1] ?? 0) - selfPos.y;
-      const dz = (p.position?.[2] ?? 0) - selfPos.z;
+
+      // If we don't yet have a valid remote position, don't stomp the gain.
+      const pos = p.position;
+      if (!pos || pos.length < 3) continue;
+      const px = pos[0];
+      const py = pos[1];
+      const pz = pos[2];
+      if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) {
+        continue;
+      }
+
+      const dx = px - selfPos.x;
+      const dy = py - selfPos.y;
+      const dz = pz - selfPos.z;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const g = voiceGainFromDistanceMeters(d);
+      const gRaw = voiceGainFromDistanceMeters(d);
+      const g = Number.isFinite(gRaw) ? clamp(gRaw, 0, 1) : 1;
       setRemoteGainForPeerId(peerId, g);
     }
   });
