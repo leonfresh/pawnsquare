@@ -117,43 +117,37 @@ export default class RoomServer implements Party.Server {
         console.log(
           `[PartyKit Voice] Relaying offer: ${sender.id} -> ${msg.to}`
         );
-        this.room
-          .getConnection(msg.to)
-          ?.send(
-            JSON.stringify({
-              type: "voice:offer",
-              from: sender.id,
-              fromDeviceId: (msg as any).deviceId ?? null,
-              offer: msg.offer,
-            })
-          );
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({
+            type: "voice:offer",
+            from: sender.id,
+            fromDeviceId: (msg as any).deviceId ?? null,
+            offer: msg.offer,
+          })
+        );
       } else if (msg.type === "voice:answer" && msg.to) {
         // Relay WebRTC answer to target peer
         console.log(
           `[PartyKit Voice] Relaying answer: ${sender.id} -> ${msg.to}`
         );
-        this.room
-          .getConnection(msg.to)
-          ?.send(
-            JSON.stringify({
-              type: "voice:answer",
-              from: sender.id,
-              fromDeviceId: (msg as any).deviceId ?? null,
-              answer: msg.answer,
-            })
-          );
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({
+            type: "voice:answer",
+            from: sender.id,
+            fromDeviceId: (msg as any).deviceId ?? null,
+            answer: msg.answer,
+          })
+        );
       } else if (msg.type === "voice:ice" && msg.to) {
         // Relay ICE candidate to target peer
-        this.room
-          .getConnection(msg.to)
-          ?.send(
-            JSON.stringify({
-              type: "voice:ice",
-              from: sender.id,
-              fromDeviceId: (msg as any).deviceId ?? null,
-              candidate: msg.candidate,
-            })
-          );
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({
+            type: "voice:ice",
+            from: sender.id,
+            fromDeviceId: (msg as any).deviceId ?? null,
+            candidate: msg.candidate,
+          })
+        );
       } else if (msg.type === "voice:request-connections") {
         // Tell all other peers to initiate connection to this sender
         const others = Array.from(this.players.keys()).filter(
@@ -167,15 +161,13 @@ export default class RoomServer implements Party.Server {
           console.log(
             `[PartyKit Voice] Telling ${peerId} to connect to ${sender.id}`
           );
-          this.room
-            .getConnection(peerId)
-            ?.send(
-              JSON.stringify({
-                type: "voice:request-connection",
-                from: sender.id,
-                fromDeviceId: (msg as any).deviceId ?? null,
-              })
-            );
+          this.room.getConnection(peerId)?.send(
+            JSON.stringify({
+              type: "voice:request-connection",
+              from: sender.id,
+              fromDeviceId: (msg as any).deviceId ?? null,
+            })
+          );
         }
       }
     } catch (err) {

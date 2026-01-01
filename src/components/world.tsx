@@ -4395,9 +4395,30 @@ export default function World({
           onChange={(e) => setChatInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key !== "Enter") return;
-            if (!connected) return;
             const cleaned = chatInput.trim().slice(0, 160);
             if (!cleaned) return;
+
+            // Hidden dev command: grant coins locally (and persist if signed in).
+            if (cleaned === "/dev") {
+              setChatInput("");
+              setCoins(5000);
+
+              if (supabaseUser) {
+                const supabase = getSupabaseBrowserClient();
+                supabase
+                  .from("profiles")
+                  .update({ coins: 5000 })
+                  .eq("id", supabaseUser.id)
+                  .then(({ error }) => {
+                    if (error) {
+                      console.error("[/dev] coin grant failed:", error);
+                    }
+                  });
+              }
+              return;
+            }
+
+            if (!connected) return;
             sendChat(cleaned);
             setChatInput("");
           }}
@@ -5159,9 +5180,10 @@ export default function World({
                       display: "flex",
                       flexDirection: "column",
                       alignItems: "center",
-                      justifyContent: "center",
+                      justifyContent: isMobile ? "flex-start" : "center",
                       gap: 24,
                       minHeight: 0,
+                      overflowY: isMobile ? "auto" : "visible",
                       background:
                         "radial-gradient(circle at center, rgba(255,255,255,0.05) 0%, transparent 70%)",
                     }}
@@ -5244,141 +5266,156 @@ export default function World({
                             )}
                           </div>
 
-                          <div style={{ display: "flex", gap: 16 }}>
-                            {!owned ? (
-                              <button
-                                disabled={!canBuy || !supabaseUser}
-                                onClick={() => {
-                                  if (!supabaseUser) {
-                                    setAuthMsg("Sign in to buy.");
-                                    return;
-                                  }
-                                  if (!canBuy) return;
-
-                                  const newCoins = Math.max(
-                                    0,
-                                    coins - item.price
-                                  );
-                                  const newOwnedItems = normalizeOwnedItemIds([
-                                    ...ownedItemIds,
-                                    item.id,
-                                  ]);
-                                  const newOwnedLegacy =
-                                    toLegacyOwnedAvatarsValues(newOwnedItems);
-
-                                  setCoins(newCoins);
-                                  setOwnedItemIds(newOwnedItems);
-
-                                  const supabase = getSupabaseBrowserClient();
-                                  supabase
-                                    .from("profiles")
-                                    .update({
-                                      coins: newCoins,
-                                      owned_items: newOwnedItems,
-                                      owned_avatars: newOwnedLegacy,
-                                    })
-                                    .eq("id", supabaseUser.id)
-                                    .then(({ error }) => {
-                                      if (error) {
-                                        console.error("Purchase error:", error);
-                                        setAuthMsg(
-                                          `Purchase failed: ${error.message}`
-                                        );
-                                        setCoins(coins);
-                                        setOwnedItemIds(ownedItemIds);
+                          {!isMobile ? (
+                            <>
+                              <div style={{ display: "flex", gap: 16 }}>
+                                {!owned ? (
+                                  <button
+                                    disabled={!canBuy || !supabaseUser}
+                                    onClick={() => {
+                                      if (!supabaseUser) {
+                                        setAuthMsg("Sign in to buy.");
+                                        return;
                                       }
-                                    });
-                                }}
-                                style={{
-                                  padding: "12px 32px",
-                                  borderRadius: 8,
-                                  background: canBuy
-                                    ? "#667eea"
-                                    : "rgba(255,255,255,0.1)",
-                                  color: "white",
-                                  border: "none",
-                                  fontSize: 16,
-                                  fontWeight: 600,
-                                  cursor: canBuy ? "pointer" : "not-allowed",
-                                  opacity: canBuy ? 1 : 0.5,
-                                }}
-                              >
-                                Buy for {item.price}
-                              </button>
-                            ) : (
-                              <button
-                                disabled={equipped}
-                                onClick={() => {
-                                  if (equipped) return;
-                                  if (item.type === "avatar") {
-                                    setDebugAvatarUrl(item.url);
-                                    setAvatarUrl(item.url);
-                                    void persistEquipped({
-                                      equipped_avatar_url: item.url,
-                                    });
-                                  } else if (
-                                    item.type === "theme" &&
-                                    onLobbyChange
-                                  ) {
-                                    if (item.id === "theme_scifi") {
-                                      onLobbyChange("scifi");
-                                    } else {
-                                      onLobbyChange("park");
-                                    }
-                                    void persistEquipped({
-                                      equipped_theme: item.id,
-                                    });
-                                  } else if (item.type === "chess") {
-                                    if ((item as any).chessKind === "board") {
-                                      setChessBoardTheme(item.id);
-                                      void persistEquipped({
-                                        equipped_chess_board: item.id,
-                                      });
-                                    } else {
-                                      setChessTheme(item.id);
-                                      void persistEquipped({
-                                        equipped_chess_set: item.id,
-                                      });
-                                    }
-                                  }
-                                }}
-                                style={{
-                                  padding: "12px 32px",
-                                  borderRadius: 8,
-                                  background: equipped
-                                    ? "rgba(255,255,255,0.2)"
-                                    : "white",
-                                  color: "black",
-                                  border: "none",
-                                  fontSize: 16,
-                                  fontWeight: 600,
-                                  cursor: equipped ? "default" : "pointer",
-                                  opacity: equipped ? 0.8 : 1,
-                                }}
-                              >
-                                {equipped ? "Equipped" : "Equip"}
-                              </button>
-                            )}
-                          </div>
+                                      if (!canBuy) return;
 
-                          {!supabaseUser && !owned && item.price > 0 && (
-                            <button
-                              onClick={openAuthModal}
-                              style={{
-                                fontSize: 12,
-                                background: "transparent",
-                                border: "none",
-                                padding: 0,
-                                color: "#ff6b6b",
-                                cursor: "pointer",
-                                textDecoration: "underline",
-                                font: "inherit",
-                                textUnderlineOffset: 3,
-                              }}
-                            >
-                              Sign in required to purchase
-                            </button>
-                          )}
+                                      const newCoins = Math.max(
+                                        0,
+                                        coins - item.price
+                                      );
+                                      const newOwnedItems =
+                                        normalizeOwnedItemIds([
+                                          ...ownedItemIds,
+                                          item.id,
+                                        ]);
+                                      const newOwnedLegacy =
+                                        toLegacyOwnedAvatarsValues(newOwnedItems);
+
+                                      setCoins(newCoins);
+                                      setOwnedItemIds(newOwnedItems);
+
+                                      const supabase =
+                                        getSupabaseBrowserClient();
+                                      supabase
+                                        .from("profiles")
+                                        .update({
+                                          coins: newCoins,
+                                          owned_items: newOwnedItems,
+                                          owned_avatars: newOwnedLegacy,
+                                        })
+                                        .eq("id", supabaseUser.id)
+                                        .then(({ error }) => {
+                                          if (error) {
+                                            console.error(
+                                              "Purchase error:",
+                                              error
+                                            );
+                                            setAuthMsg(
+                                              `Purchase failed: ${error.message}`
+                                            );
+                                            setCoins(coins);
+                                            setOwnedItemIds(ownedItemIds);
+                                          }
+                                        });
+                                    }}
+                                    style={{
+                                      padding: "12px 32px",
+                                      borderRadius: 8,
+                                      background: canBuy
+                                        ? "#667eea"
+                                        : "rgba(255,255,255,0.1)",
+                                      color: "white",
+                                      border: "none",
+                                      fontSize: 16,
+                                      fontWeight: 600,
+                                      cursor: canBuy
+                                        ? "pointer"
+                                        : "not-allowed",
+                                      opacity: canBuy ? 1 : 0.5,
+                                    }}
+                                  >
+                                    Buy for {item.price}
+                                  </button>
+                                ) : (
+                                  <button
+                                    disabled={equipped}
+                                    onClick={() => {
+                                      if (equipped) return;
+                                      if (item.type === "avatar") {
+                                        setDebugAvatarUrl(item.url);
+                                        setAvatarUrl(item.url);
+                                        void persistEquipped({
+                                          equipped_avatar_url: item.url,
+                                        });
+                                      } else if (
+                                        item.type === "theme" &&
+                                        onLobbyChange
+                                      ) {
+                                        if (item.id === "theme_scifi") {
+                                          onLobbyChange("scifi");
+                                        } else {
+                                          onLobbyChange("park");
+                                        }
+                                        void persistEquipped({
+                                          equipped_theme: item.id,
+                                        });
+                                      } else if (item.type === "chess") {
+                                        if (
+                                          (item as any).chessKind === "board"
+                                        ) {
+                                          setChessBoardTheme(item.id);
+                                          void persistEquipped({
+                                            equipped_chess_board: item.id,
+                                          });
+                                        } else {
+                                          setChessTheme(item.id);
+                                          void persistEquipped({
+                                            equipped_chess_set: item.id,
+                                          });
+                                        }
+                                      }
+                                    }}
+                                    style={{
+                                      padding: "12px 32px",
+                                      borderRadius: 8,
+                                      background: equipped
+                                        ? "rgba(255,255,255,0.2)"
+                                        : "white",
+                                      color: "black",
+                                      border: "none",
+                                      fontSize: 16,
+                                      fontWeight: 600,
+                                      cursor: equipped
+                                        ? "default"
+                                        : "pointer",
+                                      opacity: equipped ? 0.8 : 1,
+                                    }}
+                                  >
+                                    {equipped ? "Equipped" : "Equip"}
+                                  </button>
+                                )}
+                              </div>
+
+                              {!supabaseUser && !owned && item.price > 0 && (
+                                <button
+                                  onClick={openAuthModal}
+                                  style={{
+                                    fontSize: 12,
+                                    background: "transparent",
+                                    border: "none",
+                                    padding: 0,
+                                    color: "#ff6b6b",
+                                    cursor: "pointer",
+                                    textDecoration: "underline",
+                                    font: "inherit",
+                                    textUnderlineOffset: 3,
+                                  }}
+                                >
+                                  Sign in required to purchase
+                                </button>
+                              )}
+                            </>
+                          ) : null}
                         </>
                       );
                     })()}
@@ -5386,6 +5423,174 @@ export default function World({
                 </>
               )}
             </div>
+
+            {/* Mobile Sticky Footer (prevents clipped actions) */}
+            {isMobile && shopTab !== "coins" ? (
+              <div
+                style={{
+                  position: "sticky",
+                  bottom: 0,
+                  zIndex: 2,
+                  borderTop: "1px solid rgba(255,255,255,0.12)",
+                  background: "#1a1a1a",
+                  padding: "10px 14px",
+                  paddingBottom:
+                    "calc(10px + env(safe-area-inset-bottom, 0px))",
+                }}
+              >
+                {(() => {
+                  const item = SHOP_ITEMS.find((i) => i.id === shopSelectedId);
+                  if (!item || isShopItemLocked(item, ownedItemIds)) return null;
+                  const owned = isShopItemOwned(item, ownedItemIds);
+                  const canBuy = !owned && coins >= item.price;
+                  const equipped = isItemEquipped(item);
+
+                  return (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: "flex", gap: 12, width: "100%" }}>
+                        {!owned ? (
+                          <button
+                            disabled={!canBuy || !supabaseUser}
+                            onClick={() => {
+                              if (!supabaseUser) {
+                                openAuthModal();
+                                return;
+                              }
+                              if (!canBuy) return;
+
+                              const newCoins = Math.max(0, coins - item.price);
+                              const newOwnedItems = normalizeOwnedItemIds([
+                                ...ownedItemIds,
+                                item.id,
+                              ]);
+                              const newOwnedLegacy = toLegacyOwnedAvatarsValues(
+                                newOwnedItems
+                              );
+
+                              setCoins(newCoins);
+                              setOwnedItemIds(newOwnedItems);
+
+                              const supabase = getSupabaseBrowserClient();
+                              supabase
+                                .from("profiles")
+                                .update({
+                                  coins: newCoins,
+                                  owned_items: newOwnedItems,
+                                  owned_avatars: newOwnedLegacy,
+                                })
+                                .eq("id", supabaseUser.id)
+                                .then(({ error }) => {
+                                  if (error) {
+                                    console.error("Purchase error:", error);
+                                    setAuthMsg(
+                                      `Purchase failed: ${error.message}`
+                                    );
+                                    setCoins(coins);
+                                    setOwnedItemIds(ownedItemIds);
+                                  }
+                                });
+                            }}
+                            style={{
+                              flex: 1,
+                              height: 44,
+                              borderRadius: 10,
+                              background: canBuy
+                                ? "#667eea"
+                                : "rgba(255,255,255,0.1)",
+                              color: "white",
+                              border: "none",
+                              fontSize: 16,
+                              fontWeight: 700,
+                              cursor: canBuy ? "pointer" : "not-allowed",
+                              opacity: canBuy ? 1 : 0.6,
+                            }}
+                          >
+                            Buy for {item.price}
+                          </button>
+                        ) : (
+                          <button
+                            disabled={equipped}
+                            onClick={() => {
+                              if (equipped) return;
+                              if (item.type === "avatar") {
+                                setDebugAvatarUrl(item.url);
+                                setAvatarUrl(item.url);
+                                void persistEquipped({
+                                  equipped_avatar_url: item.url,
+                                });
+                              } else if (item.type === "theme" && onLobbyChange) {
+                                if (item.id === "theme_scifi") {
+                                  onLobbyChange("scifi");
+                                } else {
+                                  onLobbyChange("park");
+                                }
+                                void persistEquipped({
+                                  equipped_theme: item.id,
+                                });
+                              } else if (item.type === "chess") {
+                                if ((item as any).chessKind === "board") {
+                                  setChessBoardTheme(item.id);
+                                  void persistEquipped({
+                                    equipped_chess_board: item.id,
+                                  });
+                                } else {
+                                  setChessTheme(item.id);
+                                  void persistEquipped({
+                                    equipped_chess_set: item.id,
+                                  });
+                                }
+                              }
+                            }}
+                            style={{
+                              flex: 1,
+                              height: 44,
+                              borderRadius: 10,
+                              background: equipped
+                                ? "rgba(255,255,255,0.2)"
+                                : "white",
+                              color: "black",
+                              border: "none",
+                              fontSize: 16,
+                              fontWeight: 800,
+                              cursor: equipped ? "default" : "pointer",
+                              opacity: equipped ? 0.8 : 1,
+                            }}
+                          >
+                            {equipped ? "Equipped" : "Equip"}
+                          </button>
+                        )}
+                      </div>
+
+                      {!supabaseUser && !owned && item.price > 0 ? (
+                        <button
+                          onClick={openAuthModal}
+                          style={{
+                            fontSize: 12,
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            color: "#ff6b6b",
+                            cursor: "pointer",
+                            textDecoration: "underline",
+                            font: "inherit",
+                            textUnderlineOffset: 3,
+                          }}
+                        >
+                          Sign in required to purchase
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -5763,7 +5968,11 @@ function VoiceProximityUpdater({
       const px = pos[0];
       const py = pos[1];
       const pz = pos[2];
-      if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) {
+      if (
+        !Number.isFinite(px) ||
+        !Number.isFinite(py) ||
+        !Number.isFinite(pz)
+      ) {
         continue;
       }
 

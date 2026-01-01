@@ -434,40 +434,43 @@ export function usePartyVoice(opts: {
     [ensureAudio, socket]
   );
 
-  const cleanup = useCallback((peerId: string) => {
-    const conn = peersRef.current.get(peerId);
-    if (!conn) return;
+  const cleanup = useCallback(
+    (peerId: string) => {
+      const conn = peersRef.current.get(peerId);
+      if (!conn) return;
 
-    try {
-      conn.source?.disconnect();
-      conn.gain?.disconnect();
-      if (conn.audioEl) {
-        try {
-          conn.audioEl.pause();
-        } catch {
-          // ignore
+      try {
+        conn.source?.disconnect();
+        conn.gain?.disconnect();
+        if (conn.audioEl) {
+          try {
+            conn.audioEl.pause();
+          } catch {
+            // ignore
+          }
+          try {
+            conn.audioEl.srcObject = null;
+          } catch {
+            // ignore
+          }
+          try {
+            conn.audioEl.remove();
+          } catch {
+            // ignore
+          }
+          conn.audioEl = undefined;
         }
-        try {
-          conn.audioEl.srcObject = null;
-        } catch {
-          // ignore
-        }
-        try {
-          conn.audioEl.remove();
-        } catch {
-          // ignore
-        }
-        conn.audioEl = undefined;
+        conn.pc.close();
+      } catch (e) {
+        console.error("[party-voice] Cleanup error:", e);
       }
-      conn.pc.close();
-    } catch (e) {
-      console.error("[party-voice] Cleanup error:", e);
-    }
 
-    peersRef.current.delete(peerId);
-    recomputeCounts();
-    onRemoteGainRef.current(peerId, null);
-  }, [recomputeCounts]);
+      peersRef.current.delete(peerId);
+      recomputeCounts();
+      onRemoteGainRef.current(peerId, null);
+    },
+    [recomputeCounts]
+  );
 
   useEffect(() => {
     cleanupRef.current = cleanup;
