@@ -4073,43 +4073,7 @@ export default function World({
         </group>
       </Canvas>
 
-      {/* Voice toggle (V) */}
-      <div
-        style={{
-          position: "fixed",
-          right: 12,
-          bottom: 12,
-          zIndex: 15,
-          pointerEvents: "auto",
-        }}
-      >
-        <button
-          onClick={() => void voice.toggleMic()}
-          style={{
-            padding: "10px 12px",
-            borderRadius: 10,
-            border: "1px solid rgba(255,255,255,0.18)",
-            background: voice.micMuted
-              ? "rgba(0,0,0,0.55)"
-              : "rgba(0,0,0,0.75)",
-            color: "white",
-            fontSize: 12,
-            fontWeight: 700,
-            backdropFilter: "blur(6px)",
-            WebkitBackdropFilter: "blur(6px)",
-            cursor: "pointer",
-          }}
-          title={
-            voice.micMuted ? "Tap to unmute mic (V)" : "Tap to mute mic (V)"
-          }
-        >
-          {voice.micMuted ? "🔇 Muted" : "🎤 Live"}
-          {voice.micDeviceLabel && !voice.micMuted
-            ? ` · ${voice.micDeviceLabel.slice(0, 20)}`
-            : ""}{" "}
-          · P:{voice.peerCount} S:{voice.remoteStreamCount}
-        </button>
-      </div>
+      {/* Voice UI intentionally hidden for now */}
 
       {contextLost ? (
         <div
