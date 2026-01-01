@@ -17,6 +17,7 @@ type PeerConnection = {
   pc: RTCPeerConnection;
   audioTransceiver?: RTCRtpTransceiver;
   stream?: MediaStream;
+  audioEl?: HTMLAudioElement;
   source?: MediaStreamAudioSourceNode;
   gain?: GainNode;
 };
@@ -42,6 +43,7 @@ export function usePartyVoice(opts: {
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
   const onRemoteGainRef = useRef(onRemoteGainForPeerId);
   const pendingTracksRef = useRef<Map<string, MediaStream>>(new Map());
+  const gestureUnlockedRef = useRef(false);
 
   // Keep callback ref updated
   useEffect(() => {
@@ -54,8 +56,80 @@ export function usePartyVoice(opts: {
   const [peerCount, setPeerCount] = useState(0);
   const [remoteStreamCount, setRemoteStreamCount] = useState(0);
 
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+  const ensureRemoteAudioEl = useCallback((peerId: string): HTMLAudioElement | null => {
+    if (typeof window === "undefined") return null;
+    const conn = peersRef.current.get(peerId);
+    if (!conn) return null;
+    if (conn.audioEl) return conn.audioEl;
+
+    const el = document.createElement("audio");
+    el.autoplay = true;
+    // iOS/Safari: playsinline is an attribute (TS doesn't type playsInline on audio).
+    el.setAttribute("playsinline", "true");
+    el.muted = false;
+    el.volume = 1;
+    // Avoid display:none (some browsers behave oddly); keep it effectively invisible.
+    el.style.position = "fixed";
+    el.style.left = "0";
+    el.style.top = "0";
+    el.style.width = "1px";
+    el.style.height = "1px";
+    el.style.opacity = "0";
+    el.style.pointerEvents = "none";
+
+    try {
+      document.body.appendChild(el);
+    } catch {
+      // ignore
+    }
+
+    conn.audioEl = el;
+    return el;
+  }, []);
+
+  const attachAndPlayRemoteStream = useCallback(
+    async (peerId: string, stream: MediaStream) => {
+      const conn = peersRef.current.get(peerId);
+      if (!conn) return;
+
+      const el = ensureRemoteAudioEl(peerId);
+      if (!el) return;
+
+      // Attach the latest stream.
+      conn.stream = stream;
+      if (el.srcObject !== stream) {
+        el.srcObject = stream;
+      }
+
+      // Try to play; if blocked, we'll retry on the first user gesture.
+      try {
+        await el.play();
+        console.log("[party-voice] ✓ Remote audio playing for", peerId);
+      } catch (e) {
+        console.warn(
+          "[party-voice] Remote audio play() blocked; will retry on gesture for",
+          peerId,
+          e
+        );
+      }
+
+      // Update stream count (count peers with a stream attached)
+      const streamCount = Array.from(peersRef.current.values()).filter(
+        (c) => c.stream
+      ).length;
+      setRemoteStreamCount(streamCount);
+    },
+    [ensureRemoteAudioEl]
+  );
+
   const ensureAudio = useCallback(async () => {
     if (typeof window === "undefined") return;
+
+    // Mark that we have a user gesture (pointerdown/keydown OR mic toggle).
+    gestureUnlockedRef.current = true;
+
     if (!audioCtxRef.current) {
       audioCtxRef.current = getAudioContext();
       console.log("[party-voice] ✓ AudioContext created");
@@ -70,8 +144,8 @@ export function usePartyVoice(opts: {
       }
     }
 
-    // Process any pending tracks now that AudioContext is ready
-    if (ctx.state === "running" && pendingTracksRef.current.size > 0) {
+    // Process any pending tracks now that we have a gesture.
+    if (pendingTracksRef.current.size > 0) {
       console.log(
         "[party-voice] Processing",
         pendingTracksRef.current.size,
@@ -81,41 +155,10 @@ export function usePartyVoice(opts: {
       pendingTracksRef.current.clear();
 
       for (const [peerId, stream] of pending) {
-        const conn = peersRef.current.get(peerId);
-        if (!conn || conn.stream) continue; // Skip if already processed
-
-        try {
-          const source = ctx.createMediaStreamSource(stream);
-          const gain = ctx.createGain();
-          gain.gain.value = 1;
-          source.connect(gain);
-          gain.connect(ctx.destination);
-
-          conn.stream = stream;
-          conn.source = source;
-          conn.gain = gain;
-
-          console.log(
-            "[party-voice] ✓ Audio pipeline created for pending",
-            peerId
-          );
-          onRemoteGainRef.current(peerId, gain);
-        } catch (err) {
-          console.warn(
-            "[party-voice] Failed to create audio pipeline for",
-            peerId,
-            err
-          );
-        }
+        await attachAndPlayRemoteStream(peerId, stream);
       }
-
-      // Update stream count
-      const streamCount = Array.from(peersRef.current.values()).filter(
-        (c) => c.stream
-      ).length;
-      setRemoteStreamCount(streamCount);
     }
-  }, []);
+  }, [attachAndPlayRemoteStream]);
 
   const ensureMic = useCallback(async () => {
     if (typeof window === "undefined") return;
@@ -249,14 +292,13 @@ export function usePartyVoice(opts: {
         if (event.track.kind !== "audio") return;
 
         const stream = event.streams[0] || new MediaStream([event.track]);
-        const ctx = audioCtxRef.current;
 
-        // If AudioContext not ready or suspended, store track for later
-        if (!ctx || ctx.state !== "running") {
+        // If we haven't had a user gesture yet, store track for later.
+        if (!gestureUnlockedRef.current) {
           console.log(
             "[party-voice] ⏸️ Storing track for",
             peerId,
-            "until AudioContext ready"
+            "until user gesture"
           );
           pendingTracksRef.current.set(peerId, stream);
           return;
@@ -265,24 +307,7 @@ export function usePartyVoice(opts: {
         const conn = peersRef.current.get(peerId);
         if (!conn) return;
 
-        try {
-          const source = ctx.createMediaStreamSource(stream);
-          const gain = ctx.createGain();
-          gain.gain.value = 1;
-          source.connect(gain);
-          gain.connect(ctx.destination);
-
-          conn.stream = stream;
-          conn.source = source;
-          conn.gain = gain;
-
-          setRemoteStreamCount((c) => c + 1);
-          onRemoteGainRef.current(peerId, gain);
-
-          console.log("[party-voice] ✓ Audio pipeline for", peerId);
-        } catch (e) {
-          console.error("[party-voice] Failed to attach audio:", e);
-        }
+        await attachAndPlayRemoteStream(peerId, stream);
       };
 
       pc.onconnectionstatechange = () => {
@@ -328,6 +353,24 @@ export function usePartyVoice(opts: {
     try {
       conn.source?.disconnect();
       conn.gain?.disconnect();
+      if (conn.audioEl) {
+        try {
+          conn.audioEl.pause();
+        } catch {
+          // ignore
+        }
+        try {
+          conn.audioEl.srcObject = null;
+        } catch {
+          // ignore
+        }
+        try {
+          conn.audioEl.remove();
+        } catch {
+          // ignore
+        }
+        conn.audioEl = undefined;
+      }
       conn.pc.close();
     } catch (e) {
       console.error("[party-voice] Cleanup error:", e);
@@ -441,6 +484,12 @@ export function usePartyVoice(opts: {
     const conn = peersRef.current.get(peerId);
     if (conn?.gain) {
       conn.gain.gain.value = gain;
+    }
+
+    // Primary playback path: HTMLAudioElement volume.
+    if (conn?.audioEl) {
+      const v = Number.isFinite(gain) ? clamp01(gain) : 1;
+      conn.audioEl.volume = v;
     }
   }, []);
 
