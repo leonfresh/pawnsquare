@@ -3102,6 +3102,22 @@ export default function World({
 
   const [voiceDesiredPeerIds, setVoiceDesiredPeerIds] = useState<string[]>([]);
   const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
+  const [voiceDeafened, setVoiceDeafened] = useState(false);
+
+  const setRemoteGainForPeerId = useCallback(
+    (peerId: string, gain: number) => {
+      voice.setRemoteGainForPeerId(peerId, voiceDeafened ? 0 : gain);
+    },
+    [voice.setRemoteGainForPeerId, voiceDeafened]
+  );
+
+  useEffect(() => {
+    if (!voiceDeafened) return;
+    // Apply immediately (otherwise we'd wait for the next proximity tick).
+    for (const peerId of voice.connectedPeerIds ?? []) {
+      voice.setRemoteGainForPeerId(peerId, 0);
+    }
+  }, [voiceDeafened, voice.connectedPeerIds, voice.setRemoteGainForPeerId]);
 
   // Debug: log when voice system initializes
   useEffect(() => {
@@ -3283,6 +3299,35 @@ export default function World({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  const submitChat = useCallback(() => {
+    const cleaned = chatInput.trim().slice(0, 160);
+    if (!cleaned) return;
+
+    // Hidden dev command: grant coins locally (and persist if signed in).
+    if (cleaned === "/dev") {
+      setChatInput("");
+      setCoins(5000);
+
+      if (supabaseUser) {
+        const supabase = getSupabaseBrowserClient();
+        supabase
+          .from("profiles")
+          .update({ coins: 5000 })
+          .eq("id", supabaseUser.id)
+          .then(({ error }) => {
+            if (error) {
+              console.error("[/dev] coin grant failed:", error);
+            }
+          });
+      }
+      return;
+    }
+
+    if (!connected) return;
+    sendChat(cleaned);
+    setChatInput("");
+  }, [chatInput, connected, sendChat, supabaseUser]);
 
   const equippedThemeId = lobbyType === "scifi" ? "theme_scifi" : "theme_park";
   const isItemEquipped = (item: (typeof SHOP_ITEMS)[number]) => {
@@ -4024,7 +4069,7 @@ export default function World({
             selfId={self?.id}
             players={players}
             selfPosRef={selfPosRef}
-            setRemoteGainForPeerId={voice.setRemoteGainForPeerId}
+            setRemoteGainForPeerId={setRemoteGainForPeerId}
             // Proximity voice subscriptions (VRChat-like): only connect within radius.
             requestConnections={voice.requestConnections}
             hangupPeer={voice.hangupPeer}
@@ -4082,219 +4127,229 @@ export default function World({
         </group>
       </Canvas>
 
-      {/* Voice UI intentionally hidden for now */}
-
-      <div
-        style={{
-          position: "fixed",
-          left: 12,
-          bottom: 220,
-          width: isMobile ? 240 : 320,
-          maxWidth: "calc(100vw - 24px)",
-          borderRadius: 10,
-          border: "1px solid rgba(127,127,127,0.25)",
-          background: "rgba(0,0,0,0.35)",
-          backdropFilter: "blur(6px)",
-          padding: 10,
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          pointerEvents: "auto",
-          color: "white",
-          fontSize: 12,
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {showFps ? (
-              <>
-                <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
-                <button
-                  onClick={() => {
-                    const next = !voiceSettingsOpen;
-                    setVoiceSettingsOpen(next);
-                    if (next) {
-                      try {
-                        void voice.refreshMicDevices?.();
-                      } catch {
-                        // ignore
-                      }
+      {/* Voice HUD: desktop only (mobile uses compact mic button next to chat) */}
+      {!isMobile ? (
+        <div
+          style={{
+            position: "fixed",
+            right: 12,
+            bottom: 12,
+            width: 320,
+            maxWidth: "calc(100vw - 24px)",
+            borderRadius: 10,
+            border: "1px solid rgba(127,127,127,0.25)",
+            background: "rgba(0,0,0,0.35)",
+            backdropFilter: "blur(6px)",
+            padding: 10,
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            pointerEvents: "auto",
+            color: "white",
+            fontSize: 12,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {showFps ? <div style={{ opacity: 0.8 }}>Push-to-talk: V</div> : null}
+              <button
+                onClick={() => setVoiceDeafened((v) => !v)}
+                style={{
+                  height: 28,
+                  width: 28,
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: voiceDeafened
+                    ? "rgba(255,255,255,0.12)"
+                    : "rgba(255,255,255,0.06)",
+                  color: "white",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "grid",
+                  placeItems: "center",
+                }}
+                title={voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"}
+                aria-label={
+                  voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"
+                }
+              >
+                {voiceDeafened ? "🔇" : "🔈"}
+              </button>
+              <button
+                onClick={() => {
+                  const next = !voiceSettingsOpen;
+                  setVoiceSettingsOpen(next);
+                  if (next) {
+                    try {
+                      void voice.refreshMicDevices?.();
+                    } catch {
+                      // ignore
                     }
-                  }}
-                  style={{
-                    height: 28,
-                    width: 28,
-                    borderRadius: 8,
-                    border: "1px solid rgba(255,255,255,0.16)",
-                    background: "rgba(255,255,255,0.06)",
-                    color: "white",
-                    fontWeight: 800,
-                    cursor: "pointer",
-                    display: "grid",
-                    placeItems: "center",
-                  }}
-                  title="Voice settings"
-                  aria-label="Voice settings"
-                >
-                  ⚙
-                </button>
-              </>
-            ) : null}
+                  }
+                }}
+                style={{
+                  height: 28,
+                  width: 28,
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "white",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "grid",
+                  placeItems: "center",
+                }}
+                title="Voice settings"
+                aria-label="Voice settings"
+              >
+                ⚙
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button
-            onClick={() => {
-              void voice.toggleMic();
-            }}
-            style={{
-              height: 34,
-              padding: "0 12px",
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.16)",
-              background: voice.micMuted
-                ? "rgba(255,255,255,0.06)"
-                : "rgba(46, 213, 115, 0.18)",
-              color: "white",
-              fontWeight: 700,
-              cursor: "pointer",
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-            }}
-            title={voice.micMuted ? "Unmute mic" : "Mute mic"}
-            aria-label={voice.micMuted ? "Unmute mic" : "Mute mic"}
-          >
-            {voice.micMuted ? "Unmute" : "Mute"}
-          </button>
-          {!isMobile ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              onClick={() => {
+                void voice.toggleMic();
+              }}
+              style={{
+                height: 34,
+                padding: "0 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.16)",
+                background: voice.micMuted
+                  ? "rgba(255,255,255,0.06)"
+                  : "rgba(46, 213, 115, 0.18)",
+                color: "white",
+                fontWeight: 700,
+                cursor: "pointer",
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+              }}
+              title={voice.micMuted ? "Unmute mic" : "Mute mic"}
+              aria-label={voice.micMuted ? "Unmute mic" : "Mute mic"}
+            >
+              {voice.micMuted ? "Unmute" : "Mute"}
+            </button>
             <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.2 }}>
               Muted still lets you hear others.
             </div>
-          ) : null}
-        </div>
+          </div>
 
-        {showFps && voiceSettingsOpen ? (
-          <div
-            style={{
-              borderTop: "1px solid rgba(127,127,127,0.2)",
-              paddingTop: 8,
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-            }}
-          >
-            <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700 }}>
-              Microphone
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <select
-                value={voice.selectedMicDeviceId ?? ""}
-                onChange={(e) => {
-                  void voice.setMicDeviceId?.(e.target.value);
-                }}
-                style={{
-                  height: 32,
-                  flex: 1,
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.16)",
-                  background: "rgba(255,255,255,0.06)",
-                  color: "white",
-                  padding: "0 10px",
-                  outline: "none",
-                }}
-                aria-label="Select microphone"
-              >
-                <option value="">Default microphone</option>
-                {(voice.micDevices ?? []).map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={() => {
-                  void voice.refreshMicDevices?.();
-                }}
-                style={{
-                  height: 32,
-                  padding: "0 10px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.16)",
-                  background: "rgba(255,255,255,0.06)",
-                  color: "white",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-                title="Refresh mic list"
-              >
-                Refresh
-              </button>
-            </div>
-            {voice.micLastError ? (
-              <div style={{ fontSize: 11, opacity: 0.9, color: "#ffb3b3" }}>
-                Mic error: {voice.micLastError}
+          {voiceSettingsOpen ? (
+            <div
+              style={{
+                borderTop: "1px solid rgba(127,127,127,0.2)",
+                paddingTop: 8,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700 }}>
+                Microphone
               </div>
-            ) : null}
-            <div style={{ fontSize: 11, opacity: 0.7 }}>
-              Tip: device names may appear only after granting mic permission.
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <select
+                  value={voice.selectedMicDeviceId ?? ""}
+                  onChange={(e) => {
+                    void voice.setMicDeviceId?.(e.target.value);
+                  }}
+                  style={{
+                    height: 32,
+                    flex: 1,
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    padding: "0 10px",
+                    outline: "none",
+                  }}
+                  aria-label="Select microphone"
+                >
+                  <option value="">Default microphone</option>
+                  {(voice.micDevices ?? []).map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    void voice.refreshMicDevices?.();
+                  }}
+                  style={{
+                    height: 32,
+                    padding: "0 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                  title="Refresh mic list"
+                >
+                  Refresh
+                </button>
+              </div>
+              {voice.micLastError ? (
+                <div style={{ fontSize: 11, opacity: 0.9, color: "#ffb3b3" }}>
+                  Mic error: {voice.micLastError}
+                </div>
+              ) : null}
+              <div style={{ fontSize: 11, opacity: 0.7 }}>
+                Tip: device names may appear only after granting mic permission.
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
 
-        <div
-          style={{
-            display: "flex",
-            gap: isMobile ? 8 : 10,
-            flexWrap: "wrap",
-            fontSize: isMobile ? 11 : 12,
-          }}
-        >
-          <div style={{ opacity: 0.9 }}>
-            {voice.micAvailable ? "Mic ready" : "Mic off"}
-          </div>
-          <div style={{ opacity: 0.9 }}>{voice.micMuted ? "Muted" : "Live"}</div>
-          <div style={{ opacity: 0.9 }}>Near: {voiceDesiredPeerIds.length}</div>
-          {!isMobile ? (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ opacity: 0.9 }}>
+              {voice.micAvailable ? "Mic ready" : "Mic off"}
+            </div>
+            <div style={{ opacity: 0.9 }}>{voice.micMuted ? "Muted" : "Live"}</div>
+            <div style={{ opacity: 0.9 }}>{voiceDeafened ? "Deaf" : "Hearing"}</div>
+            <div style={{ opacity: 0.9 }}>Near: {voiceDesiredPeerIds.length}</div>
             <div style={{ opacity: 0.9 }}>Conn: {voice.peerCount}</div>
-          ) : null}
-          <div style={{ opacity: 0.9 }}>Streams: {voice.remoteStreamCount}</div>
-        </div>
-
-        {showFps && voice.debugEvents.length > 0 ? (
-          <div
-            style={{
-              marginTop: 2,
-              borderTop: "1px solid rgba(127,127,127,0.2)",
-              paddingTop: 6,
-              maxHeight: 92,
-              overflow: "auto",
-              fontSize: 11,
-              opacity: 0.9,
-              lineHeight: 1.25,
-            }}
-          >
-            {voice.debugEvents.slice(-6).map((e, i) => (
-              <div key={`${e.t}-${i}`}>
-                <span style={{ opacity: 0.75 }}>
-                  {new Date(e.t).toLocaleTimeString()}
-                </span>
-                <span style={{ fontWeight: 700, opacity: 0.9 }}>{e.kind}</span>
-                {e.peerId ? (
-                  <span style={{ opacity: 0.85 }}> {e.peerId}</span>
-                ) : null}
-                {e.message ? (
-                  <span style={{ opacity: 0.8 }}> — {e.message}</span>
-                ) : null}
-              </div>
-            ))}
+            <div style={{ opacity: 0.9 }}>Streams: {voice.remoteStreamCount}</div>
           </div>
-        ) : null}
-      </div>
+
+          {showFps && voice.debugEvents.length > 0 ? (
+            <div
+              style={{
+                marginTop: 2,
+                borderTop: "1px solid rgba(127,127,127,0.2)",
+                paddingTop: 6,
+                maxHeight: 92,
+                overflow: "auto",
+                fontSize: 11,
+                opacity: 0.9,
+                lineHeight: 1.25,
+              }}
+            >
+              {voice.debugEvents.slice(-6).map((e, i) => (
+                <div key={`${e.t}-${i}`}>
+                  <span style={{ opacity: 0.75 }}>
+                    {new Date(e.t).toLocaleTimeString()}
+                  </span>
+                  <span style={{ fontWeight: 700, opacity: 0.9 }}>{e.kind}</span>
+                  {e.peerId ? (
+                    <span style={{ opacity: 0.85 }}> {e.peerId}</span>
+                  ) : null}
+                  {e.message ? (
+                    <span style={{ opacity: 0.8 }}> — {e.message}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {contextLost ? (
         <div
@@ -4574,7 +4629,7 @@ export default function World({
           position: "fixed",
           left: 12,
           bottom: 12,
-          width: 320,
+          width: isMobile ? 280 : 320,
           maxWidth: "calc(100vw - 24px)",
           borderRadius: 10,
           border: "1px solid rgba(127,127,127,0.25)",
@@ -4609,50 +4664,106 @@ export default function World({
           ))}
         </div>
 
-        <input
-          ref={chatInputRef}
-          value={chatInput}
-          placeholder={connected ? "Chat..." : "Connecting..."}
-          onChange={(e) => setChatInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter") return;
-            const cleaned = chatInput.trim().slice(0, 160);
-            if (!cleaned) return;
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            ref={chatInputRef}
+            value={chatInput}
+            placeholder={connected ? "Chat..." : "Connecting..."}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              submitChat();
+            }}
+            style={{
+              height: 34,
+              padding: "0 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(127,127,127,0.25)",
+              background: "transparent",
+              color: "inherit",
+              outline: "none",
+              flex: 1,
+              minWidth: 0,
+            }}
+          />
 
-            // Hidden dev command: grant coins locally (and persist if signed in).
-            if (cleaned === "/dev") {
-              setChatInput("");
-              setCoins(5000);
+          {/* Compact mobile voice toggle: sits to the right of the chat input */}
+          {isMobile ? (
+            <button
+              onClick={() => {
+                void voice.toggleMic();
+              }}
+              style={{
+                height: 34,
+                width: 36,
+                borderRadius: 8,
+                border: "1px solid rgba(127,127,127,0.25)",
+                background: voice.micMuted
+                  ? "rgba(255,255,255,0.06)"
+                  : "rgba(46, 213, 115, 0.18)",
+                color: "white",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+                flex: "0 0 auto",
+              }}
+              title={voice.micMuted ? "Unmute mic" : "Mute mic"}
+              aria-label={voice.micMuted ? "Unmute mic" : "Mute mic"}
+            >
+              🎙
+            </button>
+          ) : null}
 
-              if (supabaseUser) {
-                const supabase = getSupabaseBrowserClient();
-                supabase
-                  .from("profiles")
-                  .update({ coins: 5000 })
-                  .eq("id", supabaseUser.id)
-                  .then(({ error }) => {
-                    if (error) {
-                      console.error("[/dev] coin grant failed:", error);
-                    }
-                  });
+          {/* Compact mobile deafen toggle */}
+          {isMobile ? (
+            <button
+              onClick={() => setVoiceDeafened((v) => !v)}
+              style={{
+                height: 34,
+                width: 36,
+                borderRadius: 8,
+                border: "1px solid rgba(127,127,127,0.25)",
+                background: voiceDeafened
+                  ? "rgba(255,255,255,0.12)"
+                  : "rgba(255,255,255,0.06)",
+                color: "white",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+                flex: "0 0 auto",
+              }}
+              title={voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"}
+              aria-label={
+                voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"
               }
-              return;
-            }
+            >
+              {voiceDeafened ? "🔇" : "🔈"}
+            </button>
+          ) : null}
 
-            if (!connected) return;
-            sendChat(cleaned);
-            setChatInput("");
-          }}
-          style={{
-            height: 34,
-            padding: "0 10px",
-            borderRadius: 8,
-            border: "1px solid rgba(127,127,127,0.25)",
-            background: "transparent",
-            color: "inherit",
-            outline: "none",
-          }}
-        />
+          <button
+            onClick={() => {
+              submitChat();
+            }}
+            style={{
+              height: 34,
+              padding: "0 12px",
+              borderRadius: 8,
+              border: "1px solid rgba(127,127,127,0.25)",
+              background: "rgba(255,255,255,0.06)",
+              color: "white",
+              fontWeight: 700,
+              cursor: "pointer",
+              flex: "0 0 auto",
+            }}
+            title="Send chat (Enter)"
+            aria-label="Send chat"
+          >
+            Enter
+          </button>
+        </div>
       </div>
       {/* Top Right Dock */}
       <div
