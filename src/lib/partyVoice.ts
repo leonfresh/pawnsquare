@@ -347,7 +347,10 @@ export function usePartyVoice(opts: {
       } catch (e) {
         // If preferred device failed, fall back once to default.
         if (preferred) {
-          pushEvent({ kind: "warn", message: "preferred mic failed; falling back" });
+          pushEvent({
+            kind: "warn",
+            message: "preferred mic failed; falling back",
+          });
           stream = await tryDefault();
         } else {
           throw e;
@@ -417,8 +420,8 @@ export function usePartyVoice(opts: {
         e instanceof Error
           ? e.message
           : typeof e === "string"
-            ? e
-            : "Failed to access microphone";
+          ? e
+          : "Failed to access microphone";
       setMicLastError(msg);
       pushEvent({ kind: "error", message: `getUserMedia failed: ${msg}` });
       setMicAvailable(false);

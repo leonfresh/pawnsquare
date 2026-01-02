@@ -4152,7 +4152,9 @@ export default function World({
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {showFps ? <div style={{ opacity: 0.8 }}>Push-to-talk: V</div> : null}
+              {showFps ? (
+                <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
+              ) : null}
               <button
                 onClick={() => setVoiceDeafened((v) => !v)}
                 style={{
@@ -4169,9 +4171,15 @@ export default function World({
                   display: "grid",
                   placeItems: "center",
                 }}
-                title={voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"}
+                title={
+                  voiceDeafened
+                    ? "Undeafen (hear others)"
+                    : "Deafen (stop hearing)"
+                }
                 aria-label={
-                  voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"
+                  voiceDeafened
+                    ? "Undeafen (hear others)"
+                    : "Deafen (stop hearing)"
                 }
               >
                 {voiceDeafened ? "🔇" : "🔈"}
@@ -4312,11 +4320,19 @@ export default function World({
             <div style={{ opacity: 0.9 }}>
               {voice.micAvailable ? "Mic ready" : "Mic off"}
             </div>
-            <div style={{ opacity: 0.9 }}>{voice.micMuted ? "Muted" : "Live"}</div>
-            <div style={{ opacity: 0.9 }}>{voiceDeafened ? "Deaf" : "Hearing"}</div>
-            <div style={{ opacity: 0.9 }}>Near: {voiceDesiredPeerIds.length}</div>
+            <div style={{ opacity: 0.9 }}>
+              {voice.micMuted ? "Muted" : "Live"}
+            </div>
+            <div style={{ opacity: 0.9 }}>
+              {voiceDeafened ? "Deaf" : "Hearing"}
+            </div>
+            <div style={{ opacity: 0.9 }}>
+              Near: {voiceDesiredPeerIds.length}
+            </div>
             <div style={{ opacity: 0.9 }}>Conn: {voice.peerCount}</div>
-            <div style={{ opacity: 0.9 }}>Streams: {voice.remoteStreamCount}</div>
+            <div style={{ opacity: 0.9 }}>
+              Streams: {voice.remoteStreamCount}
+            </div>
           </div>
 
           {showFps && voice.debugEvents.length > 0 ? (
@@ -4337,7 +4353,9 @@ export default function World({
                   <span style={{ opacity: 0.75 }}>
                     {new Date(e.t).toLocaleTimeString()}
                   </span>
-                  <span style={{ fontWeight: 700, opacity: 0.9 }}>{e.kind}</span>
+                  <span style={{ fontWeight: 700, opacity: 0.9 }}>
+                    {e.kind}
+                  </span>
                   {e.peerId ? (
                     <span style={{ opacity: 0.85 }}> {e.peerId}</span>
                   ) : null}
@@ -4734,9 +4752,15 @@ export default function World({
                 placeItems: "center",
                 flex: "0 0 auto",
               }}
-              title={voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"}
+              title={
+                voiceDeafened
+                  ? "Undeafen (hear others)"
+                  : "Deafen (stop hearing)"
+              }
               aria-label={
-                voiceDeafened ? "Undeafen (hear others)" : "Deafen (stop hearing)"
+                voiceDeafened
+                  ? "Undeafen (hear others)"
+                  : "Deafen (stop hearing)"
               }
             >
               {voiceDeafened ? "🔇" : "🔈"}
