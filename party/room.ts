@@ -32,7 +32,8 @@ type Message =
   | { type: "voice:offer"; to: string; offer: RTCSessionDescriptionInit }
   | { type: "voice:answer"; to: string; answer: RTCSessionDescriptionInit }
   | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
-  | { type: "voice:request-connections"; deviceId?: string };
+  | { type: "voice:hangup"; to: string; reason?: string }
+  | { type: "voice:request-connections"; deviceId?: string; peers?: string[] };
 
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
@@ -148,11 +149,21 @@ export default class RoomServer implements Party.Server {
             candidate: msg.candidate,
           })
         );
-      } else if (msg.type === "voice:request-connections") {
-        // Tell all other peers to initiate connection to this sender
-        const others = Array.from(this.players.keys()).filter(
-          (id) => id !== sender.id
+      } else if (msg.type === "voice:hangup" && msg.to) {
+        // Ask target peer to close their voice connection to the sender
+        this.room.getConnection(msg.to)?.send(
+          JSON.stringify({
+            type: "voice:hangup",
+            from: sender.id,
+            reason: msg.reason ?? null,
+          })
         );
+      } else if (msg.type === "voice:request-connections") {
+        // Tell selected peers (or everyone) to initiate connection to this sender
+        const requestedPeers = Array.isArray(msg.peers) ? msg.peers : null;
+        const others = (requestedPeers ?? Array.from(this.players.keys()))
+          .filter((id) => id !== sender.id)
+          .filter((id) => this.players.has(id));
         console.log(
           `[PartyKit Voice] ${sender.id} requesting connections to ${others.length} peers:`,
           others

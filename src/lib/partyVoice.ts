@@ -20,8 +20,30 @@ type PeerConnection = {
   audioEl?: HTMLAudioElement;
   source?: MediaStreamAudioSourceNode;
   gain?: GainNode;
+  hasRemoteAudio?: boolean;
   iceRestarting?: boolean;
   lastIceRestartAt?: number;
+};
+
+export type VoiceDebugEvent = {
+  t: number;
+  kind:
+    | "info"
+    | "warn"
+    | "error"
+    | "offer-in"
+    | "offer-out"
+    | "answer-in"
+    | "answer-out"
+    | "ice-in"
+    | "ice-out"
+    | "track-in"
+    | "hangup-in"
+    | "hangup-out"
+    | "cleanup"
+    | "request-connections";
+  peerId?: string;
+  message?: string;
 };
 
 const RTC_CONFIG: RTCConfiguration = {
@@ -35,6 +57,7 @@ export function usePartyVoice(opts: {
   socketRef: React.RefObject<PartySocket | null>;
   selfId: string | null;
   onRemoteGainForPeerId: (peerId: string, gain: GainNode | null) => void;
+  autoRequestConnections?: boolean;
 }) {
   const { socketRef, selfId, onRemoteGainForPeerId } = opts;
   const socket = socketRef.current;
@@ -59,6 +82,8 @@ export function usePartyVoice(opts: {
   const [micDeviceLabel, setMicDeviceLabel] = useState<string>("");
   const [peerCount, setPeerCount] = useState(0);
   const [remoteStreamCount, setRemoteStreamCount] = useState(0);
+  const [connectedPeerIds, setConnectedPeerIds] = useState<string[]>([]);
+  const [debugEvents, setDebugEvents] = useState<VoiceDebugEvent[]>([]);
 
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
@@ -66,14 +91,26 @@ export function usePartyVoice(opts: {
     const peers = peersRef.current;
     setPeerCount(peers.size);
 
+    // Keep a lightweight list for UI/debug.
+    setConnectedPeerIds(Array.from(peers.keys()));
+
+    // Count peers for which we've received at least one remote audio track.
+    // This avoids showing 0 when tracks arrived before the first user gesture.
     const streamCount = Array.from(peers.values()).filter((c) => {
-      const stream =
-        c.stream ?? (c.audioEl?.srcObject as MediaStream | null | undefined);
-      const tracks = stream?.getAudioTracks?.() ?? [];
-      return tracks.some((t) => t.readyState === "live");
+      if (!c.hasRemoteAudio) return false;
+      return true;
     }).length;
 
     setRemoteStreamCount(streamCount);
+  }, []);
+
+  const pushEvent = useCallback((e: Omit<VoiceDebugEvent, "t">) => {
+    const event: VoiceDebugEvent = { t: Date.now(), ...e };
+    setDebugEvents((prev) => {
+      const next = [...prev, event];
+      if (next.length > 60) next.splice(0, next.length - 60);
+      return next;
+    });
   }, []);
 
   // Stable per-device id (prevents self-echo if multiple tabs open on same device).
@@ -138,6 +175,7 @@ export function usePartyVoice(opts: {
 
       // Attach the latest stream.
       conn.stream = stream;
+      conn.hasRemoteAudio = true;
       if (el.srcObject !== stream) {
         el.srcObject = stream;
       }
@@ -308,6 +346,7 @@ export function usePartyVoice(opts: {
 
       pc.onicecandidate = (event) => {
         if (event.candidate && socket) {
+          pushEvent({ kind: "ice-out", peerId });
           socket.send(
             JSON.stringify({
               type: "voice:ice",
@@ -363,7 +402,17 @@ export function usePartyVoice(opts: {
 
         if (event.track.kind !== "audio") return;
 
+        pushEvent({ kind: "track-in", peerId });
+
         const stream = event.streams[0] || new MediaStream([event.track]);
+
+        const conn = peersRef.current.get(peerId);
+        if (conn) {
+          // Mark for counting even if we can't play yet (autoplay policies).
+          conn.stream = stream;
+          conn.hasRemoteAudio = true;
+          recomputeCounts();
+        }
 
         // If we haven't had a user gesture yet, store track for later.
         if (!gestureUnlockedRef.current) {
@@ -375,9 +424,6 @@ export function usePartyVoice(opts: {
           pendingTracksRef.current.set(peerId, stream);
           return;
         }
-
-        const conn = peersRef.current.get(peerId);
-        if (!conn) return;
 
         await attachAndPlayRemoteStream(peerId, stream);
       };
@@ -439,6 +485,8 @@ export function usePartyVoice(opts: {
       const conn = peersRef.current.get(peerId);
       if (!conn) return;
 
+      pushEvent({ kind: "cleanup", peerId });
+
       try {
         conn.source?.disconnect();
         conn.gain?.disconnect();
@@ -469,7 +517,7 @@ export function usePartyVoice(opts: {
       recomputeCounts();
       onRemoteGainRef.current(peerId, null);
     },
-    [recomputeCounts]
+    [pushEvent, recomputeCounts]
   );
 
   useEffect(() => {
@@ -479,6 +527,7 @@ export function usePartyVoice(opts: {
   const handleOffer = useCallback(
     async (from: string, offer: RTCSessionDescriptionInit) => {
       console.log("[party-voice] ← Received offer from", from);
+      pushEvent({ kind: "offer-in", peerId: from });
 
       let conn = peersRef.current.get(from);
       if (!conn) {
@@ -495,6 +544,7 @@ export function usePartyVoice(opts: {
         await pc.setLocalDescription(answer);
 
         if (socket) {
+          pushEvent({ kind: "answer-out", peerId: from });
           socket.send(
             JSON.stringify({
               type: "voice:answer",
@@ -506,14 +556,20 @@ export function usePartyVoice(opts: {
         }
       } catch (e) {
         console.error("[party-voice] Failed to handle offer:", e);
+        pushEvent({
+          kind: "error",
+          peerId: from,
+          message: "handleOffer failed",
+        });
       }
     },
-    [createPeerConnection, socket, recomputeCounts]
+    [createPeerConnection, socket, recomputeCounts, pushEvent]
   );
 
   const handleAnswer = useCallback(
     async (from: string, answer: RTCSessionDescriptionInit) => {
       console.log("[party-voice] ← Received answer from", from);
+      pushEvent({ kind: "answer-in", peerId: from });
 
       const conn = peersRef.current.get(from);
       if (!conn) return;
@@ -522,9 +578,14 @@ export function usePartyVoice(opts: {
         await conn.pc.setRemoteDescription(answer);
       } catch (e) {
         console.error("[party-voice] Failed to set answer:", e);
+        pushEvent({
+          kind: "error",
+          peerId: from,
+          message: "setRemoteDescription(answer) failed",
+        });
       }
     },
-    []
+    [pushEvent]
   );
 
   const handleIceCandidate = useCallback(
@@ -532,13 +593,20 @@ export function usePartyVoice(opts: {
       const conn = peersRef.current.get(from);
       if (!conn) return;
 
+      pushEvent({ kind: "ice-in", peerId: from });
+
       try {
         await conn.pc.addIceCandidate(candidate);
       } catch (e) {
         console.error("[party-voice] Failed to add ICE candidate:", e);
+        pushEvent({
+          kind: "error",
+          peerId: from,
+          message: "addIceCandidate failed",
+        });
       }
     },
-    []
+    [pushEvent]
   );
 
   const initiateConnectionTo = useCallback(
@@ -556,6 +624,7 @@ export function usePartyVoice(opts: {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
+        pushEvent({ kind: "offer-out", peerId });
         socket.send(
           JSON.stringify({
             type: "voice:offer",
@@ -568,9 +637,51 @@ export function usePartyVoice(opts: {
         console.log("[party-voice] → Sent offer to", peerId);
       } catch (e) {
         console.error("[party-voice] Failed to create offer:", e);
+        pushEvent({ kind: "error", peerId, message: "createOffer failed" });
       }
     },
-    [createPeerConnection, selfId, socket, recomputeCounts]
+    [createPeerConnection, selfId, socket, recomputeCounts, pushEvent]
+  );
+
+  const requestConnections = useCallback(
+    (peers?: string[]) => {
+      const socket = socketRef.current;
+      if (!socket) return;
+      if (!selfId) return;
+      if (socket.readyState !== WebSocket.OPEN) return;
+
+      pushEvent({
+        kind: "request-connections",
+        message: Array.isArray(peers) ? `peers=${peers.length}` : "all",
+      });
+
+      socket.send(
+        JSON.stringify({
+          type: "voice:request-connections",
+          deviceId: deviceIdRef.current,
+          peers: Array.isArray(peers) ? peers : undefined,
+        })
+      );
+    },
+    [selfId, pushEvent, socketRef]
+  );
+
+  const hangupPeer = useCallback(
+    (peerId: string, reason?: string) => {
+      const socket = socketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        pushEvent({ kind: "hangup-out", peerId, message: reason });
+        socket.send(
+          JSON.stringify({
+            type: "voice:hangup",
+            to: peerId,
+            reason: reason ?? "out-of-range",
+          })
+        );
+      }
+      cleanup(peerId);
+    },
+    [cleanup, pushEvent, socketRef]
   );
 
   const setRemoteGainForPeerId = useCallback((peerId: string, gain: number) => {
@@ -609,6 +720,13 @@ export function usePartyVoice(opts: {
           void handleAnswer(msg.from, msg.answer);
         } else if (msg.type === "voice:ice" && msg.from && msg.candidate) {
           void handleIceCandidate(msg.from, msg.candidate);
+        } else if (msg.type === "voice:hangup" && msg.from) {
+          pushEvent({
+            kind: "hangup-in",
+            peerId: msg.from,
+            message: msg.reason,
+          });
+          cleanup(msg.from);
         } else if (msg.type === "voice:request-connection" && msg.from) {
           // If two tabs are open on the same device, avoid connecting (prevents local self-echo).
           if (
@@ -642,9 +760,11 @@ export function usePartyVoice(opts: {
     handleAnswer,
     handleIceCandidate,
     initiateConnectionTo,
+    cleanup,
+    pushEvent,
   ]);
 
-  // Request connections to all existing players when socket connects
+  // (Optional) Request full-mesh voice connections on join.
   useEffect(() => {
     const socket = socketRef.current;
 
@@ -661,6 +781,10 @@ export function usePartyVoice(opts: {
       socketState: socket.readyState,
       selfId,
     });
+
+    if (opts.autoRequestConnections === false) {
+      return;
+    }
 
     const requestConnections = () => {
       console.log("[party-voice] → Requesting voice connections from server");
@@ -728,8 +852,13 @@ export function usePartyVoice(opts: {
     micDeviceLabel,
     peerCount,
     remoteStreamCount,
+    connectedPeerIds,
+    debugEvents,
     toggleMic,
     setRemoteGainForPeerId,
     initiateConnectionTo,
+    requestConnections,
+    hangupPeer,
+    disconnectPeer: cleanup,
   };
 }

@@ -3096,7 +3096,11 @@ export default function World({
     onRemoteGainForPeerId: (peerId, gain) => {
       peerGainMapRef.current.set(peerId, gain);
     },
+    // We'll drive connections based on proximity (instead of full room mesh).
+    autoRequestConnections: false,
   });
+
+  const [voiceDesiredPeerIds, setVoiceDesiredPeerIds] = useState<string[]>([]);
 
   // Debug: log when voice system initializes
   useEffect(() => {
@@ -4020,6 +4024,10 @@ export default function World({
             players={players}
             selfPosRef={selfPosRef}
             setRemoteGainForPeerId={voice.setRemoteGainForPeerId}
+            // Proximity voice subscriptions (VRChat-like): only connect within radius.
+            requestConnections={voice.requestConnections}
+            hangupPeer={voice.hangupPeer}
+            onDesiredPeersChange={setVoiceDesiredPeerIds}
           />
 
           {showFps && <FpsTracker labelRef={fpsLabelRef} />}
@@ -4074,6 +4082,78 @@ export default function World({
       </Canvas>
 
       {/* Voice UI intentionally hidden for now */}
+
+      <div
+        style={{
+          position: "fixed",
+          left: 12,
+          bottom: 220,
+          width: 320,
+          maxWidth: "calc(100vw - 24px)",
+          borderRadius: 10,
+          border: "1px solid rgba(127,127,127,0.25)",
+          background: "rgba(0,0,0,0.35)",
+          backdropFilter: "blur(6px)",
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          pointerEvents: "auto",
+          color: "white",
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
+          <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ opacity: 0.9 }}>
+            Mic: {voice.micAvailable ? "ready" : "off"}
+          </div>
+          <div style={{ opacity: 0.9 }}>
+            Status: {voice.micMuted ? "muted" : "live"}
+          </div>
+          <div style={{ opacity: 0.9 }}>
+            Nearby: {voiceDesiredPeerIds.length}
+          </div>
+          <div style={{ opacity: 0.9 }}>Connected: {voice.peerCount}</div>
+          <div style={{ opacity: 0.9 }}>Streams: {voice.remoteStreamCount}</div>
+        </div>
+        {voice.debugEvents.length > 0 ? (
+          <div
+            style={{
+              marginTop: 2,
+              borderTop: "1px solid rgba(127,127,127,0.2)",
+              paddingTop: 6,
+              maxHeight: 92,
+              overflow: "auto",
+              fontSize: 11,
+              opacity: 0.9,
+              lineHeight: 1.25,
+            }}
+          >
+            {voice.debugEvents.slice(-6).map((e, i) => (
+              <div key={`${e.t}-${i}`}>
+                <span style={{ opacity: 0.75 }}>
+                  {new Date(e.t).toLocaleTimeString()}
+                </span>
+                <span style={{ fontWeight: 700, opacity: 0.9 }}>{e.kind}</span>
+                {e.peerId ? (
+                  <span style={{ opacity: 0.85 }}> {e.peerId}</span>
+                ) : null}
+                {e.message ? (
+                  <span style={{ opacity: 0.8 }}> — {e.message}</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ opacity: 0.7, fontSize: 11 }}>
+            Waiting for voice events…
+          </div>
+        )}
+      </div>
 
       {contextLost ? (
         <div
@@ -5289,7 +5369,9 @@ export default function World({
                                           item.id,
                                         ]);
                                       const newOwnedLegacy =
-                                        toLegacyOwnedAvatarsValues(newOwnedItems);
+                                        toLegacyOwnedAvatarsValues(
+                                          newOwnedItems
+                                        );
 
                                       setCoins(newCoins);
                                       setOwnedItemIds(newOwnedItems);
@@ -5385,9 +5467,7 @@ export default function World({
                                       border: "none",
                                       fontSize: 16,
                                       fontWeight: 600,
-                                      cursor: equipped
-                                        ? "default"
-                                        : "pointer",
+                                      cursor: equipped ? "default" : "pointer",
                                       opacity: equipped ? 0.8 : 1,
                                     }}
                                   >
@@ -5440,7 +5520,8 @@ export default function World({
               >
                 {(() => {
                   const item = SHOP_ITEMS.find((i) => i.id === shopSelectedId);
-                  if (!item || isShopItemLocked(item, ownedItemIds)) return null;
+                  if (!item || isShopItemLocked(item, ownedItemIds))
+                    return null;
                   const owned = isShopItemOwned(item, ownedItemIds);
                   const canBuy = !owned && coins >= item.price;
                   const equipped = isItemEquipped(item);
@@ -5470,9 +5551,8 @@ export default function World({
                                 ...ownedItemIds,
                                 item.id,
                               ]);
-                              const newOwnedLegacy = toLegacyOwnedAvatarsValues(
-                                newOwnedItems
-                              );
+                              const newOwnedLegacy =
+                                toLegacyOwnedAvatarsValues(newOwnedItems);
 
                               setCoins(newCoins);
                               setOwnedItemIds(newOwnedItems);
@@ -5525,7 +5605,10 @@ export default function World({
                                 void persistEquipped({
                                   equipped_avatar_url: item.url,
                                 });
-                              } else if (item.type === "theme" && onLobbyChange) {
+                              } else if (
+                                item.type === "theme" &&
+                                onLobbyChange
+                              ) {
                                 if (item.id === "theme_scifi") {
                                   onLobbyChange("scifi");
                                 } else {
@@ -5939,14 +6022,22 @@ function VoiceProximityUpdater({
   players,
   selfPosRef,
   setRemoteGainForPeerId,
+  requestConnections,
+  hangupPeer,
+  onDesiredPeersChange,
 }: {
   enabled: boolean;
   selfId?: string;
   players: Record<string, Player>;
   selfPosRef: React.RefObject<THREE.Vector3>;
   setRemoteGainForPeerId: (peerId: string, gain: number) => void;
+  requestConnections?: (peers?: string[]) => void;
+  hangupPeer?: (peerId: string, reason?: string) => void;
+  onDesiredPeersChange?: (peers: string[]) => void;
 }) {
   const lastTickRef = useRef(0);
+  const lastConnTickRef = useRef(0);
+  const desiredPeersRef = useRef<Set<string>>(new Set());
 
   useFrame(() => {
     if (!enabled) return;
@@ -5983,6 +6074,83 @@ function VoiceProximityUpdater({
       const gRaw = voiceGainFromDistanceMeters(d);
       const g = Number.isFinite(gRaw) ? clamp(gRaw, 0, 1) : 1;
       setRemoteGainForPeerId(peerId, g);
+    }
+
+    // Connection management: throttle to ~3Hz.
+    // This keeps the voice mesh bounded to nearby peers only.
+    if (requestConnections && hangupPeer) {
+      const connNow = performance.now();
+      if (connNow - lastConnTickRef.current >= 320) {
+        lastConnTickRef.current = connNow;
+
+        const START_RADIUS_M = 10;
+        const STOP_RADIUS_M = 12;
+        const MAX_PEERS = 8;
+
+        const prev = desiredPeersRef.current;
+
+        const candidates: Array<{ id: string; d: number }> = [];
+        for (const [peerId, p] of Object.entries(players)) {
+          if (peerId === selfId) continue;
+          const pos = p.position;
+          if (!pos || pos.length < 3) continue;
+          const px = pos[0];
+          const py = pos[1];
+          const pz = pos[2];
+          if (
+            !Number.isFinite(px) ||
+            !Number.isFinite(py) ||
+            !Number.isFinite(pz)
+          ) {
+            continue;
+          }
+
+          const dx = px - selfPos.x;
+          const dy = py - selfPos.y;
+          const dz = pz - selfPos.z;
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+          // Hysteresis: stay connected a bit longer than the connect radius.
+          if (d <= START_RADIUS_M || (prev.has(peerId) && d <= STOP_RADIUS_M)) {
+            candidates.push({ id: peerId, d });
+          }
+        }
+
+        candidates.sort((a, b) => a.d - b.d);
+        const nextIds = candidates.slice(0, MAX_PEERS).map((c) => c.id);
+        const next = new Set(nextIds);
+
+        let changed = next.size !== prev.size;
+        if (!changed) {
+          for (const id of next) {
+            if (!prev.has(id)) {
+              changed = true;
+              break;
+            }
+          }
+        }
+
+        if (changed) {
+          // Disconnect peers that dropped out of range.
+          for (const id of prev) {
+            if (!next.has(id)) {
+              hangupPeer(id, "out-of-range");
+            }
+          }
+
+          desiredPeersRef.current = next;
+          try {
+            requestConnections(nextIds);
+          } catch {
+            // ignore
+          }
+          try {
+            onDesiredPeersChange?.(nextIds);
+          } catch {
+            // ignore
+          }
+        }
+      }
     }
   });
 
