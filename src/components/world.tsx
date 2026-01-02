@@ -4107,6 +4107,39 @@ export default function World({
           <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
           <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
         </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            onClick={() => {
+              void voice.toggleMic();
+            }}
+            style={{
+              height: 34,
+              padding: "0 12px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.16)",
+              background: voice.micMuted
+                ? "rgba(255,255,255,0.06)"
+                : "rgba(46, 213, 115, 0.18)",
+              color: "white",
+              fontWeight: 700,
+              cursor: "pointer",
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+            }}
+            title={voice.micMuted ? "Unmute mic" : "Mute mic"}
+            aria-label={voice.micMuted ? "Unmute mic" : "Mute mic"}
+          >
+            {voice.micMuted ? "Unmute" : "Mute"}
+          </button>
+          <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.2 }}>
+            Muted still lets you hear others.
+          </div>
+        </div>
+
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ opacity: 0.9 }}>
             Mic: {voice.micAvailable ? "ready" : "off"}
