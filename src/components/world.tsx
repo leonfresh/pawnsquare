@@ -84,8 +84,8 @@ function voiceGainFromDistanceMeters(d: number) {
   // Simple VRChat-like rolloff: full volume nearby, fades out to silence.
   const NEAR = 2.0;
   // NOTE: Our world coordinates span roughly [-18, 18] in X/Z.
-  // Use a larger FAR so players can still hear each other across the plaza while testing.
-  const FAR = 60.0;
+  // Reduced cutoff so proximity feels tighter.
+  const FAR = 36.0;
   if (d <= NEAR) return 1;
   if (d >= FAR) return 0;
   const t = (d - NEAR) / (FAR - NEAR);
@@ -4089,7 +4089,7 @@ export default function World({
           position: "fixed",
           left: 12,
           bottom: 220,
-          width: 320,
+          width: isMobile ? 240 : 320,
           maxWidth: "calc(100vw - 24px)",
           borderRadius: 10,
           border: "1px solid rgba(127,127,127,0.25)",
@@ -4107,36 +4107,40 @@ export default function World({
         <div style={{ display: "flex", justifyContent: "space-between" }}>
           <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
-            <button
-              onClick={() => {
-                const next = !voiceSettingsOpen;
-                setVoiceSettingsOpen(next);
-                if (next) {
-                  try {
-                    void voice.refreshMicDevices?.();
-                  } catch {
-                    // ignore
-                  }
-                }
-              }}
-              style={{
-                height: 28,
-                width: 28,
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.16)",
-                background: "rgba(255,255,255,0.06)",
-                color: "white",
-                fontWeight: 800,
-                cursor: "pointer",
-                display: "grid",
-                placeItems: "center",
-              }}
-              title="Voice settings"
-              aria-label="Voice settings"
-            >
-              ⚙
-            </button>
+            {showFps ? (
+              <>
+                <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
+                <button
+                  onClick={() => {
+                    const next = !voiceSettingsOpen;
+                    setVoiceSettingsOpen(next);
+                    if (next) {
+                      try {
+                        void voice.refreshMicDevices?.();
+                      } catch {
+                        // ignore
+                      }
+                    }
+                  }}
+                  style={{
+                    height: 28,
+                    width: 28,
+                    borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "rgba(255,255,255,0.06)",
+                    color: "white",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    display: "grid",
+                    placeItems: "center",
+                  }}
+                  title="Voice settings"
+                  aria-label="Voice settings"
+                >
+                  ⚙
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -4167,12 +4171,14 @@ export default function World({
           >
             {voice.micMuted ? "Unmute" : "Mute"}
           </button>
-          <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.2 }}>
-            Muted still lets you hear others.
-          </div>
+          {!isMobile ? (
+            <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.2 }}>
+              Muted still lets you hear others.
+            </div>
+          ) : null}
         </div>
 
-        {voiceSettingsOpen ? (
+        {showFps && voiceSettingsOpen ? (
           <div
             style={{
               borderTop: "1px solid rgba(127,127,127,0.2)",
@@ -4240,20 +4246,26 @@ export default function World({
           </div>
         ) : null}
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: isMobile ? 8 : 10,
+            flexWrap: "wrap",
+            fontSize: isMobile ? 11 : 12,
+          }}
+        >
           <div style={{ opacity: 0.9 }}>
-            Mic: {voice.micAvailable ? "ready" : "off"}
+            {voice.micAvailable ? "Mic ready" : "Mic off"}
           </div>
-          <div style={{ opacity: 0.9 }}>
-            Status: {voice.micMuted ? "muted" : "live"}
-          </div>
-          <div style={{ opacity: 0.9 }}>
-            Nearby: {voiceDesiredPeerIds.length}
-          </div>
-          <div style={{ opacity: 0.9 }}>Connected: {voice.peerCount}</div>
+          <div style={{ opacity: 0.9 }}>{voice.micMuted ? "Muted" : "Live"}</div>
+          <div style={{ opacity: 0.9 }}>Near: {voiceDesiredPeerIds.length}</div>
+          {!isMobile ? (
+            <div style={{ opacity: 0.9 }}>Conn: {voice.peerCount}</div>
+          ) : null}
           <div style={{ opacity: 0.9 }}>Streams: {voice.remoteStreamCount}</div>
         </div>
-        {voice.debugEvents.length > 0 ? (
+
+        {showFps && voice.debugEvents.length > 0 ? (
           <div
             style={{
               marginTop: 2,
@@ -4281,11 +4293,7 @@ export default function World({
               </div>
             ))}
           </div>
-        ) : (
-          <div style={{ opacity: 0.7, fontSize: 11 }}>
-            Waiting for voice events…
-          </div>
-        )}
+        ) : null}
       </div>
 
       {contextLost ? (
@@ -6216,8 +6224,8 @@ function VoiceProximityUpdater({
       if (connNow - lastConnTickRef.current >= 320) {
         lastConnTickRef.current = connNow;
 
-        const START_RADIUS_M = 10;
-        const STOP_RADIUS_M = 12;
+        const START_RADIUS_M = 6;
+        const STOP_RADIUS_M = 7.2;
         const MAX_PEERS = 8;
 
         const prev = desiredPeersRef.current;
