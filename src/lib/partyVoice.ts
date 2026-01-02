@@ -70,6 +70,7 @@ export function usePartyVoice(opts: {
   const pendingTracksRef = useRef<Map<string, MediaStream>>(new Map());
   const gestureUnlockedRef = useRef(false);
   const deviceIdRef = useRef<string>("");
+  const micDeviceIdRef = useRef<string>("");
   const cleanupRef = useRef<(peerId: string) => void>(() => {});
 
   // Keep callback ref updated
@@ -80,6 +81,9 @@ export function usePartyVoice(opts: {
   const [micAvailable, setMicAvailable] = useState(false);
   const [micMuted, setMicMuted] = useState(true);
   const [micDeviceLabel, setMicDeviceLabel] = useState<string>("");
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicDeviceId, setSelectedMicDeviceId] = useState<string>("");
+  const [micLastError, setMicLastError] = useState<string | null>(null);
   const [peerCount, setPeerCount] = useState(0);
   const [remoteStreamCount, setRemoteStreamCount] = useState(0);
   const [connectedPeerIds, setConnectedPeerIds] = useState<string[]>([]);
@@ -129,6 +133,75 @@ export function usePartyVoice(opts: {
       id = `${Date.now()}-${Math.random()}`;
     }
     deviceIdRef.current = id;
+  }, []);
+
+  // Preferred mic device id (user selectable).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = "pawnsquare:preferredMicDeviceId";
+    try {
+      const saved = window.localStorage.getItem(key) ?? "";
+      micDeviceIdRef.current = saved;
+      setSelectedMicDeviceId(saved);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const refreshMicDevices = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter((d) => d.kind === "audioinput");
+      setMicDevices(mics);
+
+      // If we have a saved selection that no longer exists, clear it.
+      const cur = micDeviceIdRef.current;
+      if (cur && !mics.some((d) => d.deviceId === cur)) {
+        micDeviceIdRef.current = "";
+        setSelectedMicDeviceId("");
+        try {
+          window.localStorage.removeItem("pawnsquare:preferredMicDeviceId");
+        } catch {
+          // ignore
+        }
+      }
+    } catch (e) {
+      // Some browsers throw if not on HTTPS or no permissions.
+      pushEvent({
+        kind: "warn",
+        message: "enumerateDevices failed",
+      });
+    }
+  }, [pushEvent]);
+
+  // Keep mic device list fresh.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    void refreshMicDevices();
+    const handler = () => {
+      void refreshMicDevices();
+    };
+    try {
+      navigator.mediaDevices?.addEventListener?.("devicechange", handler);
+      return () =>
+        navigator.mediaDevices?.removeEventListener?.("devicechange", handler);
+    } catch {
+      return;
+    }
+  }, [refreshMicDevices]);
+
+  const stopMic = useCallback(() => {
+    try {
+      micTrackRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    micTrackRef.current = null;
+    micStreamRef.current = null;
+    setMicAvailable(false);
+    setMicDeviceLabel("");
   }, []);
 
   const ensureRemoteAudioEl = useCallback(
@@ -241,14 +314,45 @@ export function usePartyVoice(opts: {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
+      setMicLastError(null);
+      const preferred = micDeviceIdRef.current;
+
+      const baseAudio: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+
+      const tryWithPreferred = async () => {
+        if (!preferred) return null;
+        return navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...baseAudio,
+            deviceId: { exact: preferred },
+          },
+          video: false,
+        });
+      };
+
+      const tryDefault = async () =>
+        navigator.mediaDevices.getUserMedia({
+          audio: baseAudio,
+          video: false,
+        });
+
+      let stream: MediaStream;
+      try {
+        const s = await tryWithPreferred();
+        stream = s ?? (await tryDefault());
+      } catch (e) {
+        // If preferred device failed, fall back once to default.
+        if (preferred) {
+          pushEvent({ kind: "warn", message: "preferred mic failed; falling back" });
+          stream = await tryDefault();
+        } else {
+          throw e;
+        }
+      }
 
       const track = stream.getAudioTracks()[0] || null;
       if (!track) throw new Error("No audio track available");
@@ -260,6 +364,8 @@ export function usePartyVoice(opts: {
         enabled: track.enabled,
         readyState: track.readyState,
       });
+
+      void refreshMicDevices();
 
       micStreamRef.current = stream;
       micTrackRef.current = track;
@@ -307,10 +413,49 @@ export function usePartyVoice(opts: {
       }
     } catch (e) {
       console.error("[party-voice] getUserMedia failed", e);
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "string"
+            ? e
+            : "Failed to access microphone";
+      setMicLastError(msg);
+      pushEvent({ kind: "error", message: `getUserMedia failed: ${msg}` });
       setMicAvailable(false);
       throw e;
     }
-  }, [micMuted]);
+  }, [micMuted, pushEvent, refreshMicDevices]);
+
+  const setMicDeviceId = useCallback(
+    async (deviceId: string) => {
+      if (typeof window === "undefined") return;
+      micDeviceIdRef.current = deviceId;
+      setSelectedMicDeviceId(deviceId);
+      try {
+        if (deviceId) {
+          window.localStorage.setItem(
+            "pawnsquare:preferredMicDeviceId",
+            deviceId
+          );
+        } else {
+          window.localStorage.removeItem("pawnsquare:preferredMicDeviceId");
+        }
+      } catch {
+        // ignore
+      }
+
+      // If mic is already acquired, re-acquire with the new device.
+      if (micStreamRef.current || micTrackRef.current) {
+        stopMic();
+        try {
+          await ensureMic();
+        } catch {
+          // keep muted; error will be surfaced via micLastError/debug
+        }
+      }
+    },
+    [ensureMic, stopMic]
+  );
 
   const toggleMic = useCallback(async () => {
     await ensureAudio();
@@ -812,16 +957,14 @@ export function usePartyVoice(opts: {
         cleanup(peerId);
       }
 
-      micTrackRef.current?.stop();
-      micTrackRef.current = null;
-      micStreamRef.current = null;
+      stopMic();
 
       if (audioCtxRef.current) {
         void audioCtxRef.current.close();
         audioCtxRef.current = null;
       }
     };
-  }, [cleanup]);
+  }, [cleanup, stopMic]);
 
   // Keep track enabled state in sync
   useEffect(() => {
@@ -850,6 +993,9 @@ export function usePartyVoice(opts: {
     micAvailable,
     micMuted,
     micDeviceLabel,
+    micDevices,
+    selectedMicDeviceId,
+    micLastError,
     peerCount,
     remoteStreamCount,
     connectedPeerIds,
@@ -860,5 +1006,7 @@ export function usePartyVoice(opts: {
     requestConnections,
     hangupPeer,
     disconnectPeer: cleanup,
+    refreshMicDevices,
+    setMicDeviceId,
   };
 }

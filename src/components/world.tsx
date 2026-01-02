@@ -3101,6 +3101,7 @@ export default function World({
   });
 
   const [voiceDesiredPeerIds, setVoiceDesiredPeerIds] = useState<string[]>([]);
+  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
 
   // Debug: log when voice system initializes
   useEffect(() => {
@@ -4105,7 +4106,38 @@ export default function World({
       >
         <div style={{ display: "flex", justifyContent: "space-between" }}>
           <div style={{ fontWeight: 700, opacity: 0.95 }}>Voice</div>
-          <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ opacity: 0.8 }}>Push-to-talk: V</div>
+            <button
+              onClick={() => {
+                const next = !voiceSettingsOpen;
+                setVoiceSettingsOpen(next);
+                if (next) {
+                  try {
+                    void voice.refreshMicDevices?.();
+                  } catch {
+                    // ignore
+                  }
+                }
+              }}
+              style={{
+                height: 28,
+                width: 28,
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.16)",
+                background: "rgba(255,255,255,0.06)",
+                color: "white",
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+              }}
+              title="Voice settings"
+              aria-label="Voice settings"
+            >
+              ⚙
+            </button>
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -4139,6 +4171,74 @@ export default function World({
             Muted still lets you hear others.
           </div>
         </div>
+
+        {voiceSettingsOpen ? (
+          <div
+            style={{
+              borderTop: "1px solid rgba(127,127,127,0.2)",
+              paddingTop: 8,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700 }}>
+              Microphone
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <select
+                value={voice.selectedMicDeviceId ?? ""}
+                onChange={(e) => {
+                  void voice.setMicDeviceId?.(e.target.value);
+                }}
+                style={{
+                  height: 32,
+                  flex: 1,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "white",
+                  padding: "0 10px",
+                  outline: "none",
+                }}
+                aria-label="Select microphone"
+              >
+                <option value="">Default microphone</option>
+                {(voice.micDevices ?? []).map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  void voice.refreshMicDevices?.();
+                }}
+                style={{
+                  height: 32,
+                  padding: "0 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "white",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+                title="Refresh mic list"
+              >
+                Refresh
+              </button>
+            </div>
+            {voice.micLastError ? (
+              <div style={{ fontSize: 11, opacity: 0.9, color: "#ffb3b3" }}>
+                Mic error: {voice.micLastError}
+              </div>
+            ) : null}
+            <div style={{ fontSize: 11, opacity: 0.7 }}>
+              Tip: device names may appear only after granting mic permission.
+            </div>
+          </div>
+        ) : null}
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ opacity: 0.9 }}>
