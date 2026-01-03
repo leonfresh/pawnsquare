@@ -18,6 +18,8 @@ type ChatMessage = {
   t: number;
 };
 
+type BoardMode = "chess" | "checkers";
+
 type Message =
   | {
       type: "hello";
@@ -29,6 +31,7 @@ type Message =
   | { type: "state"; position: [number, number, number]; rotY: number }
   | { type: "chat"; text: string }
   | { type: "sync"; players: Record<string, Player>; chat: ChatMessage[] }
+  | { type: "board:set-mode"; boardKey: string; mode: BoardMode }
   | { type: "voice:offer"; to: string; offer: RTCSessionDescriptionInit }
   | { type: "voice:answer"; to: string; answer: RTCSessionDescriptionInit }
   | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
@@ -38,6 +41,12 @@ type Message =
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
   chat: ChatMessage[] = [];
+  boardModes: Record<string, BoardMode> = {
+    a: "chess",
+    b: "chess",
+    c: "chess",
+    d: "chess",
+  };
 
   constructor(readonly room: Party.Room) {}
 
@@ -50,7 +59,14 @@ export default class RoomServer implements Party.Server {
       players[id] = player;
     });
 
-    conn.send(JSON.stringify({ type: "sync", players, chat: this.chat }));
+    conn.send(
+      JSON.stringify({
+        type: "sync",
+        players,
+        chat: this.chat,
+        boardModes: this.boardModes,
+      })
+    );
   }
 
   onMessage(message: string, sender: Party.Connection) {
@@ -113,6 +129,18 @@ export default class RoomServer implements Party.Server {
         if (this.chat.length > 60) this.chat.splice(0, this.chat.length - 60);
 
         this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
+      } else if (msg.type === "board:set-mode") {
+        const boardKey = (msg.boardKey ?? "").toString().trim().slice(0, 8);
+        const mode: BoardMode = msg.mode === "checkers" ? "checkers" : "chess";
+        if (!boardKey) return;
+
+        const prev = this.boardModes[boardKey] ?? "chess";
+        if (prev === mode) return;
+        this.boardModes[boardKey] = mode;
+
+        this.room.broadcast(
+          JSON.stringify({ type: "board:modes", boardModes: this.boardModes })
+        );
       } else if (msg.type === "voice:offer" && msg.to) {
         // Relay WebRTC offer to target peer
         console.log(

@@ -145,6 +145,7 @@ export function VrmPreview({
     <div style={style}>
       <SpinnerOverlay visible={!everReady && phase !== "ready"} />
       <Canvas
+        key="vrm-preview-canvas"
         dpr={[1, 1.25]}
         gl={{ antialias: true, powerPreference: "low-power", alpha: true }}
         camera={{ position: [0, 1.75, 3.25], fov: 40 }}

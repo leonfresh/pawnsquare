@@ -2,665 +2,139 @@
 
 import { RoundedBox, Text, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { Chess, type Square } from "chess.js";
-import PartySocket from "partysocket";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { Vec3 } from "@/lib/partyRoom";
+import {
+  AnimatedPiece,
+  FILES,
+  formatClock,
+  useChessGame,
+  type Side,
+  type BoardControlsEvent,
+  applyChessThemeToMaterial,
+} from "./chess-core";
+import { useCheckersGame } from "./checkers-core";
+import { useChessSounds } from "./chess-sounds";
 
-type Side = "w" | "b";
+const SQUARE_TOP_Y = 0.04;
 
-type GameResult =
-  | { type: "timeout"; winner: Side }
-  | { type: "checkmate"; winner: Side }
-  | {
-      type: "draw";
-      reason:
-        | "stalemate"
-        | "insufficient"
-        | "threefold"
-        | "fifty-move"
-        | "draw";
-    };
-
-type ClockState = {
-  baseMs: number;
-  remainingMs: { w: number; b: number };
-  running: boolean;
-  active: Side;
-  lastTickMs: number | null;
-};
-
-type SeatInfo = {
-  connId: string;
-  playerId: string;
-  name: string;
-};
-
-type ChessNetState = {
-  seats: { w: SeatInfo | null; b: SeatInfo | null };
-  fen: string;
-  seq: number;
-  clock: ClockState;
-  result: GameResult | null;
-  lastMove: { from: Square; to: Square } | null;
-};
-
-type ChessMessage = { type: "state"; state: ChessNetState };
-
-type ChessSendMessage =
-  | { type: "join"; side: Side; playerId?: string; name?: string }
-  | { type: "leave"; side: Side }
-  | {
-      type: "move";
-      from: Square;
-      to: Square;
-      promotion?: "q" | "r" | "b" | "n";
-    }
-  | { type: "setTime"; baseSeconds: number }
-  | { type: "reset" };
-
-const TIME_OPTIONS_SECONDS = [60, 3 * 60, 5 * 60, 10 * 60, 15 * 60] as const;
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function formatClock(ms: number) {
-  const safe = Math.max(0, Math.floor(ms));
-  const totalSeconds = Math.floor(safe / 1000);
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  const mm = String(m).padStart(2, "0");
-  const ss = String(s).padStart(2, "0");
-  return `${mm}:${ss}`;
-}
-
-function winnerLabel(side: Side) {
-  return side === "w" ? "White" : "Black";
-}
-
-const PARTYKIT_HOST = process.env.NEXT_PUBLIC_PARTYKIT_HOST || "localhost:1999";
-
-const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
-
-function squareCenter(
-  square: Square,
-  origin: THREE.Vector3,
-  squareSize: number
-): THREE.Vector3 {
-  const file = square.charCodeAt(0) - 97; // a=0
-  const rank = Number(square[1]); // 1..8
-  const x = (file - 3.5) * squareSize;
-  const z = (4.5 - rank) * squareSize;
-  return new THREE.Vector3(origin.x + x, origin.y, origin.z + z);
-}
-
-function isSquare(val: string): val is Square {
-  if (val.length !== 2) return false;
-  const f = val.charCodeAt(0);
-  const r = val.charCodeAt(1);
-  return f >= 97 && f <= 104 && r >= 49 && r <= 56;
-}
-
-function piecePath(type: string) {
-  switch (type) {
-    case "p":
-      return "/models/pawn.glb";
-    case "n":
-      return "/models/knight.glb";
-    case "b":
-      return "/models/bishop.glb";
-    case "r":
-      return "/models/rook.glb";
-    case "q":
-      return "/models/queen.glb";
-    case "k":
-      return "/models/king.glb";
-    default:
-      return "/models/pawn.glb";
-  }
-}
-
-function applyFresnelRim(
-  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  rimColor: THREE.Color,
-  rimPower = 2.25,
-  rimIntensity = 0.65
-) {
-  const prev = material.onBeforeCompile;
-  material.onBeforeCompile = (shader, renderer) => {
-    try {
-      (prev as any).call(material as any, shader, renderer);
-    } catch {
-      // ignore
-    }
-    shader.uniforms.uRimColor = { value: rimColor };
-    shader.uniforms.uRimPower = { value: rimPower };
-    shader.uniforms.uRimIntensity = { value: rimIntensity };
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimIntensity;`
-      )
-      .replace(
-        "#include <output_fragment>",
-        `float rim = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), uRimPower);\noutgoingLight += uRimColor * rim * uRimIntensity;\n#include <output_fragment>`
-      );
-  };
-  material.needsUpdate = true;
-}
-
-function applyClearGlassShader(
-  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  opts?: {
-    scale?: number;
-    absorbStrength?: number;
-    bottomTint?: THREE.Color;
-  }
-) {
-  const scale = opts?.scale ?? 1.0;
-  const absorbStrength = opts?.absorbStrength ?? 0.35;
-  const bottomTint = opts?.bottomTint ?? new THREE.Color("#e9f2ff");
-
-  const prev = material.onBeforeCompile;
-  material.onBeforeCompile = (shader, renderer) => {
-    try {
-      (prev as any).call(material as any, shader, renderer);
-    } catch {
-      // ignore
-    }
-
-    shader.uniforms.uGlassScale = { value: scale };
-    shader.uniforms.uGlassAbsorb = { value: absorbStrength };
-    shader.uniforms.uGlassBottomTint = { value: bottomTint };
-
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nvarying vec3 vGlassWorldPos;`
-      )
-      .replace(
-        "#include <begin_vertex>",
-        `#include <begin_vertex>\nvec4 wsPosG = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosG = instanceMatrix * wsPosG;\n#endif\nwsPosG = modelMatrix * wsPosG;\nvGlassWorldPos = wsPosG.xyz;`
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nvarying vec3 vGlassWorldPos;\nuniform float uGlassScale;\nuniform float uGlassAbsorb;\nuniform vec3 uGlassBottomTint;`
-      )
-      .replace(
-        "#include <color_fragment>",
-        `#include <color_fragment>\nfloat gy = clamp(vGlassWorldPos.y * uGlassScale, 0.0, 1.0);\n// Slight base tint, clearer towards the top\ndiffuseColor.rgb = mix(uGlassBottomTint, diffuseColor.rgb, smoothstep(0.0, 1.0, gy));`
-      )
-      .replace(
-        "#include <output_fragment>",
-        `// Gentle absorption at grazing angles\nfloat ndv = clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0);\nfloat fres = pow(1.0 - ndv, 2.0);\noutgoingLight *= (1.0 - fres * uGlassAbsorb);\n#include <output_fragment>`
-      );
-  };
-
-  material.needsUpdate = true;
-}
-
-function applyMilkGlassShader(
-  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  opts?: {
-    milkiness?: number;
-    bottomTint?: THREE.Color;
-  }
-) {
-  const milkiness = opts?.milkiness ?? 0.75;
-  const bottomTint = opts?.bottomTint ?? new THREE.Color("#ffffff");
-
-  const prev = material.onBeforeCompile;
-  material.onBeforeCompile = (shader, renderer) => {
-    try {
-      (prev as any).call(material as any, shader, renderer);
-    } catch {
-      // ignore
-    }
-
-    shader.uniforms.uMilkiness = { value: milkiness };
-    shader.uniforms.uMilkBottomTint = { value: bottomTint };
-
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nvarying vec3 vMilkWorldPos;`
-      )
-      .replace(
-        "#include <begin_vertex>",
-        `#include <begin_vertex>\nvec4 wsPosM = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPosM = instanceMatrix * wsPosM;\n#endif\nwsPosM = modelMatrix * wsPosM;\nvMilkWorldPos = wsPosM.xyz;`
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nvarying vec3 vMilkWorldPos;\nuniform float uMilkiness;\nuniform vec3 uMilkBottomTint;`
-      )
-      .replace(
-        "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>\n// Smooth frosted roughness (no dotty noise)\nroughnessFactor = clamp(max(roughnessFactor, 0.75) + uMilkiness * 0.15, 0.0, 1.0);`
-      )
-      .replace(
-        "#include <color_fragment>",
-        `#include <color_fragment>\n// Subtle vertical density: slightly denser near base\nfloat g = clamp(vMilkWorldPos.y, 0.0, 1.0);\ndiffuseColor.rgb = mix(uMilkBottomTint, diffuseColor.rgb, smoothstep(0.0, 1.0, g));`
-      )
-      .replace(
-        "#include <output_fragment>",
-        `float ndv = clamp(abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0);\n// More scattering at grazing angles\nfloat scatter = clamp(uMilkiness * 0.75 + (1.0 - ndv) * 0.35, 0.0, 1.0);\noutgoingLight = mix(outgoingLight, vec3(1.0), scatter);\n#include <output_fragment>`
-      );
-  };
-
-  material.needsUpdate = true;
-}
-
-function applyWoodGrainShader(
-  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  opts?: { scale?: number; intensity?: number }
-) {
-  const scale = opts?.scale ?? 6.0;
-  const intensity = opts?.intensity ?? 0.4;
-
-  const prev = material.onBeforeCompile;
-  material.onBeforeCompile = (shader, renderer) => {
-    try {
-      (prev as any).call(material as any, shader, renderer);
-    } catch {
-      // ignore
-    }
-    shader.uniforms.uWoodScale = { value: scale };
-    shader.uniforms.uWoodIntensity = { value: intensity };
-
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nvarying vec3 vWorldPos;`
-      )
-      .replace(
-        "#include <begin_vertex>",
-        `#include <begin_vertex>\nvec4 wsPos = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos = instanceMatrix * wsPos;\n#endif\nwsPos = modelMatrix * wsPos;\nvWorldPos = wsPos.xyz;`
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-varying vec3 vWorldPos;
-uniform float uWoodScale;
-uniform float uWoodIntensity;
-
-float woodHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-float woodNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f*f*(3.0-2.0*f);
-    return mix(mix(woodHash(i + vec2(0.0,0.0)), woodHash(i + vec2(1.0,0.0)), f.x),
-               mix(woodHash(i + vec2(0.0,1.0)), woodHash(i + vec2(1.0,1.0)), f.x), f.y);
-}
-
-float fbmWood(vec2 p) {
-    float v = 0.0;
-    v += 0.5 * woodNoise(p); p *= 2.0;
-    v += 0.25 * woodNoise(p); p *= 2.0;
-    return v;
-}`
-      )
-      .replace(
-        "#include <color_fragment>",
-        `#include <color_fragment>
-vec2 wp = vWorldPos.xz * uWoodScale;
-// Distort domain for organic look
-float n = fbmWood(wp);
-wp += n * 0.5;
-
-// Wood rings
-float ring = sin(wp.x * 10.0 + wp.y * 2.0);
-ring = smoothstep(-0.4, 0.4, ring);
-
-// Fibers
-float fiber = fbmWood(wp * vec2(20.0, 1.0));
-
-float grain = mix(ring, fiber, 0.3);
-float shade = mix(0.7, 1.1, grain);
-
-diffuseColor.rgb *= mix(1.0, shade, uWoodIntensity);
-`
-      );
-  };
-
-  material.needsUpdate = true;
-}
-
-function applyHammeredMetalShader(
-  material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial,
-  opts?: { strength?: number; scale?: number }
-) {
-  const strength = opts?.strength ?? 0.15;
-  const scale = opts?.scale ?? 12.0;
-
-  const prev = material.onBeforeCompile;
-  material.onBeforeCompile = (shader, renderer) => {
-    try {
-      (prev as any).call(material as any, shader, renderer);
-    } catch {
-      // ignore
-    }
-    shader.uniforms.uMetalVarStrength = { value: strength };
-    shader.uniforms.uMetalVarScale = { value: scale };
-
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        "#include <common>",
-        `#include <common>\nvarying vec3 vWorldPos2;`
-      )
-      .replace(
-        "#include <begin_vertex>",
-        `#include <begin_vertex>\nvec4 wsPos2 = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos2 = instanceMatrix * wsPos2;\n#endif\nwsPos2 = modelMatrix * wsPos2;\nvWorldPos2 = wsPos2.xyz;`
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-varying vec3 vWorldPos2;
-uniform float uMetalVarStrength;
-uniform float uMetalVarScale;
-
-float metalHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-
-float hammeredNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    float md = 1.0;
-    for(int y=-1; y<=1; y++)
-    for(int x=-1; x<=1; x++) {
-        vec2 g = vec2(float(x), float(y));
-        vec2 o = vec2(metalHash(i + g), metalHash(i + g + 57.0));
-        vec2 r = g + o - f;
-        float d = length(r);
-        if(d < md) md = d;
-    }
-    return md;
-}`
-      )
-      .replace(
-        "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>
-float dents = hammeredNoise(vWorldPos2.xz * uMetalVarScale);
-float dentFactor = smoothstep(0.2, 0.8, dents);
-roughnessFactor = clamp(roughnessFactor + (dentFactor - 0.5) * uMetalVarStrength, 0.05, 0.9);`
-      )
-      .replace(
-        "#include <color_fragment>",
-        `#include <color_fragment>
-float cDents = hammeredNoise(vWorldPos2.xz * uMetalVarScale);
-float cFactor = smoothstep(0.25, 0.75, cDents);
-// High contrast for hammered look
-diffuseColor.rgb *= mix(0.7, 1.3, cFactor);`
-      );
-  };
-
-  material.needsUpdate = true;
-}
-
-function PieceModel({
-  path,
-  tint,
-  chessTheme,
-  side,
+function PulsingIndicatorMaterial({
+  color,
+  baseOpacity,
+  pulsingUntilMs,
 }: {
-  path: string;
-  tint: THREE.Color;
-  chessTheme?: string;
-  side?: "w" | "b";
+  color: string;
+  baseOpacity: number;
+  pulsingUntilMs: number;
 }) {
-  const gltf = useGLTF(path) as any;
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
 
-  const cloned = useMemo(() => {
-    const root: THREE.Object3D = gltf.scene.clone(true);
-    root.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+  useFrame(() => {
+    const mat = matRef.current;
+    if (!mat) return;
+    const now = Date.now();
+    if (pulsingUntilMs && now < pulsingUntilMs) {
+      const pulse = 0.5 + 0.5 * Math.sin(now / 90);
+      mat.opacity = Math.min(0.95, baseOpacity + pulse * 0.35);
+    } else {
+      mat.opacity = baseOpacity;
+    }
+  });
 
-      const srcMat = mesh.material as any;
-      if (!srcMat || !srcMat.isMaterial) return;
-      mesh.material = srcMat.clone();
-      const clonedMat = mesh.material as any;
-      if (clonedMat.color && clonedMat.color.isColor) {
-        clonedMat.color = clonedMat.color.clone();
-      }
-
-      if (chessTheme === "chess_glass") {
-        const isWhite = side === "w";
-        // Match ref: white = frosted/milky, black = clear glass.
-        const base = isWhite
-          ? new THREE.Color("#f7fbff")
-          : new THREE.Color("#0f141b");
-        const rim = isWhite
-          ? new THREE.Color("#ffffff")
-          : new THREE.Color("#e9f2ff");
-
-        if (clonedMat.color && clonedMat.color.isColor)
-          clonedMat.color.copy(base);
-        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.0;
-        if (typeof clonedMat.roughness === "number")
-          clonedMat.roughness = isWhite ? 0.92 : 0.03;
-        clonedMat.transparent = true;
-        clonedMat.opacity = isWhite ? 0.86 : 0.42;
-        // Clear glass blends better without writing depth.
-        clonedMat.depthWrite = isWhite;
-        (clonedMat as any).premultipliedAlpha = true;
-        if (clonedMat.emissive && clonedMat.emissive.isColor) {
-          clonedMat.emissive = clonedMat.emissive.clone();
-          clonedMat.emissive.copy(rim);
-          clonedMat.emissiveIntensity = isWhite ? 0.02 : 0.04;
-        }
-        if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = isWhite ? 0.8 : 1.6;
-
-        if (isWhite) {
-          applyMilkGlassShader(clonedMat, {
-            milkiness: 0.85,
-            bottomTint: new THREE.Color("#eef4ff"),
-          });
-          applyFresnelRim(clonedMat, rim, 2.2, 0.25);
-        } else {
-          applyClearGlassShader(clonedMat, {
-            scale: 1.0,
-            absorbStrength: 0.7,
-            bottomTint: new THREE.Color("#050607"),
-          });
-          applyFresnelRim(clonedMat, rim, 2.8, 0.22);
-        }
-      } else if (chessTheme === "chess_gold") {
-        const isWhite = side === "w";
-        const base = isWhite
-          ? new THREE.Color("#d8dee6")
-          : new THREE.Color("#ffd15a");
-        const rim = isWhite
-          ? new THREE.Color("#ffffff")
-          : new THREE.Color("#fff0c2");
-
-        if (clonedMat.color && clonedMat.color.isColor)
-          clonedMat.color.copy(base);
-        if (typeof clonedMat.metalness === "number")
-          clonedMat.metalness = isWhite ? 0.72 : 0.9;
-        if (typeof clonedMat.roughness === "number")
-          clonedMat.roughness = isWhite ? 0.34 : 0.2;
-        if (clonedMat.emissive && clonedMat.emissive.isColor) {
-          clonedMat.emissive = clonedMat.emissive.clone();
-          clonedMat.emissive.copy(rim);
-          clonedMat.emissiveIntensity = isWhite ? 0.05 : 0.09;
-        }
-        if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = isWhite ? 1.1 : 1.25;
-        applyHammeredMetalShader(clonedMat, {
-          strength: isWhite ? 0.15 : 0.2,
-          scale: 14.0,
-        });
-        applyFresnelRim(clonedMat, rim, 2.8, isWhite ? 0.24 : 0.28);
-      } else if (chessTheme === "chess_wood") {
-        if (clonedMat.color && clonedMat.color.isColor)
-          clonedMat.color.copy(tint);
-        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.05;
-        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.85;
-        if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = 0.35;
-        if (clonedMat.emissive && clonedMat.emissive.isColor) {
-          clonedMat.emissive = clonedMat.emissive.clone();
-          clonedMat.emissive.copy(tint.clone().multiplyScalar(0.02));
-          clonedMat.emissiveIntensity = 0.25;
-        }
-        applyWoodGrainShader(clonedMat, { scale: 11.5, intensity: 0.55 });
-      } else if (chessTheme === "chess_marble") {
-        const isWhite = side === "w";
-        // Marble shader using the same technique as the marble board
-        const darkBase = isWhite
-          ? new THREE.Color("#e8e8e8")
-          : new THREE.Color("#5e5e5e");
-        const lightBase = isWhite
-          ? new THREE.Color("#6a6560")
-          : new THREE.Color("#c0c0c0");
-
-        if (clonedMat.color && clonedMat.color.isColor)
-          clonedMat.color.copy(darkBase);
-        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.12;
-        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.25;
-        if (typeof clonedMat.envMapIntensity === "number")
-          clonedMat.envMapIntensity = 0.85;
-
-        // Apply marble shader
-        const prev = clonedMat.onBeforeCompile;
-        clonedMat.onBeforeCompile = (shader: any, renderer: any) => {
-          try {
-            (prev as any).call(clonedMat as any, shader, renderer);
-          } catch {
-            // ignore
-          }
-
-          shader.uniforms.uDarkBase = { value: darkBase };
-          shader.uniforms.uLightBase = { value: lightBase };
-          shader.uniforms.uIsWhite = { value: isWhite ? 1.0 : 0.0 };
-
-          shader.vertexShader = shader.vertexShader
-            .replace(
-              "#include <common>",
-              `#include <common>\nvarying vec3 vWorldPos;`
-            )
-            .replace(
-              "#include <begin_vertex>",
-              `#include <begin_vertex>\nvec4 wsPos = vec4(transformed, 1.0);\n#ifdef USE_INSTANCING\nwsPos = instanceMatrix * wsPos;\n#endif\nwsPos = modelMatrix * wsPos;\nvWorldPos = wsPos.xyz;`
-            );
-
-          shader.fragmentShader = shader.fragmentShader
-            .replace(
-              "#include <common>",
-              `#include <common>
-varying vec3 vWorldPos;
-uniform vec3 uDarkBase;
-uniform vec3 uLightBase;
-uniform float uIsWhite;
-
-vec2 hash2(vec2 p) {
-    p = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)));
-    return fract(sin(p)*43758.5453);
+  return (
+    <meshBasicMaterial
+      ref={matRef}
+      color={color}
+      transparent
+      opacity={baseOpacity}
+      blending={THREE.AdditiveBlending}
+      depthWrite={false}
+      polygonOffset
+      polygonOffsetFactor={-1}
+      polygonOffsetUnits={-1}
+    />
+  );
 }
 
-float voronoiCracks(vec2 p) {
-    vec2 n = floor(p);
-    vec2 f = fract(p);
-    float md = 8.0;
-    vec2 mg, mr;
-    
-    for(int j=-1; j<=1; j++)
-    for(int i=-1; i<=1; i++) {
-        vec2 g = vec2(float(i),float(j));
-        vec2 o = hash2(n + g);
-        vec2 r = g + o - f;
-        float d = dot(r,r);
-        if(d < md) {
-            md = d;
-            mr = r;
-            mg = g;
-        }
-    }
-    
-    md = 8.0;
-    for(int j=-1; j<=1; j++)
-    for(int i=-1; i<=1; i++) {
-        vec2 g = vec2(float(i),float(j));
-        vec2 o = hash2(n + g);
-        vec2 r = g + o - f;
-        if(dot(mr-r,mr-r) > 0.00001) {
-            md = min(md, dot(0.5*(mr+r), normalize(r-mr)));
-        }
-    }
-    return md;
-}`
-            )
-            .replace(
-              "#include <color_fragment>",
-              `#include <color_fragment>
-vec3 p = vWorldPos * 4.0;
-float cracks = voronoiCracks(p.xz + p.y * 0.5);
-float crackLine = 1.0 - smoothstep(0.0, 0.04, cracks);
+function CheckerPiece({
+  position,
+  tint,
+  side,
+  chessTheme,
+  king,
+  canMove,
+  onPick,
+}: {
+  position: [number, number, number];
+  tint: THREE.Color;
+  side: Side;
+  chessTheme?: string;
+  king: boolean;
+  canMove: boolean;
+  onPick: () => void;
+}) {
+  const gltf = useGLTF("/models/checker.glb") as any;
 
-float noise = 0.0;
-vec2 np = p.xz * 0.5;
-noise += (sin(np.x * 3.0 + sin(np.y * 2.0)) + 1.0) * 0.5;
+  const modelHeight = useMemo(() => {
+    const tmp = gltf.scene.clone(true);
+    tmp.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(tmp);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    // Fallback in case the model has no geometry yet.
+    return Number.isFinite(size.y) && size.y > 0 ? size.y : 1;
+  }, [gltf.scene]);
 
-vec3 baseColor = uDarkBase * (0.85 + noise * 0.3); // Subtle variance
-vec3 crackColor = uIsWhite > 0.5 ? vec3(0.2, 0.2, 0.25) : vec3(0.9, 0.9, 0.95);
+  const model = useMemo(() => {
+    const root = gltf.scene.clone(true);
+    root.traverse((obj: any) => {
+      if (obj && obj.isMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
 
-diffuseColor.rgb = mix(baseColor, crackColor, crackLine * 0.65);
-`
-            );
-        };
-        clonedMat.needsUpdate = true;
-      } else {
-        if (clonedMat.color && clonedMat.color.isColor)
-          clonedMat.color.copy(tint);
-        // Matte metallic look - more readable, less neon
-        if (typeof clonedMat.metalness === "number") clonedMat.metalness = 0.6;
-        if (typeof clonedMat.roughness === "number") clonedMat.roughness = 0.4;
-        if (clonedMat.emissive && clonedMat.emissive.isColor) {
-          clonedMat.emissive = clonedMat.emissive.clone();
-          clonedMat.emissive.copy(tint.clone().multiplyScalar(0.05));
-          clonedMat.emissiveIntensity = 0.5;
-        }
+        // Throw away GLB textures/materials and apply the exact chess theme shaders.
+        const themed = new THREE.MeshStandardMaterial();
+        applyChessThemeToMaterial(themed, { chessTheme, tint, side });
+        obj.material = themed;
       }
     });
-
-    // Orient upright and center the model on its base.
-    root.rotation.set(Math.PI / 2, 0, 0);
-    root.updateWorldMatrix(true, true);
-    const box = new THREE.Box3().setFromObject(root);
-    if (
-      Number.isFinite(box.min.x) &&
-      Number.isFinite(box.min.y) &&
-      Number.isFinite(box.min.z)
-    ) {
-      const center = box.getCenter(new THREE.Vector3());
-      // Center X/Z, but rest on the bottom Y
-      root.position.x -= center.x;
-      root.position.z -= center.z;
-      root.position.y -= box.min.y;
-      root.updateWorldMatrix(true, true);
-    }
-
     return root;
-  }, [gltf, tint, chessTheme, side]);
+  }, [gltf.scene, tint, chessTheme, side]);
 
-  return <primitive object={cloned} />;
+  const scale = 2.2;
+  const dy = 0.02;
+  // Stack the second piece using the actual GLB height to avoid big gaps.
+  const kingStackDy = modelHeight * scale * 0.9;
+
+  return (
+    <group
+      position={position}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onPick();
+      }}
+      onPointerEnter={() => {
+        if (canMove) document.body.style.cursor = "pointer";
+      }}
+      onPointerLeave={() => {
+        document.body.style.cursor = "default";
+      }}
+    >
+      <group scale={[scale, scale, scale]} position={[0, dy, 0]}>
+        <primitive object={model} />
+      </group>
+      {king ? (
+        <group
+          scale={[scale, scale, scale]}
+          position={[0, dy + kingStackDy, 0]}
+        >
+          <primitive object={model.clone(true)} />
+        </group>
+      ) : null}
+    </group>
+  );
 }
-
-const BOARD_TOP_Y = 0.08;
-const SQUARE_TOP_Y = 0.04;
 
 function MarbleTileMaterial({ color }: { color: string }) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
@@ -1046,127 +520,6 @@ function CozyGlowDecal({
   );
 }
 
-function easeInOut(t: number) {
-  // smoothstep
-  return t * t * (3 - 2 * t);
-}
-
-function AnimatedPiece({
-  square,
-  type,
-  color,
-  originVec,
-  squareSize,
-  animateFrom,
-  animSeq,
-  canMove,
-  mySide,
-  onPickPiece,
-  whiteTint,
-  blackTint,
-  chessTheme,
-}: {
-  square: Square;
-  type: string;
-  color: Side;
-  originVec: THREE.Vector3;
-  squareSize: number;
-  animateFrom: Square | null;
-  animSeq: number;
-  canMove: boolean;
-  mySide: Side | null;
-  onPickPiece: (sq: Square) => void;
-  whiteTint: THREE.Color;
-  blackTint: THREE.Color;
-  chessTheme?: string;
-}) {
-  const groupRef = useRef<THREE.Group>(null);
-  const animRef = useRef<{
-    seq: number;
-    startMs: number;
-    from: THREE.Vector3;
-    to: THREE.Vector3;
-  } | null>(null);
-
-  const finalPos = useMemo(
-    () => squareCenter(square, originVec, squareSize),
-    [square, originVec, squareSize]
-  );
-
-  useEffect(() => {
-    if (!animateFrom) {
-      animRef.current = null;
-      const g = groupRef.current;
-      if (g) g.position.set(finalPos.x, BOARD_TOP_Y, finalPos.z);
-      return;
-    }
-
-    const fromPos = squareCenter(animateFrom, originVec, squareSize);
-    animRef.current = {
-      seq: animSeq,
-      startMs: performance.now(),
-      from: fromPos,
-      to: finalPos,
-    };
-    const g = groupRef.current;
-    if (g) g.position.set(fromPos.x, BOARD_TOP_Y, fromPos.z);
-  }, [animateFrom, animSeq, originVec, squareSize, finalPos]);
-
-  useFrame(() => {
-    const g = groupRef.current;
-    if (!g) return;
-    const a = animRef.current;
-    if (!a) {
-      g.position.set(finalPos.x, BOARD_TOP_Y, finalPos.z);
-      return;
-    }
-    if (a.seq !== animSeq) {
-      animRef.current = null;
-      g.position.set(finalPos.x, BOARD_TOP_Y, finalPos.z);
-      return;
-    }
-
-    const dur = 240;
-    const t = (performance.now() - a.startMs) / dur;
-    const k = easeInOut(clamp(t, 0, 1));
-    const x = THREE.MathUtils.lerp(a.from.x, a.to.x, k);
-    const z = THREE.MathUtils.lerp(a.from.z, a.to.z, k);
-    g.position.set(x, BOARD_TOP_Y, z);
-
-    if (t >= 1) {
-      animRef.current = null;
-    }
-  });
-
-  const tint = color === "w" ? whiteTint : blackTint;
-  const scale = 11.25;
-
-  return (
-    <group
-      ref={groupRef}
-      onPointerDown={(e) => {
-        e.stopPropagation();
-        onPickPiece(square);
-      }}
-      onPointerEnter={() => {
-        if (canMove) document.body.style.cursor = "pointer";
-      }}
-      onPointerLeave={() => {
-        document.body.style.cursor = "default";
-      }}
-    >
-      <group scale={[scale, scale, scale]}>
-        <PieceModel
-          path={piecePath(type)}
-          tint={tint}
-          chessTheme={chessTheme}
-          side={color}
-        />
-      </group>
-    </group>
-  );
-}
-
 function JoinPad({
   label,
   center,
@@ -1231,7 +584,7 @@ function JoinPad({
         anchorX="center"
         anchorY="middle"
         outlineWidth={0.008}
-        outlineColor={active ? "#00ffff" : "transparent"}
+        outlineColor={active ? "#00ffff" : "#000000"}
         onPointerDown={handleClick}
       >
         {label}
@@ -1249,6 +602,164 @@ function JoinPad({
   );
 }
 
+function ControlTV({
+  center,
+  active,
+  hintText,
+  onClick,
+}: {
+  center: THREE.Vector3;
+  active: boolean;
+  hintText?: string | null;
+  onClick: (e: any) => void;
+}) {
+  const baseY = center.y;
+  const standY = baseY + 0.55;
+  const screenY = baseY + 1.08;
+
+  return (
+    <group
+      position={[center.x, center.y, center.z]}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onClick(e);
+      }}
+      onPointerEnter={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "pointer";
+      }}
+      onPointerLeave={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "default";
+      }}
+    >
+      {/* Base */}
+      <mesh position={[0, 0.09, 0]} castShadow>
+        <cylinderGeometry args={[0.26, 0.32, 0.18, 18]} />
+        <meshStandardMaterial
+          color="#0a0f18"
+          roughness={0.4}
+          metalness={0.55}
+          emissive="#04080f"
+          emissiveIntensity={0.5}
+        />
+      </mesh>
+
+      {/* Stand */}
+      <mesh position={[0, standY - baseY, 0]} castShadow>
+        <cylinderGeometry args={[0.05, 0.07, 0.8, 18]} />
+        <meshStandardMaterial
+          color="#0d1b2a"
+          roughness={0.35}
+          metalness={0.65}
+          emissive="#021019"
+          emissiveIntensity={0.35}
+        />
+      </mesh>
+
+      {/* Accent ring */}
+      <mesh position={[0, standY + 0.3, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[0.14, 0.012, 12, 42]} />
+        <meshBasicMaterial
+          color={active ? "#00ffff" : "#6bc7ff"}
+          transparent
+          opacity={active ? 0.32 : 0.18}
+        />
+      </mesh>
+
+      {/* Screen */}
+      <group position={[0, screenY - baseY, 0]}>
+        <RoundedBox args={[0.98, 0.64, 0.08]} radius={0.06} smoothness={6}>
+          <meshStandardMaterial
+            color="#05070a"
+            roughness={0.22}
+            metalness={0.82}
+            emissive="#04060a"
+            emissiveIntensity={0.45}
+          />
+        </RoundedBox>
+        <mesh position={[0, 0, 0.052]}>
+          <planeGeometry args={[0.9, 0.54]} />
+          <meshBasicMaterial
+            color={active ? "#00ffff" : "#6bc7ff"}
+            transparent
+            opacity={active ? 0.24 : 0.14}
+          />
+        </mesh>
+        <mesh position={[0, 0, -0.052]} rotation={[0, Math.PI, 0]}>
+          <planeGeometry args={[0.9, 0.54]} />
+          <meshBasicMaterial
+            color={active ? "#00ffff" : "#6bc7ff"}
+            transparent
+            opacity={active ? 0.24 : 0.14}
+          />
+        </mesh>
+        <Text
+          position={[0, 0, 0.058]}
+          fontSize={0.12}
+          color={active ? "#00ffff" : "#a8cfff"}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.006}
+          outlineColor="#000000"
+          fontWeight="bold"
+        >
+          {active ? "CLOSE" : "CONTROLS"}
+        </Text>
+        <Text
+          position={[0, 0, -0.058]}
+          rotation={[0, Math.PI, 0]}
+          fontSize={0.12}
+          color={active ? "#00ffff" : "#a8cfff"}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.006}
+          outlineColor="#000000"
+          fontWeight="bold"
+        >
+          {active ? "CLOSE" : "CONTROLS"}
+        </Text>
+      </group>
+
+      {hintText ? (
+        <group position={[0, screenY - baseY + 0.55, 0]}>
+          <RoundedBox args={[1.24, 0.24, 0.04]} radius={0.05} smoothness={5}>
+            <meshBasicMaterial
+              color="#000000"
+              transparent
+              opacity={0.55}
+              depthWrite={false}
+            />
+          </RoundedBox>
+          <Text
+            position={[0, 0, 0.03]}
+            fontSize={0.1}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.004}
+            outlineColor="#000000"
+          >
+            {hintText}
+          </Text>
+          <Text
+            position={[0, 0, -0.03]}
+            rotation={[0, Math.PI, 0]}
+            fontSize={0.1}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.004}
+            outlineColor="#000000"
+          >
+            {hintText}
+          </Text>
+        </group>
+      ) : null}
+    </group>
+  );
+}
+
 export function ScifiChess({
   roomId,
   boardKey,
@@ -1257,11 +768,18 @@ export function ScifiChess({
   selfId,
   selfName,
   joinLockedBoardKey,
+  leaveAllNonce,
+  leaveAllExceptBoardKey,
   onJoinIntent,
   onSelfSeatChange,
   onRequestMove,
+  onCenterCamera,
+  onBoardControls,
+  controlsOpen,
+  board2dOpen,
   chessTheme,
   chessBoardTheme,
+  gameMode = "chess",
 }: {
   roomId: string;
   boardKey: string;
@@ -1270,21 +788,177 @@ export function ScifiChess({
   selfId: string;
   selfName?: string;
   joinLockedBoardKey?: string | null;
+  leaveAllNonce?: number;
+  leaveAllExceptBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
-  onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
+  onSelfSeatChange?: (boardKey: string, isSeated: boolean) => void;
   onRequestMove?: (
     dest: Vec3,
     opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
   ) => void;
+  onCenterCamera?: (target: Vec3) => void;
+  onBoardControls?: (event: BoardControlsEvent) => void;
+  controlsOpen?: boolean;
+  board2dOpen?: boolean;
   chessTheme?: string;
   chessBoardTheme?: string;
+  gameMode?: "chess" | "checkers";
 }) {
-  const originVec = useMemo(
-    () => new THREE.Vector3(origin[0], origin[1], origin[2]),
-    [origin]
-  );
-  const squareSize = 0.6;
-  const boardSize = squareSize * 8;
+  const { playMove, playCapture, playSelect, playWarning, playClick } =
+    useChessSounds();
+
+  const chessGame = useChessGame({
+    enabled: gameMode === "chess",
+    roomId,
+    boardKey,
+    origin,
+    selfPositionRef,
+    selfId,
+    selfName,
+    joinLockedBoardKey,
+    leaveAllNonce,
+    leaveAllExceptBoardKey,
+    onJoinIntent,
+    onSelfSeatChange,
+    onRequestMove,
+    onCenterCamera,
+    onBoardControls,
+    controlsOpen,
+    board2dOpen,
+    chessTheme,
+    lobby: "scifi",
+    sounds: {
+      move: playMove,
+      capture: playCapture,
+      select: playSelect,
+      warning: playWarning,
+      click: playClick,
+    },
+  });
+
+  const checkersGame = useCheckersGame({
+    enabled: gameMode === "checkers",
+    roomId,
+    boardKey,
+    origin,
+    selfPositionRef,
+    selfId,
+    selfName,
+    joinLockedBoardKey,
+    leaveAllNonce,
+    leaveAllExceptBoardKey,
+    onJoinIntent,
+    onSelfSeatChange,
+    onRequestMove,
+    onCenterCamera,
+    onBoardControls,
+    controlsOpen,
+    board2dOpen,
+    lobby: "scifi",
+    sounds: {
+      move: playMove,
+      capture: playCapture,
+      select: playSelect,
+      warning: playWarning,
+      click: playClick,
+    },
+  });
+
+  const originVec = chessGame.originVec;
+  const squareSize = chessGame.squareSize;
+  const boardSize = chessGame.boardSize;
+
+  const activeTurn =
+    gameMode === "checkers" ? checkersGame.turn : chessGame.turn;
+  const activeMySides =
+    gameMode === "checkers" ? checkersGame.mySides : chessGame.mySides;
+  const activeMyPrimarySide =
+    gameMode === "checkers"
+      ? checkersGame.myPrimarySide
+      : chessGame.myPrimarySide;
+  const activeIsSeated =
+    gameMode === "checkers" ? checkersGame.isSeated : chessGame.isSeated;
+  const activeSelected = (
+    gameMode === "checkers" ? checkersGame.selected : chessGame.selected
+  ) as string | null;
+  const activeLegalTargets = (
+    gameMode === "checkers" ? checkersGame.legalTargets : chessGame.legalTargets
+  ) as string[];
+  const activeLastMove =
+    gameMode === "checkers" ? checkersGame.lastMove : chessGame.lastMove;
+  const activePendingJoinSide =
+    gameMode === "checkers"
+      ? checkersGame.pendingJoinSide
+      : chessGame.pendingJoinSide;
+  const activeClocks =
+    gameMode === "checkers" ? checkersGame.clocks : chessGame.clocks;
+  const activeSeats =
+    gameMode === "checkers"
+      ? checkersGame.netState.seats
+      : chessGame.netState.seats;
+  const activeSelfConnId =
+    gameMode === "checkers" ? checkersGame.gameSelfId : chessGame.chessSelfId;
+
+  const activeEmitControlsOpen =
+    gameMode === "checkers"
+      ? checkersGame.emitControlsOpen
+      : chessGame.emitControlsOpen;
+  const activeOnPickSquare = (sq: string) => {
+    if (gameMode === "checkers") {
+      checkersGame.onPickSquare(sq);
+      return;
+    }
+    chessGame.onPickSquare(sq as any);
+  };
+  const activeOnPickPiece = (sq: string) => {
+    if (gameMode === "checkers") {
+      checkersGame.onPickPiece(sq);
+      return;
+    }
+    chessGame.onPickPiece(sq as any);
+  };
+  const activeClickJoin = (side: Side) => {
+    if (gameMode === "checkers") {
+      checkersGame.clickJoin(side);
+      return;
+    }
+    chessGame.clickJoin(side);
+  };
+  const activeRequestSitAt = (seatX: number, seatZ: number) => {
+    if (gameMode === "checkers") {
+      checkersGame.requestSitAt(seatX, seatZ);
+      return;
+    }
+    chessGame.requestSitAt(seatX, seatZ);
+  };
+  const activeResultLabel =
+    gameMode === "checkers" ? checkersGame.resultLabel : chessGame.resultLabel;
+
+  const controlsHintTimerRef = useRef<number | null>(null);
+  const [controlsHintOpen, setControlsHintOpen] = useState(false);
+
+  const showControlsHint = () => {
+    setControlsHintOpen(true);
+    if (controlsHintTimerRef.current !== null) {
+      window.clearTimeout(controlsHintTimerRef.current);
+    }
+    controlsHintTimerRef.current = window.setTimeout(() => {
+      setControlsHintOpen(false);
+      controlsHintTimerRef.current = null;
+    }, 2200);
+  };
+
+  useEffect(() => {
+    if (activeIsSeated) setControlsHintOpen(false);
+  }, [activeIsSeated]);
+
+  useEffect(() => {
+    return () => {
+      if (controlsHintTimerRef.current !== null) {
+        window.clearTimeout(controlsHintTimerRef.current);
+      }
+    };
+  }, []);
 
   // Brighter, more readable colors - Chrome silver vs Deep blue (unless wood set equipped)
   const whiteTint = useMemo(() => {
@@ -1349,249 +1023,6 @@ export function ScifiChess({
     }
   }, [chessBoardTheme]);
 
-  const socketRef = useRef<PartySocket | null>(null);
-  const [chessSelfId, setChessSelfId] = useState<string>("");
-  const [chessConnected, setChessConnected] = useState(false);
-  const chessConnectedRef = useRef(false);
-  const pendingJoinRef = useRef<Side | null>(null);
-  const [pendingJoinSide, setPendingJoinSide] = useState<Side | null>(null);
-
-  useEffect(() => {
-    chessConnectedRef.current = chessConnected;
-  }, [chessConnected]);
-
-  const initialFen = useMemo(() => new Chess().fen(), []);
-  const defaultClock = useMemo<ClockState>(() => {
-    const baseMs = 5 * 60 * 1000;
-    return {
-      baseMs,
-      remainingMs: { w: baseMs, b: baseMs },
-      running: false,
-      active: "w",
-      lastTickMs: null,
-    };
-  }, []);
-  const [netState, setNetState] = useState<ChessNetState>({
-    seats: { w: null, b: null },
-    fen: initialFen,
-    seq: 0,
-    clock: defaultClock,
-    result: null,
-    lastMove: null,
-  });
-
-  const mySide: Side | null = useMemo(() => {
-    if (netState.seats.w?.connId === chessSelfId) return "w";
-    if (netState.seats.b?.connId === chessSelfId) return "b";
-    return null;
-  }, [netState.seats.w, netState.seats.b, chessSelfId]);
-
-  const chess = useMemo(() => new Chess(netState.fen), [netState.fen]);
-
-  const turn = chess.turn();
-
-  const [selected, setSelected] = useState<Square | null>(null);
-  const [legalTargets, setLegalTargets] = useState<Square[]>([]);
-  const lastMove = netState.lastMove;
-
-  // Drive clock rendering while it's running.
-  const [clockNow, setClockNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!netState.clock.running) return;
-    const id = window.setInterval(() => setClockNow(Date.now()), 200);
-    return () => window.clearInterval(id);
-  }, [netState.clock.running]);
-
-  const send = (msg: ChessSendMessage) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(msg));
-    }
-  };
-
-  useEffect(() => {
-    onSelfSeatChange?.(boardKey, mySide);
-    if (mySide) setPendingJoinSide(null);
-  }, [boardKey, mySide, onSelfSeatChange]);
-
-  useEffect(() => {
-    if (!chessConnected) return;
-
-    console.log(`[Chess] Connecting to room ${roomId}-chess-${boardKey}`);
-    const socket = new PartySocket({
-      host: PARTYKIT_HOST,
-      party: "chess",
-      room: `${roomId}-chess-${boardKey}`,
-    });
-
-    socketRef.current = socket;
-
-    socket.addEventListener("open", () => {
-      console.log("[Chess] Connected");
-
-      // IMPORTANT: PartyKit ids are per-connection. Use the chess socket id
-      // for seat ownership checks and move permissions.
-      setChessSelfId(socket.id);
-
-      // Request any pending join
-      const pendingSide = pendingJoinRef.current;
-      if (pendingSide) {
-        pendingJoinRef.current = null;
-        send({ type: "join", side: pendingSide });
-      }
-    });
-
-    socket.addEventListener("message", (event) => {
-      try {
-        const msg = JSON.parse(event.data) as ChessMessage;
-
-        if (msg.type === "state") {
-          setNetState((prev) => {
-            if (msg.state.seq < prev.seq) return prev;
-            if (msg.state.seq === prev.seq && msg.state.fen === prev.fen)
-              return prev;
-            return msg.state;
-          });
-        }
-      } catch (err) {
-        console.error("[Chess] Error parsing message:", err);
-      }
-    });
-
-    socket.addEventListener("close", () => {
-      console.log("[Chess] Disconnected");
-    });
-
-    return () => {
-      socket.close();
-    };
-  }, [chessConnected, roomId, boardKey]);
-
-  const lastSeenSeqRef = useRef<number>(-1);
-  useEffect(() => {
-    if (netState.seq === lastSeenSeqRef.current) return;
-    lastSeenSeqRef.current = netState.seq;
-    setSelected(null);
-    setLegalTargets([]);
-  }, [netState.seq]);
-
-  const requestJoin = (side: Side) => {
-    const seat = netState.seats[side];
-    if (seat && seat.connId !== chessSelfId) return; // Taken by someone else
-    send({ type: "join", side, playerId: selfId, name: selfName });
-  };
-
-  const requestLeave = (side: Side) => {
-    send({ type: "leave", side });
-  };
-
-  const submitMove = (
-    from: Square,
-    to: Square,
-    promotion?: "q" | "r" | "b" | "n"
-  ) => {
-    if (!mySide) return;
-    if (netState.result) return;
-    if (turn !== mySide) return;
-
-    send({ type: "move", from, to, promotion });
-  };
-
-  const onPickSquare = (square: Square) => {
-    if (netState.result) return;
-    // If we have a selection and click a legal target, move there
-    if (selected && legalTargets.includes(square)) {
-      const piece = chess.get(selected);
-      const isPawn = piece?.type === "p";
-      const toRank = Number(square[1]);
-      const promotion =
-        isPawn &&
-        ((piece?.color === "w" && toRank === 8) ||
-          (piece?.color === "b" && toRank === 1))
-          ? "q"
-          : undefined;
-
-      submitMove(selected, square, promotion);
-      setSelected(null);
-      setLegalTargets([]);
-      return;
-    }
-
-    // Check if there's a piece on this square we can select
-    const piece = chess.get(square);
-
-    // If clicking our own piece, select it
-    if (piece && mySide && turn === mySide && piece.color === mySide) {
-      setSelected(square);
-      const moves = chess.moves({ square, verbose: true }) as any[];
-      const targets = moves.map((m) => m.to).filter(isSquare);
-      setLegalTargets(targets);
-      return;
-    }
-
-    // Otherwise deselect
-    setSelected(null);
-    setLegalTargets([]);
-  };
-
-  const onPickPiece = (square: Square) => {
-    // Clicking a piece is the same as clicking its square
-    onPickSquare(square);
-  };
-
-  useFrame(({ clock }) => {
-    const pos = selfPositionRef.current;
-    if (!pos) return;
-
-    // Only connect to the chess room when the player is near the board.
-    // This avoids doubling WebRTC room overhead for everyone.
-    if (!chessConnectedRef.current) {
-      const dx = pos.x - originVec.x;
-      const dz = pos.z - originVec.z;
-      const near = dx * dx + dz * dz < 12 * 12;
-      if (near) {
-        chessConnectedRef.current = true;
-        setChessConnected(true);
-      }
-      return;
-    }
-
-    void clock; // keep signature stable; no per-frame join behavior anymore
-  });
-
-  const pieces = useMemo(() => {
-    const out: Array<{ square: Square; type: string; color: Side }> = [];
-    const board = chess.board(); // ranks 8..1
-
-    for (let r = 0; r < 8; r++) {
-      for (let f = 0; f < 8; f++) {
-        const p = board[r]?.[f];
-        if (!p) continue;
-        const file = FILES[f]!;
-        const rank = 8 - r;
-        const sq = `${file}${rank}`;
-        if (!isSquare(sq)) continue;
-        out.push({ square: sq, type: p.type, color: p.color });
-      }
-    }
-
-    return out;
-  }, [chess]);
-
-  const animatedFromByTo = useMemo(() => {
-    const map = new Map<Square, Square>();
-    if (!lastMove) return map;
-
-    map.set(lastMove.to, lastMove.from);
-
-    // Castling rook animation: infer rook move from king move.
-    if (lastMove.from === "e1" && lastMove.to === "g1") map.set("f1", "h1");
-    if (lastMove.from === "e1" && lastMove.to === "c1") map.set("d1", "a1");
-    if (lastMove.from === "e8" && lastMove.to === "g8") map.set("f8", "h8");
-    if (lastMove.from === "e8" && lastMove.to === "c8") map.set("d8", "a8");
-
-    return map;
-  }, [lastMove]);
-
   const padOffset = boardSize / 2 + 1.1;
   const padSize: [number, number] = [2.1, 0.7];
   const whitePadCenter = useMemo(
@@ -1602,123 +1033,11 @@ export function ScifiChess({
     () => new THREE.Vector3(originVec.x, 0.06, originVec.z - padOffset),
     [originVec, padOffset]
   );
-
-  const joinScheduleRef = useRef<number | null>(null);
-
-  const clickJoin = (side: Side) => {
-    if (joinLockedBoardKey && joinLockedBoardKey !== boardKey) return;
-
-    // Lock the user's intent globally so they can't start joining another board.
-    onJoinIntent?.(boardKey);
-    setPendingJoinSide(side);
-
-    // Avoid doing heavy work inside the click handler (socket connect can hitch).
-    if (joinScheduleRef.current) {
-      window.clearTimeout(joinScheduleRef.current);
-      joinScheduleRef.current = null;
-    }
-
-    joinScheduleRef.current = window.setTimeout(() => {
-      joinScheduleRef.current = null;
-
-      // Ensure we are connected, then join.
-      if (!chessConnectedRef.current) {
-        pendingJoinRef.current = side;
-        chessConnectedRef.current = true;
-        setChessConnected(true);
-        return;
-      }
-
-      // If socket isn't open yet, queue the join.
-      if (
-        !socketRef.current ||
-        socketRef.current.readyState !== WebSocket.OPEN
-      ) {
-        pendingJoinRef.current = side;
-        return;
-      }
-
-      // Toggle behavior:
-      // - Clicking your current side leaves (frees seat)
-      // - Clicking the other side switches
-      if (mySide === side) {
-        requestLeave(side);
-        setPendingJoinSide(null);
-        return;
-      }
-
-      if (mySide) requestLeave(mySide);
-      requestJoin(side);
-    }, 0);
-  };
-
-  const requestSitAt = (seatX: number, seatZ: number) => {
-    if (!onRequestMove) return;
-    const dx = originVec.x - seatX;
-    const dz = originVec.z - seatZ;
-    const face = Math.atan2(dx, dz);
-    onRequestMove([seatX, 0.36, seatZ], {
-      rotY: face,
-      sit: true,
-      lookAtTarget: [originVec.x, originVec.y, originVec.z],
-    });
-  };
-
-  const clocks = useMemo(() => {
-    const c = netState.clock;
-    const now = netState.clock.running ? clockNow : Date.now();
-    const remaining = { ...c.remainingMs };
-    if (c.running && c.lastTickMs !== null) {
-      const elapsed = Math.max(0, now - c.lastTickMs);
-      remaining[c.active] = Math.max(0, remaining[c.active] - elapsed);
-    }
-    return {
-      remaining,
-      active: c.running ? c.active : null,
-      baseMs: c.baseMs,
-      running: c.running,
-    };
-  }, [netState.clock, clockNow]);
-
-  const timeIndex = useMemo(() => {
-    const baseSeconds = Math.round(clocks.baseMs / 1000);
-    let bestIdx = 0;
-    let bestDist = Number.POSITIVE_INFINITY;
-    TIME_OPTIONS_SECONDS.forEach((s, idx) => {
-      const d = Math.abs(s - baseSeconds);
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx = idx;
-      }
-    });
-    return bestIdx;
-  }, [clocks.baseMs]);
-
-  const canConfigure =
-    !!mySide &&
-    !netState.clock.running &&
-    !netState.result &&
-    netState.fen === initialFen;
-
-  const setTimeControlByIndex = (nextIdx: number) => {
-    if (!canConfigure) return;
-    const idx = clamp(nextIdx, 0, TIME_OPTIONS_SECONDS.length - 1);
-    const secs = TIME_OPTIONS_SECONDS[idx]!;
-    send({ type: "setTime", baseSeconds: secs });
-  };
-
-  const clickReset = () => {
-    if (!mySide) return;
-    send({ type: "reset" });
-  };
-
-  const resultLabel = useMemo(() => {
-    const r = netState.result;
-    if (!r) return null;
-    if (r.type === "timeout") return `${winnerLabel(r.winner)} wins (time)`;
-    if (r.type === "checkmate") return `${winnerLabel(r.winner)} wins (mate)`;
-    return `Draw (${r.reason})`;
-  }, [netState.result]);
+  const controlPadCenter = useMemo(
+    () =>
+      new THREE.Vector3(originVec.x + boardSize / 2 + 1.6, 0.06, originVec.z),
+    [originVec, boardSize]
+  );
 
   return (
     <group>
@@ -1762,7 +1081,7 @@ export function ScifiChess({
       />
 
       {/* Result banner */}
-      {resultLabel ? (
+      {activeResultLabel ? (
         <Text
           position={[originVec.x, originVec.y + 1.5, originVec.z]}
           fontSize={0.32}
@@ -1772,7 +1091,7 @@ export function ScifiChess({
           outlineWidth={0.02}
           outlineColor="#000"
         >
-          {resultLabel}
+          {activeResultLabel}
         </Text>
       ) : null}
 
@@ -1792,7 +1111,10 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 1.35);
+            activeRequestSitAt(
+              originVec.x - 3.5,
+              originVec.z + padOffset + 1.35
+            );
           }}
         >
           <boxGeometry args={[2.9, 0.1, 0.85]} />
@@ -1872,7 +1194,10 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 1.35);
+            activeRequestSitAt(
+              originVec.x + 3.5,
+              originVec.z + padOffset + 1.35
+            );
           }}
         >
           <boxGeometry args={[2.9, 0.1, 0.85]} />
@@ -1952,7 +1277,10 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 1.35);
+            activeRequestSitAt(
+              originVec.x - 3.5,
+              originVec.z - padOffset - 1.35
+            );
           }}
         >
           <boxGeometry args={[2.9, 0.1, 0.85]} />
@@ -2030,7 +1358,10 @@ export function ScifiChess({
           }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 1.35);
+            activeRequestSitAt(
+              originVec.x + 3.5,
+              originVec.z - padOffset - 1.35
+            );
           }}
         >
           <boxGeometry args={[2.9, 0.1, 0.85]} />
@@ -2198,16 +1529,22 @@ export function ScifiChess({
           const z = (rankFromTop - 3.5) * squareSize;
           const isDark = (file + rankFromTop) % 2 === 1;
 
-          const isTarget = legalTargets.includes(square as any);
-          const isSel = selected === (square as any);
-          const isLastMoveFrom = lastMove?.from === square;
-          const isLastMoveTo = lastMove?.to === square;
-          const pieceOnSquare = chess.get(square as Square);
+          const isTarget = activeLegalTargets.includes(square);
+          const isSel = activeSelected === square;
+          const isLastMoveFrom = (activeLastMove as any)?.from === square;
+          const isLastMoveTo = (activeLastMove as any)?.to === square;
+          const pieceOnSquare =
+            gameMode === "checkers"
+              ? checkersGame.pieces.find((p) => p.square === square)
+              : chessGame.pieces.find((p) => p.square === square);
           const canInteract =
             isTarget ||
             (pieceOnSquare &&
-              mySide === pieceOnSquare.color &&
-              turn === mySide);
+              activeMySides.has(pieceOnSquare.color) &&
+              activeTurn === pieceOnSquare.color &&
+              (gameMode !== "checkers" ||
+                !checkersGame.netState.forcedFrom ||
+                checkersGame.netState.forcedFrom === square));
 
           return (
             <group
@@ -2215,7 +1552,7 @@ export function ScifiChess({
               position={[x, 0, z]}
               onPointerDown={(e) => {
                 e.stopPropagation();
-                onPickSquare(square as any);
+                activeOnPickSquare(square);
               }}
               onPointerEnter={() => {
                 if (canInteract) document.body.style.cursor = "pointer";
@@ -2305,15 +1642,15 @@ export function ScifiChess({
                   renderOrder={2}
                 >
                   <planeGeometry args={[squareSize * 0.9, squareSize * 0.9]} />
-                  <meshBasicMaterial
+                  <PulsingIndicatorMaterial
                     color="#00ffff"
-                    transparent
-                    opacity={0.2}
-                    blending={THREE.AdditiveBlending}
-                    depthWrite={false}
-                    polygonOffset
-                    polygonOffsetFactor={-1}
-                    polygonOffsetUnits={-1}
+                    baseOpacity={0.2}
+                    pulsingUntilMs={
+                      gameMode === "checkers" &&
+                      checkersGame.netState.forcedFrom
+                        ? checkersGame.pulseTargetsUntilMs
+                        : 0
+                    }
                   />
                 </mesh>
               )}
@@ -2368,139 +1705,123 @@ export function ScifiChess({
 
       {/* Join pads */}
       <JoinPad
-        label={`${formatClock(clocks.remaining.w)}\n${
-          netState.seats.w
-            ? netState.seats.w.name || "White"
-            : pendingJoinSide === "w"
+        label={`${formatClock(activeClocks.remaining.w)}\n${
+          activeSeats.w
+            ? activeSeats.w.name || "White"
+            : activePendingJoinSide === "w"
             ? "Joining…"
             : "Join White"
         }`}
         center={whitePadCenter}
         size={padSize}
-        active={mySide === "w"}
+        active={activeMySides.has("w")}
         disabled={
           (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
-          pendingJoinSide === "b" ||
-          (!!netState.seats.w && netState.seats.w.connId !== chessSelfId)
+          activePendingJoinSide === "b" ||
+          (!!activeSeats.w && activeSeats.w.connId !== activeSelfConnId)
         }
-        onClick={() => clickJoin("w")}
+        onClick={() => activeClickJoin("w")}
       />
       <JoinPad
-        label={`${formatClock(clocks.remaining.b)}\n${
-          netState.seats.b
-            ? netState.seats.b.name || "Black"
-            : pendingJoinSide === "b"
+        label={`${formatClock(activeClocks.remaining.b)}\n${
+          activeSeats.b
+            ? activeSeats.b.name || "Black"
+            : activePendingJoinSide === "b"
             ? "Joining…"
             : "Join Black"
         }`}
         center={blackPadCenter}
         size={padSize}
-        active={mySide === "b"}
+        active={activeMySides.has("b")}
         disabled={
           (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
-          pendingJoinSide === "w" ||
-          (!!netState.seats.b && netState.seats.b.connId !== chessSelfId)
+          activePendingJoinSide === "w" ||
+          (!!activeSeats.b && activeSeats.b.connId !== activeSelfConnId)
         }
-        onClick={() => clickJoin("b")}
+        onClick={() => activeClickJoin("b")}
       />
 
-      {/* Time control + reset (right side of board) */}
-      {(() => {
-        const controlX = originVec.x + boardSize / 2 + 2.6;
-        const controlZ = originVec.z;
-        const smallSize: [number, number] = [0.9, 0.6];
-        const leftCenter = new THREE.Vector3(
-          controlX - 1.15,
-          0.06,
-          controlZ + 1.2
-        );
-        const rightCenter = new THREE.Vector3(
-          controlX + 1.15,
-          0.06,
-          controlZ + 1.2
-        );
-        const resetCenter = new THREE.Vector3(controlX, 0.06, controlZ - 1.0);
-        return (
-          <group>
-            <JoinPad
-              label="-"
-              center={leftCenter}
-              size={smallSize}
-              active={false}
-              disabled={!canConfigure || timeIndex === 0}
-              onClick={() => setTimeControlByIndex(timeIndex - 1)}
-            />
-            <JoinPad
-              label="+"
-              center={rightCenter}
-              size={smallSize}
-              active={false}
-              disabled={
-                !canConfigure || timeIndex === TIME_OPTIONS_SECONDS.length - 1
-              }
-              onClick={() => setTimeControlByIndex(timeIndex + 1)}
-            />
-            <Text
-              position={[controlX, 0.48, controlZ + 1.2]}
-              rotation={[-Math.PI / 2, 0, 0]}
-              fontSize={0.18}
-              color="#00ffff"
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.008}
-              outlineColor="transparent"
-            >
-              {`Time ${Math.round(clocks.baseMs / 60000)}m`}
-            </Text>
-            <JoinPad
-              label="Reset"
-              center={resetCenter}
-              size={[2.0, 0.7]}
-              active={false}
-              disabled={!mySide}
-              onClick={clickReset}
-            />
-          </group>
-        );
-      })()}
+      {/* Control console / TV */}
+      <ControlTV
+        center={controlPadCenter}
+        active={!!controlsOpen}
+        hintText={controlsHintOpen ? "Join a side first" : null}
+        onClick={() => {
+          if (!activeIsSeated) {
+            showControlsHint();
+            return;
+          }
+          try {
+            playClick();
+          } catch {
+            // ignore
+          }
+          if (controlsOpen) {
+            onBoardControls?.({ type: "close", boardKey });
+            return;
+          }
+          activeEmitControlsOpen();
+        }}
+      />
 
       {/* Pieces */}
-      {pieces.map((p) => {
-        const isMyPiece = mySide === p.color;
-        const canMove = turn === p.color && isMyPiece;
-        const animateFrom = animatedFromByTo.get(p.square) ?? null;
+      {gameMode === "checkers"
+        ? checkersGame.pieces.map((p) => {
+            const file = p.square.charCodeAt(0) - 97;
+            const rank = Number(p.square[1]);
+            const rankFromTop = 8 - rank;
+            const x = (file - 3.5) * squareSize;
+            const z = (rankFromTop - 3.5) * squareSize;
 
-        // Keep key stable for the duration of a move animation.
-        const animKey = animateFrom
-          ? `anim:${netState.seq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
-          : `static:${p.color}:${p.type}:${p.square}`;
+            const tint = p.color === "w" ? whiteTint : blackTint;
+            const isMyPiece = activeMySides.has(p.color);
+            const canMove = activeTurn === p.color && isMyPiece;
 
-        return (
-          <AnimatedPiece
-            key={animKey}
-            square={p.square}
-            type={p.type}
-            color={p.color}
-            originVec={originVec}
-            squareSize={squareSize}
-            animateFrom={animateFrom}
-            animSeq={netState.seq}
-            canMove={canMove}
-            mySide={mySide}
-            onPickPiece={onPickPiece}
-            whiteTint={whiteTint}
-            blackTint={blackTint}
-            chessTheme={chessTheme}
-          />
-        );
-      })}
+            const y = originVec.y + SQUARE_TOP_Y;
+            return (
+              <CheckerPiece
+                key={`${p.color}:${p.king ? "k" : "m"}:${p.square}`}
+                position={[originVec.x + x, y, originVec.z + z]}
+                tint={tint}
+                side={p.color}
+                chessTheme={chessTheme}
+                king={p.king}
+                canMove={canMove}
+                onPick={() => activeOnPickPiece(p.square)}
+              />
+            );
+          })
+        : chessGame.pieces.map((p) => {
+            const isMyPiece = activeMySides.has(p.color);
+            const canMove = activeTurn === p.color && isMyPiece;
+            const animateFrom =
+              chessGame.animatedFromByTo.get(p.square) ?? null;
+
+            const animKey = animateFrom
+              ? `anim:${chessGame.netState.seq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
+              : `static:${p.color}:${p.type}:${p.square}`;
+
+            return (
+              <AnimatedPiece
+                key={animKey}
+                square={p.square}
+                type={p.type}
+                color={p.color}
+                originVec={originVec}
+                squareSize={squareSize}
+                animateFrom={animateFrom}
+                animSeq={chessGame.netState.seq}
+                canMove={canMove}
+                mySide={activeMyPrimarySide}
+                onPickPiece={(sq) => activeOnPickPiece(sq as any)}
+                whiteTint={whiteTint}
+                blackTint={blackTint}
+                chessTheme={chessTheme}
+              />
+            );
+          })}
     </group>
   );
 }
 
-useGLTF.preload("/models/pawn.glb");
-useGLTF.preload("/models/knight.glb");
-useGLTF.preload("/models/bishop.glb");
-useGLTF.preload("/models/rook.glb");
-useGLTF.preload("/models/queen.glb");
-useGLTF.preload("/models/king.glb");
+useGLTF.preload("/models/checker.glb");

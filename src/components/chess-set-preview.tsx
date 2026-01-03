@@ -672,6 +672,7 @@ function PreviewScene({
 export function ChessSetPreview({ chessTheme }: { chessTheme: string }) {
   return (
     <Canvas
+      key="chess-set-preview-canvas"
       dpr={[1, 2]}
       gl={{ antialias: true, alpha: true }}
       camera={{ position: [0, 1.25, 3.1], fov: 32 }}

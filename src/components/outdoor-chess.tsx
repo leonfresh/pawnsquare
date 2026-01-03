@@ -1,27 +1,33 @@
 "use client";
 
-import { Text, useGLTF } from "@react-three/drei";
+import { RoundedBox, Text, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { Chess, type Square } from "chess.js";
 import PartySocket from "partysocket";
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import type { Vec3 } from "@/lib/partyRoom";
 import { useChessSounds } from "./chess-sounds";
+import { useCheckersGame } from "./checkers-core";
+import { applyChessThemeToMaterial } from "./chess-core";
 
 type Side = "w" | "b";
+
+type GameMode = "chess" | "checkers";
 
 type GameResult =
   | { type: "timeout"; winner: Side }
   | { type: "checkmate"; winner: Side }
   | {
       type: "draw";
-      reason:
-        | "stalemate"
-        | "insufficient"
-        | "threefold"
-        | "fifty-move"
-        | "draw";
+      reason: "stalemate" | "insufficient" | "fifty-move" | "draw";
     };
 
 type ClockState = {
@@ -61,6 +67,335 @@ type ChessSendMessage =
   | { type: "setTime"; baseSeconds: number }
   | { type: "reset" };
 
+type CheckersPiece = { color: Side; king: boolean };
+
+type CheckersNetState = {
+  seats: { w: SeatInfo | null; b: SeatInfo | null };
+  board: Record<string, CheckersPiece>;
+  turn: Side;
+  seq: number;
+  clock: ClockState;
+  result:
+    | { type: "win"; winner: Side }
+    | { type: "timeout"; winner: Side }
+    | null;
+  lastMove: { from: string; to: string; captured: string[] } | null;
+  forcedFrom: string | null;
+};
+
+type CheckersMessage = { type: "state"; state: CheckersNetState };
+
+type CheckersSendMessage =
+  | { type: "join"; side: Side; playerId?: string; name?: string }
+  | { type: "leave"; side: Side }
+  | { type: "move"; from: string; to: string }
+  | { type: "setTime"; baseSeconds: number }
+  | { type: "reset" };
+
+type BoardControlsEvent =
+  | {
+      type: "open";
+      boardKey: string;
+      lobby: "park";
+      timeMinutes: number;
+      fen: string;
+      mySide: Side | null;
+      turn: Side;
+      boardOrientation: "white" | "black";
+      canMove2d: boolean;
+      canInc: boolean;
+      canDec: boolean;
+      canReset: boolean;
+      canCenter: boolean;
+      onMove2d: (
+        from: string,
+        to: string,
+        promotion?: "q" | "r" | "b" | "n"
+      ) => boolean;
+      onInc: () => void;
+      onDec: () => void;
+      onReset: () => void;
+      onCenter: () => void;
+    }
+  | {
+      type: "sync2d";
+      boardKey: string;
+      lobby: "park";
+      fen: string;
+      mySide: Side | null;
+      turn: Side;
+      boardOrientation: "white" | "black";
+      canMove2d: boolean;
+      onMove2d: (
+        from: string,
+        to: string,
+        promotion?: "q" | "r" | "b" | "n"
+      ) => boolean;
+    }
+  | { type: "close"; boardKey?: string };
+
+function CheckerPiece({
+  position,
+  tint,
+  side,
+  chessTheme,
+  king,
+  canMove,
+  onPick,
+}: {
+  position: [number, number, number];
+  tint: THREE.Color;
+  side: Side;
+  chessTheme?: string;
+  king: boolean;
+  canMove: boolean;
+  onPick: () => void;
+}) {
+  const gltf = useGLTF("/models/checker.glb") as any;
+
+  const modelHeight = useMemo(() => {
+    const tmp = gltf.scene.clone(true);
+    tmp.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(tmp);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    return Number.isFinite(size.y) && size.y > 0 ? size.y : 1;
+  }, [gltf.scene]);
+
+  const model = useMemo(() => {
+    const root = gltf.scene.clone(true);
+    root.traverse((obj: any) => {
+      if (obj && obj.isMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+
+        const themed = new THREE.MeshStandardMaterial();
+        applyChessThemeToMaterial(themed, { chessTheme, tint, side });
+        obj.material = themed;
+      }
+    });
+    return root;
+  }, [gltf.scene, tint, chessTheme, side]);
+
+  const scale = 2.2;
+  const dy = 0.02;
+  const kingStackDy = modelHeight * scale * 0.9;
+
+  return (
+    <group
+      position={position}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onPick();
+      }}
+      onPointerEnter={() => {
+        if (canMove) document.body.style.cursor = "pointer";
+      }}
+      onPointerLeave={() => {
+        document.body.style.cursor = "default";
+      }}
+    >
+      <group scale={[scale, scale, scale]} position={[0, dy, 0]}>
+        <primitive object={model} />
+      </group>
+      {king ? (
+        <group
+          scale={[scale, scale, scale]}
+          position={[0, dy + kingStackDy, 0]}
+        >
+          <primitive object={model.clone(true)} />
+        </group>
+      ) : null}
+    </group>
+  );
+}
+
+function PulsingIndicatorMaterial({
+  color,
+  baseOpacity,
+  pulsingUntilMs,
+}: {
+  color: string;
+  baseOpacity: number;
+  pulsingUntilMs: number;
+}) {
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  useFrame(() => {
+    const mat = matRef.current;
+    if (!mat) return;
+    const now = Date.now();
+    if (pulsingUntilMs && now < pulsingUntilMs) {
+      const pulse = 0.5 + 0.5 * Math.sin(now / 90);
+      mat.opacity = Math.min(0.95, baseOpacity + pulse * 0.35);
+    } else {
+      mat.opacity = baseOpacity;
+    }
+  });
+
+  return (
+    <meshBasicMaterial
+      ref={matRef}
+      color={color}
+      transparent
+      opacity={baseOpacity}
+      blending={THREE.AdditiveBlending}
+      depthWrite={false}
+      polygonOffset
+      polygonOffsetFactor={-1}
+      polygonOffsetUnits={-1}
+    />
+  );
+}
+
+function ControlTV({
+  center,
+  active,
+  hintText = null,
+  onClick,
+}: {
+  center: THREE.Vector3;
+  active: boolean;
+  hintText?: string | null;
+  onClick: (e: any) => void;
+}) {
+  const baseY = center.y;
+  const standY = baseY + 0.6;
+  const screenY = baseY + 1.22;
+
+  return (
+    <group
+      position={[center.x, center.y, center.z]}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onClick(e);
+      }}
+      onPointerEnter={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "pointer";
+      }}
+      onPointerLeave={(e) => {
+        e.stopPropagation();
+        document.body.style.cursor = "default";
+      }}
+    >
+      {/* Base */}
+      <mesh position={[0, 0.09, 0]} castShadow>
+        <cylinderGeometry args={[0.26, 0.32, 0.18, 16]} />
+        <meshStandardMaterial
+          color="#2b1b12"
+          roughness={0.65}
+          metalness={0.15}
+        />
+      </mesh>
+
+      {/* Stand */}
+      <mesh position={[0, standY - baseY, 0]} castShadow>
+        <cylinderGeometry args={[0.045, 0.065, 0.84, 12]} />
+        <meshStandardMaterial color="#3a2a1f" roughness={0.7} metalness={0.1} />
+      </mesh>
+
+      {/* Accent ring */}
+      <mesh position={[0, 1.03, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[0.12, 0.012, 10, 36]} />
+        <meshBasicMaterial
+          color={active ? "#7cffd8" : "#ffffff"}
+          transparent
+          opacity={active ? 0.28 : 0.16}
+        />
+      </mesh>
+
+      {/* Screen */}
+      <group position={[0, screenY - baseY, 0]}>
+        <RoundedBox args={[0.95, 0.62, 0.08]} radius={0.06} smoothness={6}>
+          <meshStandardMaterial
+            color="#111"
+            roughness={0.35}
+            metalness={0.35}
+          />
+        </RoundedBox>
+        <mesh position={[0, 0, 0.05]}>
+          <planeGeometry args={[0.86, 0.52]} />
+          <meshBasicMaterial
+            color={active ? "#7cffd8" : "#ffffff"}
+            transparent
+            opacity={active ? 0.22 : 0.12}
+          />
+        </mesh>
+        <mesh position={[0, 0, -0.05]} rotation={[0, Math.PI, 0]}>
+          <planeGeometry args={[0.86, 0.52]} />
+          <meshBasicMaterial
+            color={active ? "#7cffd8" : "#ffffff"}
+            transparent
+            opacity={active ? 0.22 : 0.12}
+          />
+        </mesh>
+        <Text
+          position={[0, 0, 0.055]}
+          fontSize={0.12}
+          color={active ? "#7cffd8" : "#ffffff"}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.006}
+          outlineColor="#000000"
+          fontWeight="bold"
+        >
+          {active ? "CLOSE" : "CONTROLS"}
+        </Text>
+        <Text
+          position={[0, 0, -0.055]}
+          rotation={[0, Math.PI, 0]}
+          fontSize={0.12}
+          color={active ? "#7cffd8" : "#ffffff"}
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.006}
+          outlineColor="#000000"
+          fontWeight="bold"
+        >
+          {active ? "CLOSE" : "CONTROLS"}
+        </Text>
+      </group>
+
+      {hintText ? (
+        <group position={[0, screenY - baseY + 0.6, 0]}>
+          <RoundedBox args={[1.18, 0.24, 0.04]} radius={0.05} smoothness={5}>
+            <meshBasicMaterial
+              color="#000000"
+              transparent
+              opacity={0.55}
+              depthWrite={false}
+            />
+          </RoundedBox>
+          <Text
+            position={[0, 0, 0.03]}
+            fontSize={0.1}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.004}
+            outlineColor="#000000"
+          >
+            {hintText}
+          </Text>
+          <Text
+            position={[0, 0, -0.03]}
+            rotation={[0, Math.PI, 0]}
+            fontSize={0.1}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.004}
+            outlineColor="#000000"
+          >
+            {hintText}
+          </Text>
+        </group>
+      ) : null}
+    </group>
+  );
+}
+
 const TIME_OPTIONS_SECONDS = [60, 3 * 60, 5 * 60, 10 * 60, 15 * 60] as const;
 
 function clamp(n: number, min: number, max: number) {
@@ -81,7 +416,7 @@ function winnerLabel(side: Side) {
   return side === "w" ? "White" : "Black";
 }
 
-const PARTYKIT_HOST = process.env.NEXT_PUBLIC_PARTYKIT_HOST || "localhost:1999";
+const PARTYKIT_HOST = process.env.NEXT_PUBLIC_PARTYKIT_HOST || "127.0.0.1:1999";
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
 
@@ -102,6 +437,119 @@ function isSquare(val: string): val is Square {
   const f = val.charCodeAt(0);
   const r = val.charCodeAt(1);
   return f >= 97 && f <= 104 && r >= 49 && r <= 56;
+}
+
+function isDarkSquare(square: string) {
+  if (!isSquare(square)) return false;
+  // a1 is dark.
+  const f = square.charCodeAt(0) - 97;
+  const r = Number(square[1]) - 1;
+  return (f + r) % 2 === 0;
+}
+
+type CheckersMoveCandidate = {
+  from: string;
+  to: string;
+  captured: string[];
+  isCapture: boolean;
+};
+
+function checkersDeltas(piece: CheckersPiece): Array<[number, number]> {
+  const forward = piece.color === "w" ? 1 : -1;
+  const dirs: Array<[number, number]> = [
+    [-1, forward],
+    [1, forward],
+  ];
+  if (piece.king) dirs.push([-1, -forward], [1, -forward]);
+  return dirs;
+}
+
+function squareFileRank(sq: string) {
+  const f = sq.charCodeAt(0) - 97;
+  const r = Number(sq[1]) - 1;
+  return { f, r };
+}
+
+function squareFromFileRank(f: number, r: number) {
+  return `${String.fromCharCode(97 + f)}${String(r + 1)}`;
+}
+
+function inBounds(f: number, r: number) {
+  return f >= 0 && f < 8 && r >= 0 && r < 8;
+}
+
+function listCheckersCapturesFrom(
+  board: Record<string, CheckersPiece>,
+  from: string,
+  piece: CheckersPiece
+): CheckersMoveCandidate[] {
+  const out: CheckersMoveCandidate[] = [];
+  const { f: f0, r: r0 } = squareFileRank(from);
+  for (const [df, dr] of checkersDeltas(piece)) {
+    const f1 = f0 + df;
+    const r1 = r0 + dr;
+    const f2 = f0 + df * 2;
+    const r2 = r0 + dr * 2;
+    if (!inBounds(f1, r1) || !inBounds(f2, r2)) continue;
+    const mid = squareFromFileRank(f1, r1);
+    const to = squareFromFileRank(f2, r2);
+    if (!isDarkSquare(to)) continue;
+    const midPiece = board[mid];
+    if (!midPiece) continue;
+    if (midPiece.color === piece.color) continue;
+    if (board[to]) continue;
+    out.push({ from, to, captured: [mid], isCapture: true });
+  }
+  return out;
+}
+
+function listCheckersSimpleMovesFrom(
+  board: Record<string, CheckersPiece>,
+  from: string,
+  piece: CheckersPiece
+): CheckersMoveCandidate[] {
+  const out: CheckersMoveCandidate[] = [];
+  const { f: f0, r: r0 } = squareFileRank(from);
+  for (const [df, dr] of checkersDeltas(piece)) {
+    const f1 = f0 + df;
+    const r1 = r0 + dr;
+    if (!inBounds(f1, r1)) continue;
+    const to = squareFromFileRank(f1, r1);
+    if (!isDarkSquare(to)) continue;
+    if (board[to]) continue;
+    out.push({ from, to, captured: [], isCapture: false });
+  }
+  return out;
+}
+
+function listAllCheckersMoves(
+  board: Record<string, CheckersPiece>,
+  side: Side,
+  forcedFrom: string | null
+): { moves: CheckersMoveCandidate[]; hasAnyCapture: boolean } {
+  const moves: CheckersMoveCandidate[] = [];
+  let hasAnyCapture = false;
+  const squares = forcedFrom ? [forcedFrom] : Object.keys(board);
+
+  for (const sq of squares) {
+    const p = board[sq];
+    if (!p || p.color !== side) continue;
+    const caps = listCheckersCapturesFrom(board, sq, p);
+    if (caps.length) {
+      hasAnyCapture = true;
+      moves.push(...caps);
+    }
+  }
+
+  if (hasAnyCapture) return { moves, hasAnyCapture };
+
+  for (const sq of squares) {
+    const p = board[sq];
+    if (!p || p.color !== side) continue;
+    moves.push(...listCheckersSimpleMovesFrom(board, sq, p));
+  }
+
+  return { moves, hasAnyCapture: false };
 }
 
 function piecePath(type: string) {
@@ -848,7 +1296,7 @@ function JoinPad({
         anchorX="center"
         anchorY="middle"
         outlineWidth={0.008}
-        outlineColor={active ? "#000" : "transparent"}
+        outlineColor={active ? "#000" : "#000000"}
         fontWeight="bold"
         depthOffset={-1}
         onPointerDown={handleClick}
@@ -1469,20 +1917,76 @@ function Bench({
   );
 }
 
-export function OutdoorChess({
-  roomId,
-  boardKey,
+function OutdoorBenches({
   origin,
-  selfPositionRef,
-  selfId,
-  selfName,
-  joinLockedBoardKey,
-  onJoinIntent,
-  onSelfSeatChange,
+  padOffset,
   onRequestMove,
-  chessTheme,
-  chessBoardTheme,
 }: {
+  origin: [number, number, number];
+  padOffset: number;
+  onRequestMove?: (
+    dest: Vec3,
+    opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
+  ) => void;
+}) {
+  const [ox, oy, oz] = origin;
+
+  const requestSitAt = useCallback(
+    (seatX: number, seatZ: number) => {
+      if (!onRequestMove) return;
+      const dx = ox - seatX;
+      const dz = oz - seatZ;
+      const face = Math.atan2(dx, dz);
+
+      // Calculate approach point (0.5m in front of the seat, towards the table)
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      const ux = dx / len;
+      const uz = dz / len;
+      const approachDist = 0.5;
+      const approachX = seatX + ux * approachDist;
+      const approachZ = seatZ + uz * approachDist;
+
+      onRequestMove([approachX, 0, approachZ], {
+        rotY: face,
+        sit: true,
+        sitDest: [seatX, 0.36, seatZ],
+        lookAtTarget: [ox, oy, oz],
+      });
+    },
+    [onRequestMove, ox, oy, oz]
+  );
+
+  return (
+    <group>
+      {/* Decorative benches */}
+      {/* White side benches (facing board -> -Z) */}
+      <Bench
+        position={[ox - 3.5, 0, oz + padOffset + 1.5]}
+        rotation={[0, Math.PI, 0]}
+        onClick={() => requestSitAt(ox - 3.5, oz + padOffset + 1.35)}
+      />
+      <Bench
+        position={[ox + 3.5, 0, oz + padOffset + 1.5]}
+        rotation={[0, Math.PI, 0]}
+        onClick={() => requestSitAt(ox + 3.5, oz + padOffset + 1.35)}
+      />
+
+      {/* Black side benches (facing board -> +Z) */}
+      <Bench
+        position={[ox - 3.5, 0, oz - padOffset - 1.5]}
+        rotation={[0, 0, 0]}
+        onClick={() => requestSitAt(ox - 3.5, oz - padOffset - 1.35)}
+      />
+      <Bench
+        position={[ox + 3.5, 0, oz - padOffset - 1.5]}
+        rotation={[0, 0, 0]}
+        onClick={() => requestSitAt(ox + 3.5, oz - padOffset - 1.35)}
+      />
+    </group>
+  );
+}
+
+export type OutdoorChessProps = {
   roomId: string;
   boardKey: string;
   origin: [number, number, number];
@@ -1490,15 +1994,44 @@ export function OutdoorChess({
   selfId: string;
   selfName?: string;
   joinLockedBoardKey?: string | null;
+  leaveAllNonce?: number;
+  leaveAllExceptBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
-  onSelfSeatChange?: (boardKey: string, side: Side | null) => void;
+  onSelfSeatChange?: (boardKey: string, isSeated: boolean) => void;
   onRequestMove?: (
     dest: Vec3,
     opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
   ) => void;
+  onCenterCamera?: (target: Vec3) => void;
+  onBoardControls?: (event: BoardControlsEvent) => void;
+  controlsOpen?: boolean;
+  board2dOpen?: boolean;
   chessTheme?: string;
   chessBoardTheme?: string;
-}) {
+  gameMode?: GameMode;
+};
+
+function OutdoorChessChessMode({
+  roomId,
+  boardKey,
+  origin,
+  selfPositionRef,
+  selfId,
+  selfName,
+  joinLockedBoardKey,
+  leaveAllNonce,
+  leaveAllExceptBoardKey,
+  onJoinIntent,
+  onSelfSeatChange,
+  onRequestMove,
+  onCenterCamera,
+  onBoardControls,
+  controlsOpen = false,
+  board2dOpen = false,
+  chessTheme,
+  chessBoardTheme,
+  gameMode = "chess",
+}: OutdoorChessProps) {
   const originVec = useMemo(
     () => new THREE.Vector3(origin[0], origin[1], origin[2]),
     [origin]
@@ -1537,6 +2070,27 @@ export function OutdoorChess({
   const chessConnectedRef = useRef(false);
   const pendingJoinRef = useRef<Side | null>(null);
   const [pendingJoinSide, setPendingJoinSide] = useState<Side | null>(null);
+  const controlsHintTimerRef = useRef<number | null>(null);
+  const [controlsHintOpen, setControlsHintOpen] = useState(false);
+
+  const showControlsHint = () => {
+    setControlsHintOpen(true);
+    if (controlsHintTimerRef.current !== null) {
+      window.clearTimeout(controlsHintTimerRef.current);
+    }
+    controlsHintTimerRef.current = window.setTimeout(() => {
+      setControlsHintOpen(false);
+      controlsHintTimerRef.current = null;
+    }, 2200);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (controlsHintTimerRef.current !== null) {
+        window.clearTimeout(controlsHintTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     chessConnectedRef.current = chessConnected;
@@ -1562,11 +2116,19 @@ export function OutdoorChess({
     lastMove: null,
   });
 
-  const mySide: Side | null = useMemo(() => {
-    if (netState.seats.w?.connId === chessSelfId) return "w";
-    if (netState.seats.b?.connId === chessSelfId) return "b";
-    return null;
+  const mySides = useMemo(() => {
+    const sides = new Set<Side>();
+    if (netState.seats.w?.connId === chessSelfId) sides.add("w");
+    if (netState.seats.b?.connId === chessSelfId) sides.add("b");
+    return sides;
   }, [netState.seats.w, netState.seats.b, chessSelfId]);
+
+  const isSeated = mySides.size > 0;
+  const myPrimarySide: Side | null = mySides.has("w")
+    ? "w"
+    : mySides.has("b")
+    ? "b"
+    : null;
 
   const chess = useMemo(() => new Chess(netState.fen), [netState.fen]);
 
@@ -1584,7 +2146,7 @@ export function OutdoorChess({
 
   // Sound effects for moves (only for players who are seated)
   useEffect(() => {
-    if (!mySide) return; // Only play sounds if we're a player
+    if (!isSeated) return; // Only play sounds if we're a player
     if (netState.seq <= lastSoundSeq.current) return;
     lastSoundSeq.current = netState.seq;
 
@@ -1614,12 +2176,12 @@ export function OutdoorChess({
     // Reset warning flag on new move
     hasWarnedRef.current = false;
   }, [
-    mySide,
+    isSeated,
     netState.seq,
     netState.fen,
     netState.lastMove,
-    playMove,
     playCapture,
+    playMove,
   ]);
 
   // Drive clock rendering while it's running.
@@ -1632,12 +2194,12 @@ export function OutdoorChess({
 
   // Clock warning sound (only for the player whose clock is running low)
   useEffect(() => {
-    if (!mySide) return; // Only play warning if we're a player
+    if (!isSeated) return; // Only play warning if we're a player
     if (!netState.clock.running) return;
     const c = netState.clock;
 
     // Only warn if it's OUR clock running low
-    if (c.active !== mySide) return;
+    if (!mySides.has(c.active)) return;
 
     const now = clockNow;
     const remaining = c.remainingMs[c.active];
@@ -1653,7 +2215,7 @@ export function OutdoorChess({
       playWarning();
       hasWarnedRef.current = true;
     }
-  }, [mySide, clockNow, netState.clock, playWarning]);
+  }, [isSeated, mySides, clockNow, netState.clock, playWarning]);
 
   const send = (msg: ChessSendMessage) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -1662,9 +2224,28 @@ export function OutdoorChess({
   };
 
   useEffect(() => {
-    onSelfSeatChange?.(boardKey, mySide);
-    if (mySide) setPendingJoinSide(null);
-  }, [boardKey, mySide, onSelfSeatChange]);
+    onSelfSeatChange?.(boardKey, isSeated);
+    if (isSeated) setPendingJoinSide(null);
+  }, [boardKey, isSeated, onSelfSeatChange]);
+
+  useEffect(() => {
+    if (!leaveAllNonce) return;
+    if (leaveAllExceptBoardKey && leaveAllExceptBoardKey === boardKey) return;
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN)
+      return;
+
+    if (netState.seats.w?.connId === chessSelfId)
+      send({ type: "leave", side: "w" });
+    if (netState.seats.b?.connId === chessSelfId)
+      send({ type: "leave", side: "b" });
+  }, [
+    leaveAllNonce,
+    leaveAllExceptBoardKey,
+    boardKey,
+    chessSelfId,
+    netState.seats.w,
+    netState.seats.b,
+  ]);
 
   useEffect(() => {
     if (!chessConnected) return;
@@ -1742,9 +2323,9 @@ export function OutdoorChess({
     to: Square,
     promotion?: "q" | "r" | "b" | "n"
   ) => {
-    if (!mySide) return;
+    if (!isSeated) return;
     if (netState.result) return;
-    if (turn !== mySide) return;
+    if (!mySides.has(turn)) return;
 
     send({ type: "move", from, to, promotion });
   };
@@ -1772,9 +2353,9 @@ export function OutdoorChess({
     // Check if there's a piece on this square we can select
     const piece = chess.get(square);
 
-    // If clicking our own piece, select it
-    if (piece && mySide && turn === mySide && piece.color === mySide) {
-      if (mySide) playSelect(); // Only play if we're a player
+    // If clicking the current-turn side's piece and we control that side, select it
+    if (piece && mySides.has(turn) && piece.color === turn) {
+      if (isSeated) playSelect();
       setSelected(square);
       const moves = chess.moves({ square, verbose: true }) as any[];
       const targets = moves.map((m) => m.to).filter(isSquare);
@@ -1856,6 +2437,11 @@ export function OutdoorChess({
     () => new THREE.Vector3(originVec.x, 0.06, originVec.z - padOffset),
     [originVec, padOffset]
   );
+  const controlPadCenter = useMemo(
+    () =>
+      new THREE.Vector3(originVec.x + boardSize / 2 + 1.6, 0.06, originVec.z),
+    [originVec, boardSize]
+  );
 
   const joinScheduleRef = useRef<number | null>(null);
 
@@ -1901,15 +2487,14 @@ export function OutdoorChess({
       }
 
       // Toggle behavior:
-      // - Clicking your current side leaves (frees seat)
-      // - Clicking the other side switches
-      if (mySide === side) {
+      // - Clicking a side you already occupy leaves that side
+      // - Clicking an empty/your-own side seats you there (does NOT unseat the other side)
+      if (mySides.has(side)) {
         requestLeave(side);
         setPendingJoinSide(null);
         return;
       }
 
-      if (mySide) requestLeave(mySide);
       requestJoin(side);
     }, 0);
   };
@@ -1934,6 +2519,10 @@ export function OutdoorChess({
       sitDest: [seatX, 0.36, seatZ],
       lookAtTarget: [originVec.x, originVec.y, originVec.z],
     });
+  };
+
+  const centerCamera = () => {
+    onCenterCamera?.([originVec.x, originVec.y, originVec.z]);
   };
 
   const clocks = useMemo(() => {
@@ -1967,10 +2556,85 @@ export function OutdoorChess({
   }, [clocks.baseMs]);
 
   const canConfigure =
-    !!mySide &&
+    isSeated &&
     !netState.clock.running &&
     !netState.result &&
     netState.fen === initialFen;
+
+  // Keep orientation fixed to your primary side to avoid per-move flipping.
+  const boardOrientation: "white" | "black" =
+    myPrimarySide === "b" ? "black" : "white";
+  const canMove2d = isSeated && !netState.result && mySides.has(turn);
+
+  const tryMove2d = (
+    from: string,
+    to: string,
+    promotion?: "q" | "r" | "b" | "n"
+  ) => {
+    if (!isSeated) return false;
+    if (netState.result) return false;
+    if (!mySides.has(turn)) return false;
+
+    const source = from as Square;
+    const target = to as Square;
+    const tmp = new Chess(netState.fen);
+    const piece = tmp.get(source);
+    if (!piece) return false;
+    if (piece.color !== turn) return false;
+
+    let promo = promotion;
+    if (piece.type === "p") {
+      const rank = String(target[1] ?? "");
+      if ((rank === "1" || rank === "8") && !promo) promo = "q";
+    }
+
+    const mv = tmp.move({ from: source, to: target, promotion: promo });
+    if (!mv) return false;
+
+    playClick();
+    send({ type: "move", from: source, to: target, promotion: promo });
+    setSelected(null);
+    setLegalTargets([]);
+    return true;
+  };
+
+  const emitControlsOpen = () => {
+    if (!isSeated) return;
+    onBoardControls?.({
+      type: "open",
+      boardKey,
+      lobby: "park",
+      timeMinutes: Math.round(clocks.baseMs / 60000),
+      fen: netState.fen,
+      mySide: myPrimarySide,
+      turn,
+      boardOrientation,
+      canMove2d,
+      canInc: canConfigure && timeIndex < TIME_OPTIONS_SECONDS.length - 1,
+      canDec: canConfigure && timeIndex > 0,
+      canReset: isSeated,
+      canCenter: !!onCenterCamera,
+      onMove2d: tryMove2d,
+      onInc: () => setTimeControlByIndex(timeIndex + 1),
+      onDec: () => setTimeControlByIndex(timeIndex - 1),
+      onReset: clickReset,
+      onCenter: centerCamera,
+    });
+  };
+
+  const emit2dSync = () => {
+    onBoardControls?.({
+      type: "sync2d",
+      boardKey,
+      lobby: "park",
+      fen: netState.fen,
+      mySide: myPrimarySide,
+      turn,
+      boardOrientation,
+      canMove2d,
+      onMove2d: tryMove2d,
+    });
+  };
 
   const setTimeControlByIndex = (nextIdx: number) => {
     if (!canConfigure) return;
@@ -1981,7 +2645,7 @@ export function OutdoorChess({
   };
 
   const clickReset = () => {
-    if (!mySide) return;
+    if (!isSeated) return;
     playClick();
     send({ type: "reset" });
   };
@@ -1993,6 +2657,44 @@ export function OutdoorChess({
     if (r.type === "checkmate") return `${winnerLabel(r.winner)} wins (mate)`;
     return `Draw (${r.reason})`;
   }, [netState.result]);
+
+  useEffect(() => {
+    return () => {
+      onBoardControls?.({ type: "close", boardKey });
+    };
+  }, [onBoardControls, boardKey]);
+
+  useEffect(() => {
+    if (!controlsOpen) return;
+    if (!isSeated) {
+      onBoardControls?.({ type: "close", boardKey });
+      return;
+    }
+    emitControlsOpen();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    controlsOpen,
+    isSeated,
+    canConfigure,
+    timeIndex,
+    clocks.baseMs,
+    myPrimarySide,
+    onCenterCamera,
+  ]);
+
+  useEffect(() => {
+    if (!board2dOpen) return;
+    emit2dSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    board2dOpen,
+    netState.fen,
+    myPrimarySide,
+    turn,
+    netState.result,
+    canMove2d,
+    isSeated,
+  ]);
 
   return (
     <group>
@@ -2012,44 +2714,11 @@ export function OutdoorChess({
         </Text>
       ) : null}
 
-      {/* Decorative benches */}
-      {/* White side benches (facing board -> -Z) */}
-      <Bench
-        position={[originVec.x - 3.5, 0, originVec.z + padOffset + 1.5]}
-        rotation={[0, Math.PI, 0]}
-        onClick={() =>
-          requestSitAt(originVec.x - 3.5, originVec.z + padOffset + 1.35)
-        }
-      />
-      <Bench
-        position={[originVec.x + 3.5, 0, originVec.z + padOffset + 1.5]}
-        rotation={[0, Math.PI, 0]}
-        onClick={() =>
-          requestSitAt(originVec.x + 3.5, originVec.z + padOffset + 1.35)
-        }
-      />
-
-      {/* Black side benches (facing board -> +Z) */}
-      <Bench
-        position={[originVec.x - 3.5, 0, originVec.z - padOffset - 1.5]}
-        rotation={[0, 0, 0]}
-        onClick={() =>
-          requestSitAt(originVec.x - 3.5, originVec.z - padOffset - 1.35)
-        }
-      />
-      <Bench
-        position={[originVec.x + 3.5, 0, originVec.z - padOffset - 1.5]}
-        rotation={[0, 0, 0]}
-        onClick={() =>
-          requestSitAt(originVec.x + 3.5, originVec.z - padOffset - 1.35)
-        }
-      />
-
       {/* Decorative potted plants */}
-      {[-1, 1].map((side) => (
+      {[-1].map((side) => (
         <group
           key={`plant-${side}`}
-          position={[originVec.x + side * 5, 0, originVec.z]}
+          position={[originVec.x + side * 7, 0, originVec.z]}
         >
           {/* Pot (rim + body + soil) */}
           <mesh castShadow receiveShadow position={[0, 0.12, 0]}>
@@ -2144,8 +2813,8 @@ export function OutdoorChess({
           const canInteract =
             isTarget ||
             (pieceOnSquare &&
-              mySide === pieceOnSquare.color &&
-              turn === mySide);
+              mySides.has(pieceOnSquare.color) &&
+              turn === pieceOnSquare.color);
 
           return (
             <group
@@ -2283,7 +2952,7 @@ export function OutdoorChess({
         }`}
         center={whitePadCenter}
         size={padSize}
-        active={mySide === "w"}
+        active={mySides.has("w")}
         disabled={
           (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
           pendingJoinSide === "b" ||
@@ -2301,7 +2970,7 @@ export function OutdoorChess({
         }`}
         center={blackPadCenter}
         size={padSize}
-        active={mySide === "b"}
+        active={mySides.has("b")}
         disabled={
           (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
           pendingJoinSide === "w" ||
@@ -2310,70 +2979,27 @@ export function OutdoorChess({
         onClick={() => clickJoin("b")}
       />
 
-      {/* Time control + reset (right side of board) */}
-      {(() => {
-        const controlX = originVec.x + boardSize / 2 + 2.6;
-        const controlZ = originVec.z;
-        const smallSize: [number, number] = [0.9, 0.6];
-        const leftCenter = new THREE.Vector3(
-          controlX - 1.15,
-          0.06,
-          controlZ + 1.2
-        );
-        const rightCenter = new THREE.Vector3(
-          controlX + 1.15,
-          0.06,
-          controlZ + 1.2
-        );
-        const resetCenter = new THREE.Vector3(controlX, 0.06, controlZ - 1.0);
-        return (
-          <group>
-            <JoinPad
-              label="-"
-              center={leftCenter}
-              size={smallSize}
-              active={false}
-              disabled={!canConfigure || timeIndex === 0}
-              onClick={() => setTimeControlByIndex(timeIndex - 1)}
-            />
-            <JoinPad
-              label="+"
-              center={rightCenter}
-              size={smallSize}
-              active={false}
-              disabled={
-                !canConfigure || timeIndex === TIME_OPTIONS_SECONDS.length - 1
-              }
-              onClick={() => setTimeControlByIndex(timeIndex + 1)}
-            />
-            <Text
-              position={[controlX, 0.48, controlZ + 1.2]}
-              rotation={[-Math.PI / 2, 0, 0]}
-              fontSize={0.18}
-              color="#111"
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.008}
-              outlineColor="transparent"
-              fontWeight="bold"
-            >
-              {`Time ${Math.round(clocks.baseMs / 60000)}m`}
-            </Text>
-            <JoinPad
-              label="Reset"
-              center={resetCenter}
-              size={[2.0, 0.7]}
-              active={false}
-              disabled={!mySide}
-              onClick={clickReset}
-            />
-          </group>
-        );
-      })()}
+      {/* Control TV */}
+      <ControlTV
+        center={controlPadCenter}
+        active={controlsOpen}
+        hintText={controlsHintOpen ? "Join a side first" : null}
+        onClick={() => {
+          if (!isSeated) {
+            showControlsHint();
+            return;
+          }
+          if (controlsOpen) {
+            onBoardControls?.({ type: "close", boardKey });
+            return;
+          }
+          emitControlsOpen();
+        }}
+      />
 
       {/* Pieces */}
       {pieces.map((p) => {
-        const isMyPiece = mySide === p.color;
+        const isMyPiece = mySides.has(p.color);
         const canMove = turn === p.color && isMyPiece;
         const animateFrom = animatedFromByTo.get(p.square) ?? null;
 
@@ -2393,7 +3019,7 @@ export function OutdoorChess({
             animateFrom={animateFrom}
             animSeq={netState.seq}
             canMove={canMove}
-            mySide={mySide}
+            mySide={myPrimarySide}
             onPickPiece={onPickPiece}
             whiteTint={whiteTint}
             blackTint={blackTint}
@@ -2405,9 +3031,415 @@ export function OutdoorChess({
   );
 }
 
+function OutdoorChessCheckersMode({
+  roomId,
+  boardKey,
+  origin,
+  selfPositionRef,
+  selfId,
+  selfName,
+  joinLockedBoardKey,
+  leaveAllNonce,
+  leaveAllExceptBoardKey,
+  onJoinIntent,
+  onSelfSeatChange,
+  onRequestMove,
+  onCenterCamera,
+  onBoardControls,
+  controlsOpen = false,
+  board2dOpen = false,
+  chessTheme,
+  chessBoardTheme,
+}: OutdoorChessProps) {
+  const { playMove, playCapture, playSelect, playWarning, playClick } =
+    useChessSounds();
+
+  const checkersGame = useCheckersGame({
+    enabled: true,
+    roomId,
+    boardKey,
+    origin,
+    selfPositionRef,
+    selfId,
+    selfName,
+    joinLockedBoardKey,
+    leaveAllNonce,
+    leaveAllExceptBoardKey,
+    onJoinIntent,
+    onSelfSeatChange,
+    onRequestMove,
+    onCenterCamera,
+    onBoardControls,
+    controlsOpen,
+    board2dOpen,
+    lobby: "park",
+    sounds: {
+      move: playMove,
+      capture: playCapture,
+      select: playSelect,
+      warning: playWarning,
+      click: playClick,
+    },
+  });
+
+  const {
+    originVec,
+    squareSize,
+    boardSize,
+    netState,
+    turn,
+    mySides,
+    isSeated,
+    selected,
+    legalTargets,
+    pulseTargetsUntilMs,
+    lastMove,
+    pieces,
+    pendingJoinSide,
+    clocks,
+    emitControlsOpen,
+    onPickSquare,
+    onPickPiece,
+    clickJoin,
+    resultLabel,
+  } = checkersGame;
+
+  const whiteTint = useMemo(() => {
+    if (chessTheme === "chess_wood") return new THREE.Color("#e1c28b");
+    return new THREE.Color("#e8e8e8");
+  }, [chessTheme]);
+  const blackTint = useMemo(() => {
+    if (chessTheme === "chess_wood") return new THREE.Color("#8a6a1b");
+    return new THREE.Color("#1c1c1c");
+  }, [chessTheme]);
+
+  const boardStyle = useMemo(() => {
+    switch (chessBoardTheme) {
+      case "board_walnut":
+        return { kind: "wood" as const, light: "#c7a07a", dark: "#5a2d13" };
+      case "board_marble":
+        return { kind: "marble" as const, light: "#d9d9df", dark: "#3a3a44" };
+      case "board_neon":
+        return { kind: "neon" as const, light: "#1f5561", dark: "#070a10" };
+      default:
+        return { kind: "wood" as const, light: "#deb887", dark: "#8b4513" };
+    }
+  }, [chessBoardTheme]);
+
+  const padOffset = boardSize / 2 + 1.1;
+  const padSize: [number, number] = [2.1, 0.7];
+  const whitePadCenter = useMemo(
+    () => new THREE.Vector3(originVec.x, 0.06, originVec.z + padOffset),
+    [originVec, padOffset]
+  );
+  const blackPadCenter = useMemo(
+    () => new THREE.Vector3(originVec.x, 0.06, originVec.z - padOffset),
+    [originVec, padOffset]
+  );
+  const controlPadCenter = useMemo(
+    () => new THREE.Vector3(originVec.x + padOffset, 0.06, originVec.z),
+    [originVec, padOffset]
+  );
+
+  const controlsHintTimerRef = useRef<number | null>(null);
+  const [controlsHintOpen, setControlsHintOpen] = useState(false);
+
+  const showControlsHint = () => {
+    setControlsHintOpen(true);
+    if (controlsHintTimerRef.current !== null) {
+      window.clearTimeout(controlsHintTimerRef.current);
+    }
+    controlsHintTimerRef.current = window.setTimeout(() => {
+      setControlsHintOpen(false);
+      controlsHintTimerRef.current = null;
+    }, 2200);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (controlsHintTimerRef.current !== null) {
+        window.clearTimeout(controlsHintTimerRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <group>
+      {/* Result banner */}
+      {resultLabel ? (
+        <Text
+          position={[originVec.x, originVec.y + 1.5, originVec.z]}
+          fontSize={0.32}
+          color="#ffffff"
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.02}
+          outlineColor="#000"
+          fontWeight="bold"
+        >
+          {resultLabel}
+        </Text>
+      ) : null}
+
+      {/* Board */}
+      <group position={[originVec.x, originVec.y, originVec.z]}>
+        {Array.from({ length: 64 }).map((_, idx) => {
+          const file = idx % 8;
+          const rankFromTop = Math.floor(idx / 8);
+          const rank = 8 - rankFromTop;
+          const square = `${FILES[file]!}${rank}` as const;
+
+          const x = (file - 3.5) * squareSize;
+          const z = (rankFromTop - 3.5) * squareSize;
+          const isDark = (file + rankFromTop) % 2 === 1;
+
+          const isTarget = legalTargets.includes(square as any);
+          const isSel = (selected as any) === square;
+          const isLastMoveFrom = (lastMove as any)?.from === square;
+          const isLastMoveTo = (lastMove as any)?.to === square;
+
+          const pieceOnSquare = pieces.find((p) => p.square === square);
+          const canInteract =
+            isTarget ||
+            (pieceOnSquare &&
+              mySides.has(pieceOnSquare.color) &&
+              turn === pieceOnSquare.color &&
+              (!netState.forcedFrom || netState.forcedFrom === square));
+
+          return (
+            <group
+              key={square}
+              position={[x, 0, z]}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                onPickSquare(square as any);
+              }}
+              onPointerEnter={() => {
+                if (canInteract) document.body.style.cursor = "pointer";
+              }}
+              onPointerLeave={() => {
+                document.body.style.cursor = "default";
+              }}
+            >
+              <mesh receiveShadow>
+                <boxGeometry args={[squareSize, 0.08, squareSize]} />
+                {boardStyle.kind === "wood" ? (
+                  <WoodMaterial
+                    color={isDark ? boardStyle.dark : boardStyle.light}
+                    roughness={0.7}
+                    metalness={0.1}
+                  />
+                ) : boardStyle.kind === "marble" ? (
+                  <MarbleTileMaterial
+                    color={isDark ? boardStyle.dark : boardStyle.light}
+                  />
+                ) : (
+                  <NeonTileMaterial
+                    color={isDark ? boardStyle.dark : boardStyle.light}
+                  />
+                )}
+              </mesh>
+
+              {isSel && (
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={3}
+                >
+                  <planeGeometry
+                    args={[squareSize * 0.92, squareSize * 0.92]}
+                  />
+                  <meshBasicMaterial
+                    color="#ffffff"
+                    transparent
+                    opacity={0.14}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
+                  />
+                </mesh>
+              )}
+
+              {isTarget && !isSel && (
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={2}
+                >
+                  <planeGeometry args={[squareSize * 0.9, squareSize * 0.9]} />
+                  <PulsingIndicatorMaterial
+                    color="#ffffff"
+                    baseOpacity={0.09}
+                    pulsingUntilMs={
+                      netState.forcedFrom ? pulseTargetsUntilMs : 0
+                    }
+                  />
+                </mesh>
+              )}
+
+              {isLastMoveFrom && (
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={1}
+                >
+                  <planeGeometry
+                    args={[squareSize * 0.96, squareSize * 0.96]}
+                  />
+                  <meshBasicMaterial
+                    color="#4a9eff"
+                    transparent
+                    opacity={0.18}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
+                  />
+                </mesh>
+              )}
+
+              {isLastMoveTo && (
+                <mesh
+                  position={[0, SQUARE_TOP_Y + 0.001, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={1}
+                >
+                  <planeGeometry
+                    args={[squareSize * 0.96, squareSize * 0.96]}
+                  />
+                  <meshBasicMaterial
+                    color="#ffa04a"
+                    transparent
+                    opacity={0.2}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    polygonOffset
+                    polygonOffsetFactor={-1}
+                    polygonOffsetUnits={-1}
+                  />
+                </mesh>
+              )}
+            </group>
+          );
+        })}
+      </group>
+
+      {/* Join pads */}
+      <JoinPad
+        label={`${formatClock(clocks.remaining.w)}\n${
+          netState.seats.w
+            ? netState.seats.w.name || "White"
+            : pendingJoinSide === "w"
+            ? "Joining…"
+            : "Join White"
+        }`}
+        center={whitePadCenter}
+        size={padSize}
+        active={mySides.has("w")}
+        disabled={
+          (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
+          pendingJoinSide === "b" ||
+          (!!netState.seats.w &&
+            netState.seats.w.connId !== checkersGame.gameSelfId)
+        }
+        onClick={() => clickJoin("w")}
+      />
+      <JoinPad
+        label={`${formatClock(clocks.remaining.b)}\n${
+          netState.seats.b
+            ? netState.seats.b.name || "Black"
+            : pendingJoinSide === "b"
+            ? "Joining…"
+            : "Join Black"
+        }`}
+        center={blackPadCenter}
+        size={padSize}
+        active={mySides.has("b")}
+        disabled={
+          (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
+          pendingJoinSide === "w" ||
+          (!!netState.seats.b &&
+            netState.seats.b.connId !== checkersGame.gameSelfId)
+        }
+        onClick={() => clickJoin("b")}
+      />
+
+      {/* Control TV */}
+      <ControlTV
+        center={controlPadCenter}
+        active={controlsOpen}
+        hintText={controlsHintOpen ? "Join a side first" : null}
+        onClick={() => {
+          if (!isSeated) {
+            showControlsHint();
+            return;
+          }
+          if (controlsOpen) {
+            onBoardControls?.({ type: "close", boardKey });
+            return;
+          }
+          emitControlsOpen();
+        }}
+      />
+
+      {/* Pieces */}
+      {pieces.map((p) => {
+        const file = p.square.charCodeAt(0) - 97;
+        const rank = Number(p.square[1]);
+        const rankFromTop = 8 - rank;
+        const x = (file - 3.5) * squareSize;
+        const z = (rankFromTop - 3.5) * squareSize;
+
+        const tint = p.color === "w" ? whiteTint : blackTint;
+        const isMyPiece = mySides.has(p.color);
+        const canMove = turn === p.color && isMyPiece;
+
+        const y = originVec.y + SQUARE_TOP_Y;
+        return (
+          <CheckerPiece
+            key={`${p.color}:${p.king ? "k" : "m"}:${p.square}`}
+            position={[originVec.x + x, y, originVec.z + z]}
+            tint={tint}
+            side={p.color}
+            chessTheme={chessTheme}
+            king={p.king}
+            canMove={canMove}
+            onPick={() => onPickPiece(p.square as any)}
+          />
+        );
+      })}
+    </group>
+  );
+}
+
+export function OutdoorChess(props: OutdoorChessProps) {
+  const squareSize = 0.6;
+  const boardSize = squareSize * 8;
+  const padOffset = boardSize / 2 + 1.1;
+
+  return (
+    <group>
+      <OutdoorBenches
+        origin={props.origin}
+        padOffset={padOffset}
+        onRequestMove={props.onRequestMove}
+      />
+      {props.gameMode === "checkers" ? (
+        <OutdoorChessCheckersMode {...props} />
+      ) : (
+        <OutdoorChessChessMode {...props} />
+      )}
+    </group>
+  );
+}
+
 useGLTF.preload("/models/pawn.glb");
 useGLTF.preload("/models/knight.glb");
 useGLTF.preload("/models/bishop.glb");
 useGLTF.preload("/models/rook.glb");
 useGLTF.preload("/models/queen.glb");
 useGLTF.preload("/models/king.glb");
+useGLTF.preload("/models/checker.glb");

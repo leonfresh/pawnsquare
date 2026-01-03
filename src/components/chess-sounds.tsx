@@ -29,7 +29,8 @@ export function useChessSounds() {
       };
       load("move", "/sounds/Move.mp3");
       load("capture", "/sounds/Capture.mp3");
-      load("select", "/sounds/Select.mp3");
+      // Select.mp3 doesn't exist, will use fallback synth
+      // load("select", "/sounds/Select.mp3");
       load("warning", "/sounds/LowTime.mp3");
     }
     return () => {
@@ -104,21 +105,18 @@ export function useChessSounds() {
     noise.start();
   }, []);
 
-  const playOrFallback = useCallback(
-    (key: string, fallback: () => void) => {
-      const audio = audioFilesRef.current[key];
-      if (audio) {
-        audio.currentTime = 0;
-        audio.play().catch(() => {
-          // Fallback to synth if file fails (missing or autoplay blocked)
-          fallback();
-        });
-      } else {
+  const playOrFallback = useCallback((key: string, fallback: () => void) => {
+    const audio = audioFilesRef.current[key];
+    if (audio) {
+      audio.currentTime = 0;
+      audio.play().catch(() => {
+        // Fallback to synth if file fails (missing or autoplay blocked)
         fallback();
-      }
-    },
-    []
-  );
+      });
+    } else {
+      fallback();
+    }
+  }, []);
 
   const playMove = useCallback(() => {
     playOrFallback("move", () => {

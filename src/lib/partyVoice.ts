@@ -23,6 +23,7 @@ type PeerConnection = {
   hasRemoteAudio?: boolean;
   iceRestarting?: boolean;
   lastIceRestartAt?: number;
+  pendingIce?: RTCIceCandidateInit[];
 };
 
 export type VoiceDebugEvent = {
@@ -623,7 +624,7 @@ export function usePartyVoice(opts: {
         }
       }
 
-      return { pc, audioTransceiver };
+      return { pc, audioTransceiver, pendingIce: [] };
     },
     [ensureAudio, socket]
   );
@@ -686,10 +687,36 @@ export function usePartyVoice(opts: {
 
       const pc = conn.pc;
 
+      // If we're mid-negotiation, rollback to accept the new offer (polite peer strategy).
+      if (pc.signalingState !== "stable") {
+        try {
+          await pc.setLocalDescription({ type: "rollback" });
+        } catch (err) {
+          console.warn("[party-voice] rollback failed before offer", err);
+        }
+      }
+
       try {
         await pc.setRemoteDescription(offer);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+
+        // Apply any ICE candidates that arrived before remote description.
+        if (conn.pendingIce?.length) {
+          for (const c of conn.pendingIce) {
+            try {
+              await pc.addIceCandidate(c);
+            } catch (err) {
+              console.error("[party-voice] Failed to add pending ICE (offer path):", err);
+              pushEvent({
+                kind: "error",
+                peerId: from,
+                message: "addPendingIce failed",
+              });
+            }
+          }
+          conn.pendingIce = [];
+        }
 
         if (socket) {
           pushEvent({ kind: "answer-out", peerId: from });
@@ -722,8 +749,31 @@ export function usePartyVoice(opts: {
       const conn = peersRef.current.get(from);
       if (!conn) return;
 
+       // Only accept answers when we have a local offer outstanding.
+       if (conn.pc.signalingState !== "have-local-offer") {
+         console.warn("[party-voice] Ignoring answer in state", conn.pc.signalingState);
+         return;
+       }
+
       try {
         await conn.pc.setRemoteDescription(answer);
+
+        // Apply any ICE candidates that arrived before remote description.
+        if (conn.pendingIce?.length) {
+          for (const c of conn.pendingIce) {
+            try {
+              await conn.pc.addIceCandidate(c);
+            } catch (err) {
+              console.error("[party-voice] Failed to add pending ICE (answer path):", err);
+              pushEvent({
+                kind: "error",
+                peerId: from,
+                message: "addPendingIce failed",
+              });
+            }
+          }
+          conn.pendingIce = [];
+        }
       } catch (e) {
         console.error("[party-voice] Failed to set answer:", e);
         pushEvent({
@@ -744,6 +794,13 @@ export function usePartyVoice(opts: {
       pushEvent({ kind: "ice-in", peerId: from });
 
       try {
+        // If remote description isn't set yet, queue the candidate.
+        if (!conn.pc.remoteDescription) {
+          conn.pendingIce = conn.pendingIce || [];
+          conn.pendingIce.push(candidate);
+          return;
+        }
+
         await conn.pc.addIceCandidate(candidate);
       } catch (e) {
         console.error("[party-voice] Failed to add ICE candidate:", e);

@@ -16,7 +16,21 @@ export function useWASDKeys() {
   });
 
   useEffect(() => {
+    const isTyping = (target: EventTarget | null) => {
+      const ae = (target as HTMLElement | null) ?? document.activeElement;
+      if (!ae) return false;
+      const tag = ae.tagName;
+      const editable = (ae as HTMLElement).isContentEditable;
+      return (
+        editable ||
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT"
+      );
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return;
       if (e.repeat) return;
       if (typeof e.key !== "string") return;
       const k = e.key.toLowerCase();
@@ -27,6 +41,7 @@ export function useWASDKeys() {
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return;
       if (typeof e.key !== "string") return;
       const k = e.key.toLowerCase();
       if (k === "w" || k === "arrowup") keysRef.current.forward = false;

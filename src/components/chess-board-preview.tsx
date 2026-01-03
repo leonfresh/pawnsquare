@@ -441,6 +441,7 @@ export function ChessBoardPreview({ boardTheme }: { boardTheme: string }) {
 
   return (
     <Canvas
+      key="chess-board-preview-canvas"
       dpr={[1, 2]}
       gl={{ antialias: true, alpha: true }}
       camera={{ position: [0, 0.95, 3.1], fov: 32 }}

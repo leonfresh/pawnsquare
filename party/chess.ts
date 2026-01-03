@@ -235,12 +235,6 @@ export default class ChessServer implements Party.Server {
           return;
         }
 
-        // Ensure a player can only occupy one seat.
-        const other: Side = seat === "w" ? "b" : "w";
-        if (this.state.seats[other]?.connId === sender.id) {
-          this.state.seats[other] = null;
-        }
-
         const playerId =
           typeof msg.playerId === "string" && msg.playerId
             ? msg.playerId

@@ -2,6 +2,7 @@
   "name": "pawnsquare-party",
   "main": "party/room.ts",
   "parties": {
-    "chess": "party/chess.ts"
+    "chess": "party/chess.ts",
+    "checkers": "party/checkers.ts"
   }
 }

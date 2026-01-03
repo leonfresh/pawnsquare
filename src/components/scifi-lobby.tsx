@@ -1365,16 +1365,34 @@ function slugifySignText(text: string) {
     .replace(/^-|-$/g, "");
 }
 
+function hashStringToUnitFloat(input: string) {
+  // Deterministic, fast hash -> [0, 1]. Used to desync flicker across signs.
+  let h = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967295;
+}
+
+function visibleCharCount(text: string) {
+  // GLB glyph meshes are per-visible character; spaces/punctuation shouldn't count.
+  const compact = text.trim().replace(/[^a-z0-9]/gi, "");
+  return Math.max(1, compact.length);
+}
+
 function NeonTextModel({
   text,
   color,
   fontFolder,
   scale = 1,
+  signSeed,
 }: {
   text: string;
   color: string;
   fontFolder?: string;
   scale?: number;
+  signSeed?: number;
 }) {
   const slug = slugifySignText(text);
   const modelPath = fontFolder
@@ -1384,7 +1402,7 @@ function NeonTextModel({
 
   const materialsRef = useRef<THREE.ShaderMaterial[]>([]);
 
-  const makeNeonFlickerMaterial = useCallback((baseColor: string, seed: number) => {
+  const makeNeonFlickerMaterial = useCallback((baseColor: string, seed: number, minX: number, maxX: number, chars: number) => {
     const c = new THREE.Color(baseColor);
     const mat = new THREE.ShaderMaterial({
       transparent: true,
@@ -1394,6 +1412,9 @@ function NeonTextModel({
         uColor: { value: new THREE.Vector3(c.r, c.g, c.b) },
         uTime: { value: 0 },
         uSeed: { value: seed },
+        uMinX: { value: minX },
+        uMaxX: { value: maxX },
+        uChars: { value: Math.max(1, chars) },
       },
       vertexShader: `
         varying vec3 vLocal;
@@ -1410,6 +1431,9 @@ function NeonTextModel({
         uniform vec3 uColor;
         uniform float uTime;
         uniform float uSeed;
+        uniform float uMinX;
+        uniform float uMaxX;
+        uniform float uChars;
         varying vec3 vLocal;
         varying vec3 vWorld;
 
@@ -1430,6 +1454,19 @@ function NeonTextModel({
 
         void main() {
           float t = uTime;
+
+          // Approximate "character index" from local X across the word.
+          // This allows us to flicker one character segment at a time even when
+          // the model is a single mesh.
+          float w = max(1e-4, (uMaxX - uMinX));
+          float x01 = clamp((vLocal.x - uMinX) / w, 0.0, 0.9999);
+          float chars = max(1.0, uChars);
+          float charIndex = floor(x01 * chars);
+
+          // Choose one active character per time bucket (independent per sign via uSeed).
+          float bucket = floor(t * 9.0);
+          float activeChar = floor(hash(vec2(bucket + uSeed * 3.1, 5.23)) * chars);
+          float isActive = 1.0 - step(0.5, abs(charIndex - activeChar));
 
           // Randomized flicker that changes in time "buckets" so it feels erratic.
           float rSlow = noise(vec2(floor(t * 7.0) + uSeed * 13.0, 0.0));
@@ -1460,7 +1497,11 @@ function NeonTextModel({
 
           // Micro jitter noise for extra sparkle.
           float sparkle = noise(vec2(vWorld.x * 0.35 + uSeed, vWorld.y * 0.35 + t * 1.8));
-          float intensity = clamp(flick * (1.05 + 0.25 * sparkle), 0.0, 1.5);
+
+          // Only the active character gets the full flicker; the rest stay mostly steady.
+          float steady = 0.95 + 0.05 * sin(t * (6.0 + rSlow * 5.0) + uSeed * 2.0);
+          float amp = mix(steady, flick, isActive);
+          float intensity = clamp(amp * (1.05 + 0.25 * sparkle), 0.0, 1.5);
 
           vec3 col = uColor * intensity;
           float alpha = clamp(intensity, 0.0, 1.0);
@@ -1480,11 +1521,24 @@ function NeonTextModel({
 
     const clone = scene.clone();
     let meshIndex = 0;
+    const baseSeed =
+      (signSeed ??
+        hashStringToUnitFloat(`${fontFolder ?? ""}|${text}`) * 997.0) +
+      17.31;
+    const chars = visibleCharCount(text);
+
     clone.traverse((node) => {
       if ((node as THREE.Mesh).isMesh) {
         const mesh = node as THREE.Mesh;
-        const seed = (meshIndex + 1) * 17.31;
-        const mat = makeNeonFlickerMaterial(color, seed);
+
+        const g = mesh.geometry as THREE.BufferGeometry | undefined;
+        if (g && !g.boundingBox) g.computeBoundingBox();
+        const bb = g?.boundingBox;
+        const minX = bb?.min.x ?? -1;
+        const maxX = bb?.max.x ?? 1;
+
+        const seed = baseSeed + (meshIndex + 1) * 31.73;
+        const mat = makeNeonFlickerMaterial(color, seed, minX, maxX, chars);
         materialsRef.current.push(mat);
         mesh.material = mat;
         mesh.castShadow = false;
@@ -1492,7 +1546,7 @@ function NeonTextModel({
       }
     });
     return clone;
-  }, [scene, color, makeNeonFlickerMaterial]);
+  }, [scene, color, makeNeonFlickerMaterial, signSeed, fontFolder, text]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
@@ -1550,8 +1604,8 @@ function CyberpunkBuildings() {
         color: "#130022",
         accent: "#ff00ff",
         signs: [
-          { face: "front", x: 0, y: localY(50, 0.35), text: "NEXUS", font: "Orbitron-ExtraBold", color: "#ff00ff", size: [8, 3] as [number, number] },
-          { face: "front", x: 0, y: localY(50, 0.16), text: "CYBER", font: "Orbitron-ExtraBold", color: "#ff0066", size: [5, 1.8] as [number, number] },
+          { face: "front", x: 0, y: localY(50, 0.86), text: "NEXUS", font: "Orbitron-ExtraBold", color: "#ff00ff", size: [8, 3] as [number, number] },
+          { face: "front", x: 0, y: localY(50, 0.74), text: "CYBER", font: "Orbitron-ExtraBold", color: "#ff0066", size: [5, 1.8] as [number, number] },
         ],
       },
       {
@@ -1560,8 +1614,8 @@ function CyberpunkBuildings() {
         color: "#001428",
         accent: "#00ffaa",
         signs: [
-          { face: "front", x: 0, y: localY(60, 0.32), text: "SHIMATA", font: "Orbitron-Bold", color: "#00ff66", size: [10, 4] as [number, number] },
-          { face: "front", x: -4.8, y: localY(60, 0.20), text: "DATA", font: "Orbitron-Bold", color: "#ffff00", size: [2.6, 6.8] as [number, number], rotZ: Math.PI / 2, scaleMul: 1.25 },
+          { face: "front", x: 0, y: localY(60, 0.86), text: "SHIMATA", font: "Orbitron-Bold", color: "#00ff66", size: [10, 4] as [number, number] },
+          { face: "front", x: -4.8, y: localY(60, 0.76), text: "DATA", font: "Orbitron-Bold", color: "#ffff00", size: [2.6, 6.8] as [number, number], rotZ: Math.PI / 2, scaleMul: 1.25 },
         ],
       },
       {
@@ -1570,7 +1624,7 @@ function CyberpunkBuildings() {
         color: "#1a1400",
         accent: "#ff3300",
         signs: [
-          { face: "front", x: 0, y: localY(40, 0.26), text: "SECTOR 7", font: "Michroma-Regular", color: "#ff3300", size: [7, 3] as [number, number] },
+          { face: "front", x: 0, y: localY(40, 0.84), text: "SECTOR 7", font: "Michroma-Regular", color: "#ff3300", size: [7, 3] as [number, number] },
         ],
       },
       {
@@ -1580,9 +1634,9 @@ function CyberpunkBuildings() {
         accent: "#00ffff",
         signs: [
           // Screenshot-style stack: GRID left, CYBER/NEON/SYNTH centered-right.
-          { face: "front", x: 1.46, y: localY(70, 0.32), text: "CYBER", font: "Syncopate-Bold", color: "#00ffff", size: [7.6, 3.4] as [number, number], scaleMul: 0.72 },
-          { face: "front", x: 1.46, y: localY(70, 0.21), text: "NEON", font: "Syncopate-Bold", color: "#ff00ff", size: [7.0, 3.0] as [number, number], scaleMul: 0.72 },
-          { face: "front", x: 1.46, y: localY(70, 0.13), text: "SYNTH", font: "Syncopate-Bold", color: "#ff0000", size: [5.4, 2.0] as [number, number], rotZ: 0.02, scaleMul: 0.76 },
+          { face: "front", x: 1.46, y: localY(70, 0.88), text: "CYBER", font: "Syncopate-Bold", color: "#00ffff", size: [7.6, 3.4] as [number, number], scaleMul: 0.72 },
+          { face: "front", x: 1.46, y: localY(70, 0.79), text: "NEON", font: "Syncopate-Bold", color: "#ff00ff", size: [7.0, 3.0] as [number, number], scaleMul: 0.72 },
+          { face: "front", x: 1.46, y: localY(70, 0.71), text: "SYNTH", font: "Syncopate-Bold", color: "#ff0000", size: [5.4, 2.0] as [number, number], rotZ: 0.02, scaleMul: 0.76 },
         ],
       },
       {
@@ -1591,8 +1645,8 @@ function CyberpunkBuildings() {
         color: "#001616",
         accent: "#0099ff",
         signs: [
-          { face: "front", x: 0, y: localY(56, 0.26), text: "TECH", font: "Neonderthaw-Regular", color: "#0099ff", size: [14, 4] as [number, number] },
-          { face: "front", x: 0, y: localY(56, 0.16), text: "PARALLEL", font: "Neonderthaw-Regular", color: "#ff9900", size: [12, 3] as [number, number], rotZ: -0.08, scaleMul: 1.15 },
+          { face: "front", x: 0, y: localY(56, 0.86), text: "TECH", font: "Neonderthaw-Regular", color: "#0099ff", size: [14, 4] as [number, number] },
+          { face: "front", x: 0, y: localY(56, 0.75), text: "PARALLEL", font: "Neonderthaw-Regular", color: "#ff9900", size: [12, 3] as [number, number], rotZ: -0.08, scaleMul: 1.15 },
         ],
       },
       {
@@ -1601,7 +1655,7 @@ function CyberpunkBuildings() {
         color: "#160000",
         accent: "#ff0066",
         signs: [
-          { face: "front", x: 0, y: localY(44, 0.22), text: "PAWNSQUARE", font: "Audiowide-Regular", color: "#ff0066", size: [8.5, 3.2] as [number, number], scaleMul: 1.05 },
+          { face: "front", x: 0, y: localY(44, 0.86), text: "PAWNSQUARE", font: "Audiowide-Regular", color: "#ff0066", size: [8.5, 3.2] as [number, number], scaleMul: 1.05 },
         ],
       },
       {
@@ -1610,7 +1664,7 @@ function CyberpunkBuildings() {
         color: "#000a14",
         accent: "#66ff00",
         signs: [
-          { face: "front", x: 0, y: localY(52, 0.24), text: "GRID", font: "Orbitron-SemiBold", color: "#66ff00", size: [4.5, 1.75] as [number, number] },
+          { face: "front", x: 0, y: localY(52, 0.86), text: "GRID", font: "Orbitron-SemiBold", color: "#66ff00", size: [4.5, 1.75] as [number, number] },
         ],
       },
       // Smaller mid-distance buildings
@@ -1620,7 +1674,7 @@ function CyberpunkBuildings() {
         color: "#0a0a16",
         accent: "#ff00ff",
         signs: [
-          { face: "front", x: 0, y: localY(24, 0.28), text: "NEON", font: "BebasNeue-Regular", color: "#ff00ff", size: [5, 2] as [number, number] },
+          { face: "front", x: 0, y: localY(24, 0.86), text: "NEON", font: "BebasNeue-Regular", color: "#ff00ff", size: [5, 2] as [number, number] },
         ],
       },
       {
@@ -1629,7 +1683,7 @@ function CyberpunkBuildings() {
         color: "#160a0a",
         accent: "#00ffff",
         signs: [
-          { face: "front", x: 0, y: localY(30, 0.26), text: "NEXUS", font: "BebasNeue-Regular", color: "#00ffff", size: [6, 2.5] as [number, number] },
+          { face: "front", x: 0, y: localY(30, 0.86), text: "NEXUS", font: "BebasNeue-Regular", color: "#00ffff", size: [6, 2.5] as [number, number] },
         ],
       },
       {
@@ -1638,7 +1692,7 @@ function CyberpunkBuildings() {
         color: "#0a160a",
         accent: "#ffff00",
         signs: [
-          { face: "front", x: 0, y: localY(36, 0.24), text: "PAWNSQUARE", font: "BebasNeue-Regular", color: "#ffff00", size: [7.5, 3.1] as [number, number], scaleMul: 1.05 },
+          { face: "front", x: 0, y: localY(36, 0.86), text: "PAWNSQUARE", font: "BebasNeue-Regular", color: "#ffff00", size: [7.5, 3.1] as [number, number], scaleMul: 1.05 },
         ],
       },
     ];
@@ -1967,8 +2021,14 @@ function CyberpunkBuildings() {
             // Keep signs from spilling past the building silhouette (most noticeable on the front face).
             const margin = 0.35;
             const maxX = Math.max(0, bw / 2 - panelSize[0] / 2 - margin);
-            const desiredX = (sign.x ?? 0) as number;
+            const desiredXBase = (sign.x ?? 0) as number;
+            const desiredX = rot90 && Math.abs(desiredXBase) < 1e-6 ? -maxX : desiredXBase;
             const clampedX = Math.max(-maxX, Math.min(maxX, desiredX));
+
+            const signSeed =
+              (i + 1) * 1000 +
+              (si + 1) * 97 +
+              hashStringToUnitFloat(`${sign.font ?? ""}|${sign.text ?? ""}`) * 911;
 
             return (
               <group
@@ -1994,6 +2054,7 @@ function CyberpunkBuildings() {
                     color={sign.color}
                     fontFolder={sign.font}
                     scale={panelSize[1] * 0.2 * 10 * scaleFactor * effectiveScaleMul}
+                    signSeed={signSeed}
                   />
                 </group>
               )}
@@ -2136,6 +2197,22 @@ export function SciFiLobby() {
       {/* ArenaCrowds removed */}
       <SciFiPlanters />
       <SciFiDecorations />
+
+      {/* BETA sign (theme under construction) */}
+      <group position={[0, 7.5, 9]}>
+        <Billboard follow>
+          <mesh position={[0, 0, -0.05]}>
+            <planeGeometry args={[10, 3.2]} />
+            <meshBasicMaterial color="#000000" transparent opacity={0.55} depthWrite={false} />
+          </mesh>
+          <Text fontSize={1.2} color="#ffff00" anchorX="center" anchorY="middle" outlineWidth={0.08} outlineColor="#ffff00" outlineOpacity={0.7}>
+            BETA
+          </Text>
+          <Text position={[0, -1.05, 0]} fontSize={0.42} color="#ffffff" anchorX="center" anchorY="middle" maxWidth={9} lineHeight={1.1}>
+            UNDER CONSTRUCTION
+          </Text>
+        </Billboard>
+      </group>
       
       {/* Blimps with Ads */}
       <Blimp position={[0, 18, -40]} text="CYBER" color="#00ffff" range={60} speed={0.04} />

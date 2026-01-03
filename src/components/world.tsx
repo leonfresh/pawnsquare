@@ -10,9 +10,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { Chessboard, type Arrow } from "react-chessboard";
 import * as THREE from "three";
 import {
   usePartyRoom as useP2PRoom,
+  type BoardMode,
   type ChatMessage,
   type Player,
   type Vec3,
@@ -798,7 +800,6 @@ export function BoardLamp({
     </>
   );
 }
-
 function AvatarBody({
   color,
   isSelf,
@@ -2134,8 +2135,10 @@ function SelfAvatar({
   const [movingSpeed, setMovingSpeed] = useState(0);
   const [pose, setPose] = useState<"stand" | "sit">("stand");
   const lastPoseRef = useRef<"stand" | "sit">("stand");
+  const speedUiAccumulatorRef = useRef(0);
+  const lastSpeedUiRef = useRef(0);
 
-  useFrame(() => {
+  useFrame((_state, dt) => {
     const g = groupRef.current;
     const p = pos.current;
     if (!g || !p) return;
@@ -2148,7 +2151,16 @@ function SelfAvatar({
     while (diff < -Math.PI) diff += Math.PI * 2;
     g.rotation.y += diff * 0.15;
 
-    setMovingSpeed(speed.current);
+    // Avoid a React state update every frame.
+    speedUiAccumulatorRef.current += dt;
+    if (speedUiAccumulatorRef.current >= 0.1) {
+      speedUiAccumulatorRef.current = 0;
+      const nextSpeed = Number.isFinite(speed.current) ? speed.current : 0;
+      if (Math.abs(nextSpeed - lastSpeedUiRef.current) > 0.02) {
+        lastSpeedUiRef.current = nextSpeed;
+        setMovingSpeed(nextSpeed);
+      }
+    }
 
     const nextPose = sittingRef?.current ? "sit" : "stand";
     if (nextPose !== lastPoseRef.current) {
@@ -2293,6 +2305,8 @@ function RemoteAvatar({
   const lastPosRef = useRef<THREE.Vector3>(posRef.current.clone());
   const speedRef = useRef<number>(0);
   const [movingSpeed, setMovingSpeed] = useState(0);
+  const speedUiAccumulatorRef = useRef(0);
+  const lastSpeedUiRef = useRef(0);
 
   useFrame((_state, dt) => {
     const g = groupRef.current;
@@ -2329,7 +2343,18 @@ function RemoteAvatar({
     );
     lastPosRef.current.copy(posRef.current);
 
-    setMovingSpeed(speedRef.current);
+    // Avoid a React state update every frame.
+    speedUiAccumulatorRef.current += dt;
+    if (speedUiAccumulatorRef.current >= 0.1) {
+      speedUiAccumulatorRef.current = 0;
+      const nextSpeed = Number.isFinite(speedRef.current)
+        ? speedRef.current
+        : 0;
+      if (Math.abs(nextSpeed - lastSpeedUiRef.current) > 0.02) {
+        lastSpeedUiRef.current = nextSpeed;
+        setMovingSpeed(nextSpeed);
+      }
+    }
   });
 
   return (
@@ -2762,6 +2787,52 @@ function normalizeOwnedItemIds(raw: unknown): string[] {
   return Array.from(new Set(out));
 }
 
+type BoardControlsOpen = {
+  type: "open";
+  boardKey: string;
+  lobby: "scifi" | "park";
+  timeMinutes: number;
+  fen: string;
+  mySide: "w" | "b" | null;
+  turn: "w" | "b";
+  boardOrientation: "white" | "black";
+  canMove2d: boolean;
+  canInc: boolean;
+  canDec: boolean;
+  canReset: boolean;
+  canCenter: boolean;
+  onMove2d: (
+    from: string,
+    to: string,
+    promotion?: "q" | "r" | "b" | "n"
+  ) => boolean;
+  onInc: () => void;
+  onDec: () => void;
+  onReset: () => void;
+  onCenter: () => void;
+};
+
+type Board2dSync = {
+  type: "sync2d";
+  boardKey: string;
+  lobby: "scifi" | "park";
+  fen: string;
+  mySide: "w" | "b" | null;
+  turn: "w" | "b";
+  boardOrientation: "white" | "black";
+  canMove2d: boolean;
+  onMove2d: (
+    from: string,
+    to: string,
+    promotion?: "q" | "r" | "b" | "n"
+  ) => boolean;
+};
+
+type BoardControlsEvent =
+  | BoardControlsOpen
+  | Board2dSync
+  | { type: "close"; boardKey?: string };
+
 function toLegacyOwnedAvatarsValues(ownedItemIds: string[]): string[] {
   const out: string[] = [];
   for (const id of ownedItemIds) {
@@ -3077,16 +3148,24 @@ export default function World({
     peerCount,
     connected,
     chat,
+    boardModes,
     sendSelfState,
     sendChat,
+    setBoardMode,
     setName,
     setAvatarUrl,
     socketRef,
-  } = useP2PRoom(roomId, {
-    initialName,
-    initialGender,
-    paused: isDuplicateSession,
-  });
+  } = useP2PRoom(
+    roomId,
+    useMemo(
+      () => ({
+        initialName,
+        initialGender,
+        paused: isDuplicateSession,
+      }),
+      [initialName, initialGender, isDuplicateSession]
+    )
+  );
 
   const peerGainMapRef = useRef<Map<string, GainNode | null>>(new Map());
 
@@ -3720,12 +3799,62 @@ export default function World({
   }, [avatarSystem, self, self?.avatarUrl, debugAvatarUrl, setAvatarUrl]);
 
   const [contextLost, setContextLost] = useState(false);
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
+  const glRef = useRef<THREE.WebGLRenderer | null>(null);
+
+  // Stage scene mounts to avoid large one-frame spikes (especially during Fast Refresh / scene swaps).
+  const [sceneStage, setSceneStage] = useState<0 | 1 | 2>(0);
+  const [mountedBoardCount, setMountedBoardCount] = useState(0);
 
   const selfPosRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
   const selfRotRef = useRef<number>(0);
   const selfSpeedRef = useRef<number>(0);
   const lookAtTargetRef = useRef<THREE.Vector3 | null>(null);
+
+  const handleCenterCamera = useCallback((target: Vec3) => {
+    if (!lookAtTargetRef.current) {
+      lookAtTargetRef.current = new THREE.Vector3(
+        target[0],
+        target[1],
+        target[2]
+      );
+    } else {
+      lookAtTargetRef.current.set(target[0], target[1], target[2]);
+    }
+  }, []);
+
+  const [boardControls, setBoardControls] = useState<BoardControlsOpen | null>(
+    null
+  );
+
+  const [board2d, setBoard2d] = useState<Board2dSync | null>(null);
+  const [board2dArrows, setBoard2dArrows] = useState<Arrow[]>([]);
+  const [board2dSelected, setBoard2dSelected] = useState<string | null>(null);
+
+  const computeBoard2dCenteredPos = useCallback(() => {
+    if (typeof window === "undefined") return { x: 16, y: 16 };
+
+    // Keep in sync with desktop sizing below: width=min(560px,52vw), height=min(720px,80vh)
+    const width = Math.min(560, window.innerWidth * 0.52);
+    const height = Math.min(720, window.innerHeight * 0.8);
+    return {
+      x: Math.max(8, Math.round((window.innerWidth - width) / 2)),
+      y: Math.max(8, Math.round((window.innerHeight - height) / 2)),
+    };
+  }, []);
+
+  const [board2dPos, setBoard2dPos] = useState<{ x: number; y: number }>({
+    x: 16,
+    y: 16,
+  });
+  const board2dDragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
 
   const moveTargetRef = useRef<{
     dest: Vec3;
@@ -3741,22 +3870,23 @@ export default function World({
   const [pendingJoinBoardKey, setPendingJoinBoardKey] = useState<string | null>(
     null
   );
-  const joinLockedBoardKey = joinedBoardKey ?? pendingJoinBoardKey;
+  // Only lock during a pending join; being seated should not prevent switching boards.
+  const joinLockedBoardKey = pendingJoinBoardKey;
+
+  const [leaveAllNonce, setLeaveAllNonce] = useState(0);
+  const [leaveAllExceptBoardKey, setLeaveAllExceptBoardKey] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     if (!pendingJoinBoardKey) return;
-    if (joinedBoardKey) {
-      setPendingJoinBoardKey(null);
-      return;
-    }
-
     const t = window.setTimeout(() => {
       setPendingJoinBoardKey((cur) =>
         cur === pendingJoinBoardKey ? null : cur
       );
     }, 8000);
     return () => window.clearTimeout(t);
-  }, [pendingJoinBoardKey, joinedBoardKey]);
+  }, [pendingJoinBoardKey]);
 
   const boards = useMemo(
     () =>
@@ -3769,6 +3899,79 @@ export default function World({
       ] as const,
     []
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let cancelled = false;
+    let timeoutId: number | null = null;
+    let idleId: number | null = null;
+    let nextBoardIndex = 0;
+
+    const clearTimers = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (idleId !== null && "cancelIdleCallback" in window) {
+        try {
+          (window as any).cancelIdleCallback(idleId);
+        } catch {
+          // ignore
+        }
+        idleId = null;
+      }
+    };
+
+    const runSoon = (fn: () => void, delayMs: number) => {
+      timeoutId = window.setTimeout(() => {
+        timeoutId = null;
+        if (!cancelled) fn();
+      }, delayMs);
+    };
+
+    const runIdle = (fn: () => void) => {
+      if ("requestIdleCallback" in window) {
+        idleId = (window as any).requestIdleCallback(
+          () => {
+            idleId = null;
+            if (!cancelled) fn();
+          },
+          { timeout: 250 }
+        );
+      } else {
+        runSoon(fn, 0);
+      }
+    };
+
+    const mountNextBoard = () => {
+      if (cancelled) return;
+      nextBoardIndex += 1;
+      setMountedBoardCount(nextBoardIndex);
+      if (nextBoardIndex < boards.length) {
+        runIdle(() => runSoon(mountNextBoard, 80));
+      }
+    };
+
+    // Reset and progressively mount.
+    setSceneStage(0);
+    setMountedBoardCount(0);
+
+    // 0: lobby, 1: lamps, 2: boards incrementally.
+    runSoon(() => setSceneStage(1), 30);
+    runIdle(() =>
+      runSoon(() => {
+        setSceneStage(2);
+        mountNextBoard();
+      }, 60)
+    );
+
+    return () => {
+      cancelled = true;
+      clearTimers();
+    };
+    // Re-stage on scene/room changes.
+  }, [boards.length, lobbyType, roomId]);
 
   const lastSentRef = useRef<{ t: number; p: Vec3; r: number }>({
     t: 0,
@@ -3837,27 +4040,45 @@ export default function World({
   }, [copied]);
 
   useEffect(() => {
-    const el = canvasElRef.current;
-    if (!el) return;
+    if (!canvasEl) return;
 
     const onLost = (e: Event) => {
+      // Prevent default so the browser is allowed to attempt context restoration.
       e.preventDefault();
       setContextLost(true);
     };
     const onRestored = () => setContextLost(false);
 
-    el.addEventListener("webglcontextlost", onLost as EventListener, false);
-    el.addEventListener(
+    canvasEl.addEventListener(
+      "webglcontextlost",
+      onLost as EventListener,
+      false
+    );
+    canvasEl.addEventListener(
       "webglcontextrestored",
       onRestored as EventListener,
       false
     );
     return () => {
-      el.removeEventListener("webglcontextlost", onLost as EventListener);
-      el.removeEventListener(
+      canvasEl.removeEventListener("webglcontextlost", onLost as EventListener);
+      canvasEl.removeEventListener(
         "webglcontextrestored",
         onRestored as EventListener
       );
+    };
+  }, [canvasEl]);
+
+  useEffect(() => {
+    return () => {
+      // Help Fast Refresh/HMR clean up GPU resources promptly.
+      try {
+        glRef.current?.dispose();
+      } catch {
+        // ignore
+      }
+      glRef.current = null;
+      canvasElRef.current = null;
+      setCanvasEl(null);
     };
   }, []);
 
@@ -3921,9 +4142,163 @@ export default function World({
     );
   }
 
+  const handleBoardControls = useCallback((event: BoardControlsEvent) => {
+    if (event.type === "close") {
+      setBoardControls((prev) => {
+        if (!prev) return null;
+        if (event.boardKey && prev.boardKey !== event.boardKey) return prev;
+        return null;
+      });
+
+      setBoard2d((prev) => {
+        if (!prev) return null;
+        if (event.boardKey && prev.boardKey !== event.boardKey) return prev;
+        return null;
+      });
+      return;
+    }
+
+    if (event.type === "sync2d") {
+      setBoard2d((prev) => {
+        if (!prev) return prev;
+        if (prev.boardKey !== event.boardKey) return prev;
+        // Always take the latest move callback (it closes over the latest netState in the board).
+        return { ...event };
+      });
+
+      setBoardControls((prev) => {
+        if (!prev) return prev;
+        if (prev.boardKey !== event.boardKey) return prev;
+        return {
+          ...prev,
+          fen: event.fen,
+          mySide: event.mySide,
+          turn: event.turn,
+          boardOrientation: event.boardOrientation,
+          canMove2d: event.canMove2d,
+          onMove2d: event.onMove2d,
+        };
+      });
+      return;
+    }
+
+    setBoardControls(event);
+  }, []);
+
+  const handleJoinIntent = useCallback((boardKey: string) => {
+    setPendingJoinBoardKey((prev) => prev ?? boardKey);
+    setLeaveAllExceptBoardKey(boardKey);
+    setLeaveAllNonce((n) => n + 1);
+  }, []);
+
+  const handleSelfSeatChange = useCallback(
+    (boardKey: string, isSeated: boolean) => {
+      setJoinedBoardKey((prev) => {
+        if (isSeated) return boardKey;
+        if (prev === boardKey) return null;
+        return prev;
+      });
+      setPendingJoinBoardKey((prev) => (prev === boardKey ? null : prev));
+    },
+    []
+  );
+
+  const handleRequestMove = useCallback(
+    (
+      dest: Vec3,
+      opts?: {
+        rotY?: number;
+        sit?: boolean;
+        sitDest?: Vec3;
+        lookAtTarget?: Vec3;
+      }
+    ) => {
+      moveTargetRef.current = {
+        dest,
+        rotY: opts?.rotY,
+        sit: opts?.sit,
+        sitDest: opts?.sitDest,
+        lookAtTarget: opts?.lookAtTarget,
+      };
+      sittingRef.current = false;
+    },
+    []
+  );
+
+  const renderBoardLamp = useCallback(
+    (origin: [number, number, number]) => {
+      const lampPos: [number, number, number] = [
+        origin[0] + (origin[0] < 0 ? -5.8 : 5.8),
+        0,
+        origin[2] + (origin[2] < 0 ? -4.8 : 4.8),
+      ];
+
+      return lobbyType === "scifi" ? (
+        <SciFiLamp lampPos={lampPos} />
+      ) : (
+        <BoardLamp lampPos={lampPos} targetPos={[origin[0], 0.2, origin[2]]} />
+      );
+    },
+    [lobbyType]
+  );
+
+  const renderChessBoard = useCallback(
+    (
+      b: { key: string; origin: [number, number, number] },
+      controlsOpen: boolean,
+      board2dOpen: boolean
+    ) => {
+      const commonProps = {
+        roomId,
+        boardKey: b.key,
+        origin: b.origin,
+        selfPositionRef: selfPosRef,
+        selfId: self?.id || "",
+        selfName: self?.name || "",
+        joinLockedBoardKey,
+        leaveAllNonce,
+        leaveAllExceptBoardKey,
+        chessTheme,
+        chessBoardTheme,
+        gameMode: boardModes?.[b.key] ?? "chess",
+        onJoinIntent: handleJoinIntent,
+        onSelfSeatChange: handleSelfSeatChange,
+        onRequestMove: handleRequestMove,
+        onCenterCamera: handleCenterCamera,
+        onBoardControls: handleBoardControls,
+        controlsOpen,
+        board2dOpen,
+      };
+
+      return lobbyType === "scifi" ? (
+        <ScifiChess {...commonProps} />
+      ) : (
+        <OutdoorChess {...commonProps} />
+      );
+    },
+    [
+      chessBoardTheme,
+      chessTheme,
+      boardModes,
+      handleBoardControls,
+      handleCenterCamera,
+      handleJoinIntent,
+      handleRequestMove,
+      handleSelfSeatChange,
+      joinLockedBoardKey,
+      leaveAllExceptBoardKey,
+      leaveAllNonce,
+      lobbyType,
+      roomId,
+      self?.id,
+      self?.name,
+    ]
+  );
+
   return (
     <div style={{ position: "fixed", inset: 0 }}>
       <Canvas
+        key="main-canvas"
         dpr={[1, 1]}
         camera={{ position: [0, 5, 8], fov: 60 }}
         gl={{ antialias: false, powerPreference: "high-performance" }}
@@ -3938,7 +4313,9 @@ export default function World({
           gl.outputColorSpace = THREE.SRGBColorSpace;
           gl.toneMapping = THREE.ACESFilmicToneMapping;
           gl.toneMappingExposure = 1.06;
+          glRef.current = gl;
           canvasElRef.current = gl.domElement;
+          setCanvasEl(gl.domElement);
         }}
       >
         <group
@@ -3963,102 +4340,19 @@ export default function World({
         >
           {lobbyType === "scifi" ? <SciFiLobby /> : <ParkLobby />}
 
-          {boards.map((b) => (
+          {boards.map((b, idx) => (
             <group key={b.key}>
-              {lobbyType === "scifi" ? (
-                <SciFiLamp
-                  lampPos={[
-                    b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
-                    0,
-                    b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
-                  ]}
-                />
-              ) : (
-                <BoardLamp
-                  lampPos={[
-                    b.origin[0] + (b.origin[0] < 0 ? -5.8 : 5.8),
-                    0,
-                    b.origin[2] + (b.origin[2] < 0 ? -4.8 : 4.8),
-                  ]}
-                  targetPos={[b.origin[0], 0.2, b.origin[2]]}
-                />
-              )}
-              <Suspense fallback={null}>
-                {lobbyType === "scifi" ? (
-                  <ScifiChess
-                    roomId={roomId}
-                    boardKey={b.key}
-                    origin={b.origin}
-                    selfPositionRef={selfPosRef}
-                    selfId={self?.id || ""}
-                    selfName={self?.name || ""}
-                    joinLockedBoardKey={joinLockedBoardKey}
-                    chessTheme={chessTheme}
-                    chessBoardTheme={chessBoardTheme}
-                    onJoinIntent={(boardKey) => {
-                      setPendingJoinBoardKey((prev) => prev ?? boardKey);
-                    }}
-                    onSelfSeatChange={(boardKey, side) => {
-                      setJoinedBoardKey((prev) => {
-                        if (side) return boardKey;
-                        if (prev === boardKey) return null;
-                        return prev;
-                      });
-                      setPendingJoinBoardKey((prev) =>
-                        prev === boardKey ? null : prev
-                      );
-                    }}
-                    onRequestMove={(dest, opts) => {
-                      moveTargetRef.current = {
-                        dest,
-                        rotY: opts?.rotY,
-                        sit: opts?.sit,
-                        sitDest: opts?.sitDest,
-                        lookAtTarget: opts?.lookAtTarget,
-                      };
-                      sittingRef.current = false;
-                    }}
-                  />
-                ) : (
-                  <OutdoorChess
-                    roomId={roomId}
-                    boardKey={b.key}
-                    origin={b.origin}
-                    selfPositionRef={selfPosRef}
-                    selfId={self?.id || ""}
-                    selfName={self?.name || ""}
-                    joinLockedBoardKey={joinLockedBoardKey}
-                    chessTheme={chessTheme}
-                    chessBoardTheme={chessBoardTheme}
-                    onJoinIntent={(boardKey) => {
-                      // Lock immediately to prevent starting a second join elsewhere.
-                      setPendingJoinBoardKey((prev) => prev ?? boardKey);
-                    }}
-                    onSelfSeatChange={(boardKey, side) => {
-                      setJoinedBoardKey((prev) => {
-                        if (side) return boardKey;
-                        // Only clear if this board was the one we were locked to.
-                        if (prev === boardKey) return null;
-                        return prev;
-                      });
-                      // If we successfully joined (or cleared) this board, clear pending lock.
-                      setPendingJoinBoardKey((prev) =>
-                        prev === boardKey ? null : prev
-                      );
-                    }}
-                    onRequestMove={(dest, opts) => {
-                      moveTargetRef.current = {
-                        dest,
-                        rotY: opts?.rotY,
-                        sit: opts?.sit,
-                        sitDest: opts?.sitDest,
-                        lookAtTarget: opts?.lookAtTarget,
-                      };
-                      sittingRef.current = false;
-                    }}
-                  />
-                )}
-              </Suspense>
+              {sceneStage >= 1 ? renderBoardLamp(b.origin) : null}
+
+              {sceneStage >= 2 && idx < mountedBoardCount ? (
+                <Suspense fallback={null}>
+                  {renderChessBoard(
+                    b,
+                    boardControls?.boardKey === b.key,
+                    board2d?.boardKey === b.key
+                  )}
+                </Suspense>
+              ) : null}
             </group>
           ))}
 
@@ -5139,6 +5433,674 @@ export default function World({
         ) : null}
       </div>
 
+      {boardControls ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 55,
+            pointerEvents: "auto",
+            padding: 16,
+          }}
+          onClick={() => setBoardControls(null)}
+        >
+          <div
+            style={{
+              width: 420,
+              maxWidth: "min(92vw, 520px)",
+              borderRadius: 16,
+              padding: 16,
+              border: "1px solid rgba(255,255,255,0.18)",
+              background:
+                boardControls.lobby === "scifi"
+                  ? "linear-gradient(135deg, rgba(0,255,255,0.16), rgba(80,0,120,0.25))"
+                  : "linear-gradient(135deg, rgba(255,255,255,0.82), rgba(230,245,250,0.88))",
+              boxShadow: "0 22px 60px rgba(0,0,0,0.45)",
+              color: boardControls.lobby === "scifi" ? "#e6f7ff" : "#0f2c34",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(() => {
+              const mode: BoardMode =
+                (boardModes?.[boardControls.boardKey] as BoardMode) ?? "chess";
+
+              return (
+                <>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 10,
+                      gap: 10,
+                      fontWeight: 700,
+                      letterSpacing: 0.4,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      <span style={{ fontSize: 13, opacity: 0.8 }}>Board</span>
+                      <span style={{ fontSize: 16 }}>
+                        {boardControls.boardKey.toUpperCase()}
+                      </span>
+                    </div>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <div
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 999,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.35)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.35)"
+                              : "rgba(255,255,255,0.7)",
+                          fontSize: 13,
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {mode}
+                      </div>
+                      <div
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 999,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.35)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.35)"
+                              : "rgba(255,255,255,0.7)",
+                          fontSize: 13,
+                        }}
+                      >
+                        Time {boardControls.timeMinutes}m
+                      </div>
+                      <button
+                        onClick={() => setBoardControls(null)}
+                        style={{
+                          border: "none",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(255,255,255,0.14)"
+                              : "rgba(0,0,0,0.08)",
+                          color: "inherit",
+                          padding: "6px 10px",
+                          borderRadius: 10,
+                          cursor: "pointer",
+                          fontWeight: 700,
+                        }}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                      gap: 10,
+                      marginBottom: 10,
+                    }}
+                  >
+                    <button
+                      onClick={() => {
+                        setBoardMode(boardControls.boardKey, "chess");
+                        setJoinedBoardKey((prev) =>
+                          prev === boardControls.boardKey ? null : prev
+                        );
+                        setPendingJoinBoardKey(null);
+                        setBoardControls(null);
+                      }}
+                      style={{
+                        padding: "12px",
+                        borderRadius: 12,
+                        border:
+                          boardControls.lobby === "scifi"
+                            ? "1px solid rgba(0,255,255,0.35)"
+                            : "1px solid rgba(0,0,0,0.12)",
+                        background:
+                          mode === "chess"
+                            ? boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.45)"
+                              : "rgba(255,255,255,0.95)"
+                            : boardControls.lobby === "scifi"
+                            ? "rgba(0,0,0,0.28)"
+                            : "rgba(255,255,255,0.78)",
+                        color: "inherit",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                      }}
+                    >
+                      Chess
+                    </button>
+                    <button
+                      onClick={() => {
+                        setBoardMode(boardControls.boardKey, "checkers");
+                        setJoinedBoardKey((prev) =>
+                          prev === boardControls.boardKey ? null : prev
+                        );
+                        setPendingJoinBoardKey(null);
+                        setBoardControls(null);
+                      }}
+                      style={{
+                        padding: "12px",
+                        borderRadius: 12,
+                        border:
+                          boardControls.lobby === "scifi"
+                            ? "1px solid rgba(0,255,255,0.35)"
+                            : "1px solid rgba(0,0,0,0.12)",
+                        background:
+                          mode === "checkers"
+                            ? boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.45)"
+                              : "rgba(255,255,255,0.95)"
+                            : boardControls.lobby === "scifi"
+                            ? "rgba(0,0,0,0.28)"
+                            : "rgba(255,255,255,0.78)",
+                        color: "inherit",
+                        cursor: "pointer",
+                        fontWeight: 800,
+                      }}
+                    >
+                      Checkers
+                    </button>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                      gap: 10,
+                    }}
+                  >
+                    <button
+                      onClick={boardControls.onDec}
+                      disabled={!boardControls.canDec}
+                      style={{
+                        padding: "12px",
+                        borderRadius: 12,
+                        border:
+                          boardControls.lobby === "scifi"
+                            ? "1px solid rgba(0,255,255,0.35)"
+                            : "1px solid rgba(0,0,0,0.12)",
+                        background:
+                          boardControls.lobby === "scifi"
+                            ? "rgba(0,0,0,0.35)"
+                            : "rgba(255,255,255,0.9)",
+                        color: "inherit",
+                        cursor: boardControls.canDec
+                          ? "pointer"
+                          : "not-allowed",
+                        opacity: boardControls.canDec ? 1 : 0.5,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Time -
+                    </button>
+                    <button
+                      onClick={boardControls.onInc}
+                      disabled={!boardControls.canInc}
+                      style={{
+                        padding: "12px",
+                        borderRadius: 12,
+                        border:
+                          boardControls.lobby === "scifi"
+                            ? "1px solid rgba(0,255,255,0.35)"
+                            : "1px solid rgba(0,0,0,0.12)",
+                        background:
+                          boardControls.lobby === "scifi"
+                            ? "rgba(0,0,0,0.35)"
+                            : "rgba(255,255,255,0.9)",
+                        color: "inherit",
+                        cursor: boardControls.canInc
+                          ? "pointer"
+                          : "not-allowed",
+                        opacity: boardControls.canInc ? 1 : 0.5,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Time +
+                    </button>
+                    <button
+                      onClick={boardControls.onReset}
+                      disabled={!boardControls.canReset}
+                      style={{
+                        padding: "12px",
+                        borderRadius: 12,
+                        border:
+                          boardControls.lobby === "scifi"
+                            ? "1px solid rgba(255,90,90,0.5)"
+                            : "1px solid rgba(200,40,40,0.35)",
+                        background:
+                          boardControls.lobby === "scifi"
+                            ? "rgba(50,0,0,0.5)"
+                            : "rgba(255,230,230,0.85)",
+                        color:
+                          boardControls.lobby === "scifi"
+                            ? "#ffb3b3"
+                            : "#5c0f0f",
+                        cursor: boardControls.canReset
+                          ? "pointer"
+                          : "not-allowed",
+                        opacity: boardControls.canReset ? 1 : 0.55,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Reset Game
+                    </button>
+                    <button
+                      onClick={boardControls.onCenter}
+                      disabled={!boardControls.canCenter}
+                      style={{
+                        padding: "12px",
+                        borderRadius: 12,
+                        border:
+                          boardControls.lobby === "scifi"
+                            ? "1px solid rgba(0,255,180,0.35)"
+                            : "1px solid rgba(0,120,90,0.35)",
+                        background:
+                          boardControls.lobby === "scifi"
+                            ? "rgba(0,50,40,0.45)"
+                            : "rgba(210,255,245,0.9)",
+                        color:
+                          boardControls.lobby === "scifi"
+                            ? "#7cffd8"
+                            : "#0d2a32",
+                        cursor: boardControls.canCenter
+                          ? "pointer"
+                          : "not-allowed",
+                        opacity: boardControls.canCenter ? 1 : 0.55,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Center Camera
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      if (mode !== "chess") return;
+                      setBoard2dArrows([]);
+                      setBoard2dPos(
+                        isMobile ? { x: 8, y: 8 } : computeBoard2dCenteredPos()
+                      );
+                      setBoard2d({
+                        type: "sync2d",
+                        boardKey: boardControls.boardKey,
+                        lobby: boardControls.lobby,
+                        fen: boardControls.fen,
+                        mySide: boardControls.mySide,
+                        turn: boardControls.turn,
+                        boardOrientation: boardControls.boardOrientation,
+                        canMove2d: boardControls.canMove2d,
+                        onMove2d: boardControls.onMove2d,
+                      });
+                      setBoardControls(null);
+                    }}
+                    disabled={mode !== "chess"}
+                    style={{
+                      marginTop: 12,
+                      width: "100%",
+                      padding: "12px",
+                      borderRadius: 12,
+                      border:
+                        boardControls.lobby === "scifi"
+                          ? "1px solid rgba(0,255,255,0.35)"
+                          : "1px solid rgba(0,0,0,0.12)",
+                      background:
+                        boardControls.lobby === "scifi"
+                          ? "rgba(0,0,0,0.35)"
+                          : "rgba(255,255,255,0.9)",
+                      color: "inherit",
+                      cursor: mode === "chess" ? "pointer" : "not-allowed",
+                      fontWeight: 800,
+                      letterSpacing: 0.2,
+                      opacity: mode === "chess" ? 1 : 0.6,
+                    }}
+                  >
+                    Open 2D Board
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      ) : null}
+
+      {board2d ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 56,
+            // Allow interacting with the 3D world while the 2D board is open.
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "transparent",
+              pointerEvents: "none",
+            }}
+          />
+
+          <div
+            style={{
+              position: "absolute",
+              left: isMobile ? 8 : board2dPos.x,
+              top: isMobile ? 8 : board2dPos.y,
+              width: isMobile ? "calc(100vw - 16px)" : "min(560px, 52vw)",
+              maxHeight: isMobile ? "calc(100vh - 16px)" : "min(720px, 80vh)",
+              borderRadius: 14,
+              overflow: "hidden",
+              border:
+                board2d.lobby === "scifi"
+                  ? "1px solid rgba(0,255,255,0.22)"
+                  : "1px solid rgba(0,0,0,0.12)",
+              background:
+                board2d.lobby === "scifi"
+                  ? "linear-gradient(180deg, rgba(0,0,0,0.78), rgba(20,0,40,0.72))"
+                  : "linear-gradient(180deg, rgba(255,255,255,0.92), rgba(245,250,252,0.92))",
+              boxShadow: "0 26px 70px rgba(0,0,0,0.45)",
+              color: board2d.lobby === "scifi" ? "#e6f7ff" : "#0f2c34",
+              display: "flex",
+              flexDirection: "column",
+              pointerEvents: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(() => {
+              const headerH = isMobile ? 52 : 44;
+              const pad = isMobile ? 8 : 10;
+              const maxBoard = isMobile
+                ? `calc(100vh - 16px - ${headerH}px - ${pad * 2}px)`
+                : `calc(min(720px, 80vh) - ${headerH}px - ${pad * 2}px)`;
+
+              return (
+                <>
+                  <div
+                    style={{
+                      height: headerH,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: isMobile ? "0 10px" : "0 12px",
+                      cursor: "grab",
+                      userSelect: "none",
+                      touchAction: "none",
+                      borderBottom:
+                        board2d.lobby === "scifi"
+                          ? "1px solid rgba(255,255,255,0.08)"
+                          : "1px solid rgba(0,0,0,0.08)",
+                    }}
+                    onPointerDown={(e) => {
+                      const target = e.target as HTMLElement | null;
+                      if (target?.closest?.("button")) return;
+                      (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+                      board2dDragRef.current = {
+                        pointerId: e.pointerId,
+                        startClientX: e.clientX,
+                        startClientY: e.clientY,
+                        originX: board2dPos.x,
+                        originY: board2dPos.y,
+                      };
+                    }}
+                    onPointerMove={(e) => {
+                      const d = board2dDragRef.current;
+                      if (!d) return;
+                      if (d.pointerId !== e.pointerId) return;
+                      const dx = e.clientX - d.startClientX;
+                      const dy = e.clientY - d.startClientY;
+                      const rawX = d.originX + dx;
+                      const rawY = d.originY + dy;
+                      const viewportW =
+                        typeof window !== "undefined"
+                          ? window.innerWidth
+                          : 9999;
+                      const viewportH =
+                        typeof window !== "undefined"
+                          ? window.innerHeight
+                          : 9999;
+                      const modalW = isMobile
+                        ? viewportW - 16
+                        : Math.min(560, viewportW * 0.52);
+                      const modalH = isMobile
+                        ? viewportH - 16
+                        : Math.min(720, viewportH * 0.8);
+                      const maxX = Math.max(0, viewportW - modalW);
+                      const maxY = Math.max(0, viewportH - modalH);
+                      const nextX = Math.min(Math.max(0, rawX), maxX);
+                      const nextY = Math.min(Math.max(0, rawY), maxY);
+                      setBoard2dPos({ x: nextX, y: nextY });
+                    }}
+                    onPointerUp={(e) => {
+                      const d = board2dDragRef.current;
+                      if (!d) return;
+                      if (d.pointerId !== e.pointerId) return;
+                      board2dDragRef.current = null;
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: isMobile ? 8 : 12,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 32,
+                          height: 20,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          opacity: 0.5,
+                        }}
+                      >
+                        <svg width="18" height="6" viewBox="0 0 18 6">
+                          <rect
+                            width="18"
+                            height="2"
+                            rx="1"
+                            fill="currentColor"
+                          />
+                          <rect
+                            y="4"
+                            width="18"
+                            height="2"
+                            rx="1"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                        }}
+                      >
+                        <div style={{ fontSize: 13, opacity: 0.8 }}>
+                          2D Board
+                        </div>
+                        <div style={{ fontSize: 15, fontWeight: 800 }}>
+                          {board2d.boardKey.toUpperCase()} ·{" "}
+                          {board2d.boardOrientation}
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      {!isMobile ? (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            opacity: 0.85,
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            border:
+                              board2d.lobby === "scifi"
+                                ? "1px solid rgba(0,255,255,0.25)"
+                                : "1px solid rgba(0,0,0,0.12)",
+                            background:
+                              board2d.lobby === "scifi"
+                                ? "rgba(0,0,0,0.35)"
+                                : "rgba(255,255,255,0.7)",
+                          }}
+                        >
+                          {board2d.canMove2d ? "Your turn" : "View / annotate"}
+                        </div>
+                      ) : null}
+                      <button
+                        onClick={() => {
+                          setBoard2d(null);
+                          setBoard2dSelected(null);
+                        }}
+                        style={{
+                          border: "none",
+                          background:
+                            board2d.lobby === "scifi"
+                              ? "rgba(255,255,255,0.14)"
+                              : "rgba(0,0,0,0.08)",
+                          color: "inherit",
+                          padding: "6px 10px",
+                          borderRadius: 10,
+                          cursor: "pointer",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: pad,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: "100%",
+                          maxWidth: maxBoard,
+                          aspectRatio: "1 / 1",
+                          maxHeight: maxBoard,
+                        }}
+                      >
+                        <Chessboard
+                          options={{
+                            id: `pawnsquare-2d-${board2d.boardKey}`,
+                            position: board2d.fen,
+                            boardOrientation: board2d.boardOrientation,
+                            allowDragging: board2d.canMove2d,
+                            allowDrawingArrows: true,
+                            arrows: board2dArrows,
+                            onArrowsChange: ({ arrows }) =>
+                              setBoard2dArrows(arrows),
+                            canDragPiece: ({ piece }) => {
+                              if (!board2d.canMove2d) return false;
+                              return typeof piece?.pieceType === "string"
+                                ? piece.pieceType.startsWith(board2d.turn)
+                                : false;
+                            },
+                            onPieceDrop: ({ sourceSquare, targetSquare }) => {
+                              if (!targetSquare) return false;
+                              const moved = board2d.onMove2d(
+                                sourceSquare,
+                                targetSquare
+                              );
+                              if (moved) setBoard2dSelected(null);
+                              return moved;
+                            },
+                            onSquareClick: ({ square, piece }) => {
+                              if (!board2d.canMove2d) return;
+                              // If clicking another own piece, switch selection without attempting a move.
+                              if (
+                                piece &&
+                                typeof piece.pieceType === "string" &&
+                                piece.pieceType.startsWith(board2d.turn)
+                              ) {
+                                setBoard2dSelected(square);
+                                return;
+                              }
+
+                              if (board2dSelected) {
+                                const moved = board2d.onMove2d(
+                                  board2dSelected,
+                                  square
+                                );
+                                setBoard2dSelected(null);
+                                if (moved) return;
+                              }
+                            },
+                            squareStyles: (() => {
+                              const styles: Record<
+                                string,
+                                React.CSSProperties
+                              > = {};
+                              if (board2dSelected) {
+                                const tmpChess =
+                                  new (require("chess.js").Chess)(board2d.fen);
+                                const moves = tmpChess.moves({
+                                  square: board2dSelected,
+                                  verbose: true,
+                                });
+                                moves.forEach((m: any) => {
+                                  styles[m.to] = {
+                                    background:
+                                      "radial-gradient(circle, rgba(0,0,0,0.2) 25%, transparent 25%)",
+                                    borderRadius: "50%",
+                                  };
+                                });
+                              }
+                              return styles;
+                            })(),
+                            showNotation: true,
+                            clearArrowsOnPositionChange: false,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      ) : null}
+
       {/* Shop Modal */}
       {shopOpen ? (
         <div
@@ -5499,7 +6461,21 @@ export default function World({
                               gap: 2,
                             }}
                           >
-                            <div style={{ fontWeight: 500 }}>{item.name}</div>
+                            <div style={{ fontWeight: 500 }}>
+                              {item.name}
+                              {item.id === "theme_scifi" ? (
+                                <span
+                                  style={{
+                                    marginLeft: 8,
+                                    fontSize: 12,
+                                    opacity: 0.9,
+                                    color: "#ffd700",
+                                  }}
+                                >
+                                  BETA
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
                           <div
                             style={{
@@ -5575,6 +6551,7 @@ export default function World({
                           >
                             {item.type === "avatar" ? (
                               <VrmPreview
+                                key={item.url}
                                 url={item.url}
                                 width={previewW}
                                 height={previewH}
@@ -5582,9 +6559,15 @@ export default function World({
                             ) : item.type === "chess" ? (
                               <div style={{ width: "100%", height: "100%" }}>
                                 {(item as any).chessKind === "board" ? (
-                                  <ChessBoardPreview boardTheme={item.id} />
+                                  <ChessBoardPreview
+                                    key={item.id}
+                                    boardTheme={item.id}
+                                  />
                                 ) : (
-                                  <ChessSetPreview chessTheme={item.id} />
+                                  <ChessSetPreview
+                                    key={item.id}
+                                    chessTheme={item.id}
+                                  />
                                 )}
                               </div>
                             ) : (
@@ -5598,18 +6581,40 @@ export default function World({
                                 }}
                               >
                                 {(item as any).previewImage ? (
-                                  <img
-                                    src={(item as any).previewImage}
-                                    alt={item.name}
-                                    style={{
-                                      width: isMobile ? 180 : 240,
-                                      height: isMobile ? 180 : 240,
-                                      objectFit: "cover",
-                                      borderRadius: 12,
-                                      border:
-                                        "1px solid rgba(255,255,255,0.12)",
-                                    }}
-                                  />
+                                  <div style={{ position: "relative" }}>
+                                    <img
+                                      src={(item as any).previewImage}
+                                      alt={item.name}
+                                      style={{
+                                        width: isMobile ? 180 : 240,
+                                        height: isMobile ? 180 : 240,
+                                        objectFit: "cover",
+                                        borderRadius: 12,
+                                        border:
+                                          "1px solid rgba(255,255,255,0.12)",
+                                      }}
+                                    />
+                                    {item.id === "theme_scifi" ? (
+                                      <div
+                                        style={{
+                                          position: "absolute",
+                                          top: 10,
+                                          left: 10,
+                                          padding: "6px 10px",
+                                          borderRadius: 8,
+                                          background: "rgba(0,0,0,0.55)",
+                                          border:
+                                            "1px solid rgba(255,255,255,0.18)",
+                                          color: "#ffd700",
+                                          fontSize: 12,
+                                          fontWeight: 700,
+                                          letterSpacing: 0.6,
+                                        }}
+                                      >
+                                        BETA / UNDER CONSTRUCTION
+                                      </div>
+                                    ) : null}
+                                  </div>
                                 ) : (
                                   <ThemeIcon size={64} />
                                 )}
