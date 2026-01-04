@@ -17,6 +17,7 @@ export type SeatInfo = {
 
 export type ClockState = {
   baseMs: number;
+  incrementMs: number;
   remainingMs: { w: number; b: number };
   running: boolean;
   active: Side;
@@ -46,7 +47,7 @@ export type CheckersSendMessage =
   | { type: "join"; side: Side; playerId?: string; name?: string }
   | { type: "leave"; side: Side }
   | { type: "move"; from: string; to: string }
-  | { type: "setTime"; baseSeconds: number }
+  | { type: "setTime"; baseSeconds: number; incrementSeconds?: number }
   | { type: "reset" };
 
 export type BoardControlsEvent =
@@ -55,6 +56,8 @@ export type BoardControlsEvent =
       boardKey: string;
       lobby: LobbyKind;
       timeMinutes: number;
+      // Checkers does not use increment, but the Controls modal expects these.
+      incrementSeconds: number;
       // Present for compatibility with existing UI; unused for checkers.
       fen: string;
       mySide: Side | null;
@@ -63,6 +66,8 @@ export type BoardControlsEvent =
       canMove2d: boolean;
       canInc: boolean;
       canDec: boolean;
+      canIncIncrement: boolean;
+      canDecIncrement: boolean;
       canReset: boolean;
       canCenter: boolean;
       onMove2d: (
@@ -72,6 +77,8 @@ export type BoardControlsEvent =
       ) => boolean;
       onInc: () => void;
       onDec: () => void;
+      onIncIncrement: () => void;
+      onDecIncrement: () => void;
       onReset: () => void;
       onCenter: () => void;
     }
@@ -81,7 +88,6 @@ export type BoardControlsEvent =
       lobby: LobbyKind;
       fen: string;
       mySide: Side | null;
-      turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
       onMove2d: (
@@ -99,6 +105,8 @@ export const TIME_OPTIONS_SECONDS = [
   10 * 60,
   15 * 60,
 ] as const;
+
+export const INCREMENT_OPTIONS_SECONDS = [0, 1, 2, 3, 5, 10] as const;
 
 type BivariantHandler<T> = { bivarianceHack(event: T): void }["bivarianceHack"];
 
@@ -377,6 +385,16 @@ export function useCheckersGame({
     connectedRef.current = false;
     setGameSelfId("");
 
+    // Ensure we fully disconnect from the PartyKit room when switching modes.
+    if (socketRef.current) {
+      try {
+        socketRef.current.close();
+      } catch {
+        // ignore
+      }
+      socketRef.current = null;
+    }
+
     if (pendingJoinTimerRef.current !== null) {
       window.clearTimeout(pendingJoinTimerRef.current);
       pendingJoinTimerRef.current = null;
@@ -387,6 +405,7 @@ export function useCheckersGame({
     const baseMs = 5 * 60 * 1000;
     return {
       baseMs,
+      incrementMs: 0,
       remainingMs: { w: baseMs, b: baseMs },
       running: false,
       active: "w",
@@ -413,6 +432,11 @@ export function useCheckersGame({
   }, [netState.seats.w, netState.seats.b, gameSelfId]);
 
   const isSeated = mySides.size > 0;
+  const seatOccupied = (seat: SeatInfo | null | undefined) =>
+    !!seat?.connId && !!seat?.playerId;
+  const bothSeatsOccupied =
+    seatOccupied(netState.seats.w) && seatOccupied(netState.seats.b);
+  const canUseControlTV = isSeated || !bothSeatsOccupied;
   const myPrimarySide: Side | null = mySides.has("w")
     ? "w"
     : mySides.has("b")
@@ -816,6 +840,7 @@ export function useCheckersGame({
       remaining,
       active: c.running ? c.active : null,
       baseMs: c.baseMs,
+      incrementMs: c.incrementMs,
       running: c.running,
     };
   }, [netState.clock, clockNow]);
@@ -834,13 +859,27 @@ export function useCheckersGame({
     return bestIdx;
   }, [clocks.baseMs]);
 
+  const incrementIndex = useMemo(() => {
+    const incrementSeconds = Math.round(clocks.incrementMs / 1000);
+    let bestIdx = 0;
+    let bestDist = Number.POSITIVE_INFINITY;
+    INCREMENT_OPTIONS_SECONDS.forEach((s, idx) => {
+      const d = Math.abs(s - incrementSeconds);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = idx;
+      }
+    });
+    return bestIdx;
+  }, [clocks.incrementMs]);
+
   const canConfigure =
-    isSeated &&
     !netState.clock.running &&
     !netState.result &&
     netState.lastMove === null &&
     netState.forcedFrom === null &&
-    netState.turn === "w";
+    netState.turn === "w" &&
+    (isSeated || !bothSeatsOccupied);
 
   const boardOrientation: "white" | "black" =
     myPrimarySide === "b" ? "black" : "white";
@@ -852,22 +891,62 @@ export function useCheckersGame({
     click?.();
     const idx = clamp(nextIdx, 0, TIME_OPTIONS_SECONDS.length - 1);
     const secs = TIME_OPTIONS_SECONDS[idx]!;
-    send({ type: "setTime", baseSeconds: secs });
+    const currentIncrementSecs = Math.round(clocks.incrementMs / 1000);
+    send({
+      type: "setTime",
+      baseSeconds: secs,
+      incrementSeconds: currentIncrementSecs,
+    });
+  };
+
+  const setIncrementByIndex = (nextIdx: number) => {
+    if (!canConfigure) return;
+    click?.();
+    const idx = clamp(nextIdx, 0, INCREMENT_OPTIONS_SECONDS.length - 1);
+    const incSecs = INCREMENT_OPTIONS_SECONDS[idx]!;
+    const currentBaseSecs = Math.round(clocks.baseMs / 1000);
+    send({
+      type: "setTime",
+      baseSeconds: currentBaseSecs,
+      incrementSeconds: incSecs,
+    });
   };
 
   const clickReset = () => {
-    if (!isSeated) return;
+    // Allow reset if seated, OR as a spectator when at least one seat is empty.
+    if (!isSeated && bothSeatsOccupied) return;
     click?.();
     send({ type: "reset" });
   };
 
   const emitControlsOpen = () => {
-    if (!isSeated) return;
+    if (!canUseControlTV) {
+      console.log(
+        "[Checkers emitControlsOpen] BLOCKED: canUseControlTV is false",
+        {
+          canUseControlTV,
+          isSeated,
+          bothSeatsOccupied,
+          seats: { w: netState.seats.w, b: netState.seats.b },
+        }
+      );
+      return;
+    }
+    console.log(
+      "[Checkers emitControlsOpen] ALLOWED: calling onBoardControls",
+      {
+        canUseControlTV,
+        isSeated,
+        bothSeatsOccupied,
+        hasCallback: !!onBoardControls,
+      }
+    );
     onBoardControls?.({
       type: "open",
       boardKey,
       lobby,
       timeMinutes: Math.round(clocks.baseMs / 60000),
+      incrementSeconds: Math.round(clocks.incrementMs / 1000),
       fen: "",
       mySide: myPrimarySide,
       turn,
@@ -875,11 +954,16 @@ export function useCheckersGame({
       canMove2d,
       canInc: canConfigure && timeIndex < TIME_OPTIONS_SECONDS.length - 1,
       canDec: canConfigure && timeIndex > 0,
-      canReset: isSeated,
+      canIncIncrement:
+        canConfigure && incrementIndex < INCREMENT_OPTIONS_SECONDS.length - 1,
+      canDecIncrement: canConfigure && incrementIndex > 0,
+      canReset: isSeated || !bothSeatsOccupied,
       canCenter: !!onCenterCamera,
       onMove2d: () => false,
       onInc: () => setTimeControlByIndex(timeIndex + 1),
       onDec: () => setTimeControlByIndex(timeIndex - 1),
+      onIncIncrement: () => setIncrementByIndex(incrementIndex + 1),
+      onDecIncrement: () => setIncrementByIndex(incrementIndex - 1),
       onReset: clickReset,
       onCenter: centerCamera,
     });
@@ -895,7 +979,7 @@ export function useCheckersGame({
   useEffect(() => {
     if (!enabled) return;
     if (!controlsOpen) return;
-    if (!isSeated) {
+    if (!canUseControlTV) {
       onBoardControls?.({ type: "close", boardKey });
       return;
     }
@@ -904,10 +988,12 @@ export function useCheckersGame({
   }, [
     enabled,
     controlsOpen,
-    isSeated,
+    canUseControlTV,
     canConfigure,
     timeIndex,
+    incrementIndex,
     clocks.baseMs,
+    clocks.incrementMs,
     myPrimarySide,
     onCenterCamera,
   ]);

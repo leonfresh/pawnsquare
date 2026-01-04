@@ -4,20 +4,173 @@ import { RoundedBox, Text, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import type { Vec3 } from "@/lib/partyRoom";
+import type { BoardMode, Vec3 } from "@/lib/partyRoom";
+import { chessVariantForMode, engineForMode } from "@/lib/boardModes";
 import {
   AnimatedPiece,
   FILES,
   formatClock,
   useChessGame,
   type Side,
+  type Square,
   type BoardControlsEvent,
   applyChessThemeToMaterial,
 } from "./chess-core";
 import { useCheckersGame } from "./checkers-core";
 import { useChessSounds } from "./chess-sounds";
+import { parseFenMoveNumber } from "@/lib/gooseChess";
 
 const SQUARE_TOP_Y = 0.04;
+
+function HolographicPlacementText({
+  originVec,
+  boardSize,
+  squareSize,
+}: {
+  originVec: THREE.Vector3;
+  boardSize: number;
+  squareSize: number;
+}) {
+  const textRef = useRef<any>(null);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const time = performance.now() * 0.001;
+    // Gentle float animation
+    textRef.current.position.y =
+      originVec.y + 1.8 + Math.sin(time * 1.5) * 0.08;
+    // Subtle pulse on opacity
+    const opacity = 0.85 + Math.sin(time * 2) * 0.15;
+    if (textRef.current.material) {
+      textRef.current.material.opacity = opacity;
+    }
+  });
+
+  return (
+    <Text
+      ref={textRef}
+      position={[
+        originVec.x,
+        originVec.y + 1.8,
+        originVec.z - boardSize / 2 - 0.8,
+      ]}
+      fontSize={0.28}
+      color="#00d9ff"
+      anchorX="center"
+      anchorY="middle"
+      outlineWidth={0.015}
+      outlineColor="#003d4d"
+      font="/fonts/Orbitron-Bold.ttf"
+    >
+      PLACE GOOSE
+      <meshBasicMaterial
+        attach="material"
+        color="#00d9ff"
+        transparent
+        opacity={0.85}
+        toneMapped={false}
+      />
+    </Text>
+  );
+}
+
+function GooseWarningText({
+  position,
+  startMs,
+}: {
+  position: [number, number, number];
+  startMs: number;
+}) {
+  const textRef = useRef<any>(null);
+  const [opacity, setOpacity] = useState(1);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const elapsed = performance.now() - startMs;
+    const duration = 900;
+    const t = Math.min(elapsed / duration, 1);
+    const y = position[1] + 0.85 + t * 0.55;
+    const op = 1 - t;
+    textRef.current.position.set(position[0], y, position[2]);
+    setOpacity(op);
+  });
+
+  return (
+    <Text
+      ref={textRef}
+      position={[position[0], position[1] + 0.85, position[2]]}
+      fontSize={0.34}
+      color="#ff4444"
+      anchorX="center"
+      anchorY="middle"
+      fillOpacity={opacity}
+      renderOrder={10}
+    >
+      !
+      <meshBasicMaterial
+        attach="material"
+        color="#ff4444"
+        transparent
+        opacity={opacity}
+        depthTest={false}
+        toneMapped={false}
+      />
+    </Text>
+  );
+}
+
+function FloatingWarning({
+  square,
+  originVec,
+  squareSize,
+  startMs,
+}: {
+  square: Square;
+  originVec: THREE.Vector3;
+  squareSize: number;
+  startMs: number;
+}) {
+  const textRef = useRef<any>(null);
+  const [opacity, setOpacity] = useState(1);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const elapsed = performance.now() - startMs;
+    const duration = 800;
+    const t = Math.min(elapsed / duration, 1);
+
+    // Float up and fade out
+    const y = SQUARE_TOP_Y + 0.5 + t * 0.4;
+    const op = 1 - t;
+
+    textRef.current.position.y = y;
+    setOpacity(op);
+  });
+
+  const file = square.charCodeAt(0) - 97;
+  const rank = Number(square[1]);
+  const rankFromTop = 8 - rank;
+  const x = (file - 3.5) * squareSize;
+  const z = (rankFromTop - 3.5) * squareSize;
+
+  return (
+    <Text
+      ref={textRef}
+      position={[
+        originVec.x + x,
+        originVec.y + SQUARE_TOP_Y + 0.5,
+        originVec.z + z,
+      ]}
+      fontSize={0.3}
+      color="#ff4444"
+      anchorX="center"
+      anchorY="middle"
+      fillOpacity={opacity}
+    >
+      !
+    </Text>
+  );
+}
 
 function PulsingIndicatorMaterial({
   color,
@@ -53,6 +206,91 @@ function PulsingIndicatorMaterial({
       polygonOffset
       polygonOffsetFactor={-1}
       polygonOffsetUnits={-1}
+    />
+  );
+}
+
+function SlowPulsingIndicatorMaterial({
+  color,
+  baseOpacity,
+  periodSeconds = 2.2,
+}: {
+  color: string;
+  baseOpacity: number;
+  periodSeconds?: number;
+}) {
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  useFrame(({ clock }) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    const t = clock.getElapsedTime();
+    const phase = (t * 2 * Math.PI) / periodSeconds;
+    const pulse = 0.5 + 0.5 * Math.sin(phase);
+    // Slow fade in/out around baseOpacity.
+    mat.opacity = Math.min(
+      0.95,
+      Math.max(0.02, baseOpacity * (0.55 + 0.65 * pulse))
+    );
+  });
+
+  return (
+    <meshBasicMaterial
+      ref={matRef}
+      color={color}
+      transparent
+      opacity={baseOpacity}
+      blending={THREE.AdditiveBlending}
+      depthWrite={false}
+      polygonOffset
+      polygonOffsetFactor={-1}
+      polygonOffsetUnits={-1}
+    />
+  );
+}
+
+function FadeInAdditiveMaterial({
+  color,
+  baseOpacity,
+  startMs,
+  durationMs = 220,
+  polygonOffsetFactor = -1,
+  polygonOffsetUnits = -1,
+}: {
+  color: string;
+  baseOpacity: number;
+  startMs: number;
+  durationMs?: number;
+  polygonOffsetFactor?: number;
+  polygonOffsetUnits?: number;
+}) {
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  useFrame(() => {
+    const mat = matRef.current;
+    if (!mat) return;
+    if (!startMs) {
+      mat.opacity = baseOpacity;
+      return;
+    }
+    const t = Math.min(
+      1,
+      Math.max(0, (performance.now() - startMs) / durationMs)
+    );
+    mat.opacity = baseOpacity * t;
+  });
+
+  return (
+    <meshBasicMaterial
+      ref={matRef}
+      color={color}
+      transparent
+      opacity={0}
+      blending={THREE.AdditiveBlending}
+      depthWrite={false}
+      polygonOffset
+      polygonOffsetFactor={polygonOffsetFactor}
+      polygonOffsetUnits={polygonOffsetUnits}
     />
   );
 }
@@ -537,6 +775,7 @@ function JoinPad({
 }) {
   const [w, d] = size;
   const handleClick = (e: any) => {
+    if (e.button !== 0) return; // Left click only
     e.stopPropagation();
     if (disabled) return;
     onClick();
@@ -760,6 +999,64 @@ function ControlTV({
   );
 }
 
+function GooseModel({
+  position,
+  rotation,
+  scale,
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  scale: number;
+}) {
+  const { scene } = useGLTF("/models/goose.glb");
+  const gooseRef = useRef<THREE.Group>(null);
+  const idleRef = useRef<THREE.Group>(null);
+  const seed = useMemo(() => Math.random() * 1000, []);
+  const baseYRef = useRef(position[1]);
+
+  useEffect(() => {
+    baseYRef.current = position[1];
+  }, [position[1]]);
+
+  // Clone the scene to avoid sharing geometry between instances
+  const clonedScene = useMemo(() => scene.clone(), [scene]);
+
+  useEffect(() => {
+    if (gooseRef.current) {
+      gooseRef.current.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+    }
+  }, []);
+
+  useFrame(({ clock }) => {
+    const g = idleRef.current;
+    if (!g) return;
+    const t = clock.getElapsedTime() + seed;
+
+    // Cute idle: gentle bob + tiny sway/tilt. (No yaw so facing stays stable.)
+    g.position.y = Math.sin(t * 1.3) * 0.035;
+    g.rotation.x = Math.sin(t * 1.9) * 0.06;
+    g.rotation.z = Math.sin(t * 1.6) * 0.05;
+  });
+
+  return (
+    <group
+      ref={gooseRef}
+      position={[position[0], baseYRef.current, position[2]]}
+      rotation={rotation}
+      scale={[scale, scale, scale]}
+    >
+      <group ref={idleRef}>
+        <primitive object={clonedScene} />
+      </group>
+    </group>
+  );
+}
+
 export function ScifiChess({
   roomId,
   boardKey,
@@ -802,13 +1099,32 @@ export function ScifiChess({
   board2dOpen?: boolean;
   chessTheme?: string;
   chessBoardTheme?: string;
-  gameMode?: "chess" | "checkers";
+  gameMode?: BoardMode;
 }) {
-  const { playMove, playCapture, playSelect, playWarning, playClick } =
-    useChessSounds();
+  const engine = engineForMode(gameMode);
+  const [warningSquare, setWarningSquare] = useState<Square | null>(null);
+  const [warningStartMs, setWarningStartMs] = useState(0);
+
+  useEffect(() => {
+    if (!warningSquare || !warningStartMs) return;
+    const timeout = window.setTimeout(() => {
+      setWarningSquare(null);
+    }, 950);
+    return () => window.clearTimeout(timeout);
+  }, [warningSquare, warningStartMs]);
+
+  const {
+    playMove,
+    playCapture,
+    playSelect,
+    playWarning,
+    playClick,
+    playHonk,
+  } = useChessSounds();
 
   const chessGame = useChessGame({
-    enabled: gameMode === "chess",
+    enabled: engine === "chess",
+    variant: chessVariantForMode(gameMode),
     roomId,
     boardKey,
     origin,
@@ -837,7 +1153,7 @@ export function ScifiChess({
   });
 
   const checkersGame = useCheckersGame({
-    enabled: gameMode === "checkers",
+    enabled: engine === "checkers",
     roomId,
     boardKey,
     origin,
@@ -868,71 +1184,77 @@ export function ScifiChess({
   const squareSize = chessGame.squareSize;
   const boardSize = chessGame.boardSize;
 
-  const activeTurn =
-    gameMode === "checkers" ? checkersGame.turn : chessGame.turn;
+  const activeTurn = engine === "checkers" ? checkersGame.turn : chessGame.turn;
   const activeMySides =
-    gameMode === "checkers" ? checkersGame.mySides : chessGame.mySides;
+    engine === "checkers" ? checkersGame.mySides : chessGame.mySides;
   const activeMyPrimarySide =
-    gameMode === "checkers"
+    engine === "checkers"
       ? checkersGame.myPrimarySide
       : chessGame.myPrimarySide;
   const activeIsSeated =
-    gameMode === "checkers" ? checkersGame.isSeated : chessGame.isSeated;
+    engine === "checkers" ? checkersGame.isSeated : chessGame.isSeated;
   const activeSelected = (
-    gameMode === "checkers" ? checkersGame.selected : chessGame.selected
+    engine === "checkers" ? checkersGame.selected : chessGame.selected
   ) as string | null;
   const activeLegalTargets = (
-    gameMode === "checkers" ? checkersGame.legalTargets : chessGame.legalTargets
+    engine === "checkers" ? checkersGame.legalTargets : chessGame.legalTargets
   ) as string[];
   const activeLastMove =
-    gameMode === "checkers" ? checkersGame.lastMove : chessGame.lastMove;
+    engine === "checkers" ? checkersGame.lastMove : chessGame.lastMove;
   const activePendingJoinSide =
-    gameMode === "checkers"
+    engine === "checkers"
       ? checkersGame.pendingJoinSide
       : chessGame.pendingJoinSide;
   const activeClocks =
-    gameMode === "checkers" ? checkersGame.clocks : chessGame.clocks;
+    engine === "checkers" ? checkersGame.clocks : chessGame.clocks;
   const activeSeats =
-    gameMode === "checkers"
+    engine === "checkers"
       ? checkersGame.netState.seats
       : chessGame.netState.seats;
   const activeSelfConnId =
-    gameMode === "checkers" ? checkersGame.gameSelfId : chessGame.chessSelfId;
+    engine === "checkers" ? checkersGame.gameSelfId : chessGame.chessSelfId;
+
+  const seatOccupied = (
+    seat?: { connId?: string | null; playerId?: string | null } | null
+  ) => !!seat?.connId && !!seat?.playerId;
+  const activeBothSeatsOccupied =
+    seatOccupied(activeSeats.w) && seatOccupied(activeSeats.b);
+  const canUseControlTV = activeIsSeated || !activeBothSeatsOccupied;
 
   const activeEmitControlsOpen =
-    gameMode === "checkers"
+    engine === "checkers"
       ? checkersGame.emitControlsOpen
       : chessGame.emitControlsOpen;
   const activeOnPickSquare = (sq: string) => {
-    if (gameMode === "checkers") {
+    if (engine === "checkers") {
       checkersGame.onPickSquare(sq);
       return;
     }
     chessGame.onPickSquare(sq as any);
   };
   const activeOnPickPiece = (sq: string) => {
-    if (gameMode === "checkers") {
+    if (engine === "checkers") {
       checkersGame.onPickPiece(sq);
       return;
     }
     chessGame.onPickPiece(sq as any);
   };
   const activeClickJoin = (side: Side) => {
-    if (gameMode === "checkers") {
+    if (engine === "checkers") {
       checkersGame.clickJoin(side);
       return;
     }
     chessGame.clickJoin(side);
   };
   const activeRequestSitAt = (seatX: number, seatZ: number) => {
-    if (gameMode === "checkers") {
+    if (engine === "checkers") {
       checkersGame.requestSitAt(seatX, seatZ);
       return;
     }
     chessGame.requestSitAt(seatX, seatZ);
   };
   const activeResultLabel =
-    gameMode === "checkers" ? checkersGame.resultLabel : chessGame.resultLabel;
+    engine === "checkers" ? checkersGame.resultLabel : chessGame.resultLabel;
 
   const controlsHintTimerRef = useRef<number | null>(null);
   const [controlsHintOpen, setControlsHintOpen] = useState(false);
@@ -1534,7 +1856,7 @@ export function ScifiChess({
           const isLastMoveFrom = (activeLastMove as any)?.from === square;
           const isLastMoveTo = (activeLastMove as any)?.to === square;
           const pieceOnSquare =
-            gameMode === "checkers"
+            engine === "checkers"
               ? checkersGame.pieces.find((p) => p.square === square)
               : chessGame.pieces.find((p) => p.square === square);
           const canInteract =
@@ -1542,22 +1864,43 @@ export function ScifiChess({
             (pieceOnSquare &&
               activeMySides.has(pieceOnSquare.color) &&
               activeTurn === pieceOnSquare.color &&
-              (gameMode !== "checkers" ||
+              (engine !== "checkers" ||
                 !checkersGame.netState.forcedFrom ||
                 checkersGame.netState.forcedFrom === square));
+
+          // Check if this is a valid goose placement square
+          const isValidGoosePlacement =
+            gameMode === "goose" &&
+            chessGame.goosePhase === "goose" &&
+            !pieceOnSquare &&
+            !(square === chessGame.gooseSquare) &&
+            !(
+              parseFenMoveNumber(chessGame.netState.fen) > 20 &&
+              (square === "d4" ||
+                square === "e4" ||
+                square === "d5" ||
+                square === "e5")
+            );
 
           return (
             <group
               key={square}
               position={[x, 0, z]}
               onPointerDown={(e) => {
+                if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
                 activeOnPickSquare(square);
               }}
               onPointerEnter={() => {
+                if (engine === "chess") {
+                  chessGame.setHoveredSquare(square as Square);
+                }
                 if (canInteract) document.body.style.cursor = "pointer";
               }}
               onPointerLeave={() => {
+                if (engine === "chess") {
+                  chessGame.setHoveredSquare(null);
+                }
                 document.body.style.cursor = "default";
               }}
             >
@@ -1646,8 +1989,7 @@ export function ScifiChess({
                     color="#00ffff"
                     baseOpacity={0.2}
                     pulsingUntilMs={
-                      gameMode === "checkers" &&
-                      checkersGame.netState.forcedFrom
+                      engine === "checkers" && checkersGame.netState.forcedFrom
                         ? checkersGame.pulseTargetsUntilMs
                         : 0
                     }
@@ -1698,6 +2040,36 @@ export function ScifiChess({
                   />
                 </mesh>
               )}
+
+              {gameMode === "goose" &&
+                chessGame.goosePhase !== "goose" &&
+                !!pieceOnSquare &&
+                chessGame.startledSquares.includes(square as any) && (
+                  <group
+                    position={[0, SQUARE_TOP_Y + 0.02, 0]}
+                    rotation={[-Math.PI / 2, 0, 0]}
+                    renderOrder={2}
+                  >
+                    <mesh rotation={[0, 0, -Math.PI / 4]}>
+                      <planeGeometry
+                        args={[squareSize * 0.91, squareSize * 0.104]}
+                      />
+                      <SlowPulsingIndicatorMaterial
+                        color="#4a9eff"
+                        baseOpacity={0.22}
+                      />
+                    </mesh>
+                    <mesh rotation={[0, 0, Math.PI / 4]}>
+                      <planeGeometry
+                        args={[squareSize * 0.91, squareSize * 0.104]}
+                      />
+                      <SlowPulsingIndicatorMaterial
+                        color="#4a9eff"
+                        baseOpacity={0.22}
+                      />
+                    </mesh>
+                  </group>
+                )}
             </group>
           );
         })}
@@ -1745,27 +2117,127 @@ export function ScifiChess({
       <ControlTV
         center={controlPadCenter}
         active={!!controlsOpen}
-        hintText={controlsHintOpen ? "Join a side first" : null}
+        hintText={controlsHintOpen ? "Both seats occupied" : null}
         onClick={() => {
-          if (!activeIsSeated) {
+          console.log("[ControlTV] Click detected", {
+            activeIsSeated,
+            activeBothSeatsOccupied,
+            canUseControlTV,
+            seats: {
+              w: activeSeats.w,
+              b: activeSeats.b,
+            },
+            controlsOpen,
+          });
+          if (!canUseControlTV) {
+            console.log("[ControlTV] Blocked: canUseControlTV is false");
             showControlsHint();
             return;
           }
+          console.log("[ControlTV] Allowed: proceeding");
           try {
             playClick();
           } catch {
             // ignore
           }
           if (controlsOpen) {
+            console.log("[ControlTV] Closing controls");
             onBoardControls?.({ type: "close", boardKey });
             return;
           }
+          console.log(
+            "[ControlTV] Opening controls via activeEmitControlsOpen"
+          );
           activeEmitControlsOpen();
         }}
       />
 
+      {/* Goose Chess visuals */}
+      {gameMode === "goose"
+        ? (() => {
+            // Position goose off-board initially or during placement
+            if (
+              chessGame.gooseSquare &&
+              chessGame.netState.lastMove &&
+              chessGame.goosePhase !== "goose"
+            ) {
+              // On board at gooseSquare (only if a move has been played and not placing)
+              const sq = chessGame.gooseSquare;
+              const file = sq.charCodeAt(0) - 97;
+              const rank = Number(sq[1]);
+              const rankFromTop = 8 - rank;
+              const x = (file - 3.5) * squareSize;
+              const z = (rankFromTop - 3.5) * squareSize;
+              const y = originVec.y + SQUARE_TOP_Y;
+
+              // Face the bottom of the board by default.
+              let yaw = 0;
+              let warningStartMs = 0;
+
+              const nowMs = Date.now();
+              const warningActive =
+                !!chessGame.gooseBlocked &&
+                chessGame.gooseBlocked.gooseSquare === sq &&
+                nowMs - chessGame.gooseBlocked.at < 950;
+
+              if (warningActive) {
+                const psq = chessGame.gooseBlocked!.pieceSquare;
+                const pFile = psq.charCodeAt(0) - 97;
+                const pRank = Number(psq[1]);
+                const pRankFromTop = 8 - pRank;
+                const px = (pFile - 3.5) * squareSize;
+                const pz = (pRankFromTop - 3.5) * squareSize;
+                const dx = px - x;
+                const dz = pz - z;
+                yaw = Math.atan2(dx, dz);
+                warningStartMs = chessGame.gooseBlocked!.at;
+              }
+
+              return (
+                <group key={`goose:${sq}`}>
+                  <GooseModel
+                    position={[originVec.x + x, y, originVec.z + z]}
+                    rotation={[0, yaw, 0]}
+                    scale={squareSize * 0.525}
+                  />
+                  {warningActive && warningStartMs > 0 && (
+                    <GooseWarningText
+                      position={[originVec.x + x, y, originVec.z + z]}
+                      startMs={warningStartMs}
+                    />
+                  )}
+                </group>
+              );
+            } else {
+              // Off to the side (before first move or during placement)
+              return (
+                <GooseModel
+                  key="goose-waiting"
+                  position={[
+                    originVec.x + boardSize / 2 + 1.2,
+                    originVec.y + 0.15,
+                    originVec.z + 0.6,
+                  ]}
+                  rotation={[0, -Math.PI / 3, 0]}
+                  scale={squareSize * 0.525}
+                />
+              );
+            }
+          })()
+        : null}
+
+      {gameMode === "goose" && chessGame.goosePhase === "goose" ? (
+        <HolographicPlacementText
+          originVec={originVec}
+          boardSize={boardSize}
+          squareSize={squareSize}
+        />
+      ) : null}
+
+      {/* Startled squares handled by shader effect on pieces */}
+
       {/* Pieces */}
-      {gameMode === "checkers"
+      {engine === "checkers"
         ? checkersGame.pieces.map((p) => {
             const file = p.square.charCodeAt(0) - 97;
             const rank = Number(p.square[1]);
@@ -1796,28 +2268,50 @@ export function ScifiChess({
             const canMove = activeTurn === p.color && isMyPiece;
             const animateFrom =
               chessGame.animatedFromByTo.get(p.square) ?? null;
+            const isStartled =
+              gameMode === "goose" &&
+              chessGame.goosePhase !== "goose" &&
+              chessGame.startledSquares.includes(p.square);
 
             const animKey = animateFrom
               ? `anim:${chessGame.netState.seq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
               : `static:${p.color}:${p.type}:${p.square}`;
 
             return (
-              <AnimatedPiece
-                key={animKey}
-                square={p.square}
-                type={p.type}
-                color={p.color}
-                originVec={originVec}
-                squareSize={squareSize}
-                animateFrom={animateFrom}
-                animSeq={chessGame.netState.seq}
-                canMove={canMove}
-                mySide={activeMyPrimarySide}
-                onPickPiece={(sq) => activeOnPickPiece(sq as any)}
-                whiteTint={whiteTint}
-                blackTint={blackTint}
-                chessTheme={chessTheme}
-              />
+              <group key={animKey}>
+                <AnimatedPiece
+                  square={p.square}
+                  type={p.type}
+                  color={p.color}
+                  originVec={originVec}
+                  squareSize={squareSize}
+                  animateFrom={animateFrom}
+                  animSeq={chessGame.netState.seq}
+                  canMove={canMove}
+                  mySide={activeMyPrimarySide}
+                  onPickPiece={(sq) => {
+                    // Check for invalid capture attempt with startled piece
+                    if (
+                      gameMode === "goose" &&
+                      chessGame.goosePhase !== "goose" &&
+                      chessGame.selected &&
+                      chessGame.legalTargets.includes(sq) &&
+                      chessGame.startledSquares.includes(chessGame.selected) &&
+                      chessGame.pieces.find((piece) => piece.square === sq)
+                    ) {
+                      playWarning();
+                      setWarningSquare(chessGame.selected);
+                      setWarningStartMs(performance.now());
+                      return;
+                    }
+                    activeOnPickPiece(sq as any);
+                  }}
+                  whiteTint={whiteTint}
+                  blackTint={blackTint}
+                  chessTheme={chessTheme}
+                  isStartled={isStartled}
+                />
+              </group>
             );
           })}
     </group>

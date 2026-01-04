@@ -7,8 +7,15 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useGLTF } from "@react-three/drei";
 import type { Vec3 } from "@/lib/partyRoom";
+import {
+  adjacentSquares,
+  gooseLegalMovesForSquare,
+  isCenter4,
+  parseFenMoveNumber,
+} from "@/lib/gooseChess";
 
 export type Side = "w" | "b";
+export type { Square } from "chess.js";
 
 export type GameResult =
   | { type: "timeout"; winner: Side }
@@ -25,6 +32,7 @@ export type GameResult =
 
 export type ClockState = {
   baseMs: number;
+  incrementMs: number;
   remainingMs: { w: number; b: number };
   running: boolean;
   active: Side;
@@ -44,6 +52,11 @@ export type ChessNetState = {
   clock: ClockState;
   result: GameResult | null;
   lastMove: { from: Square; to: Square } | null;
+
+  // Goose Chess (only present in the goose PartyKit room)
+  gooseSquare?: Square;
+  phase?: "piece" | "goose";
+  activeSide?: Side;
 };
 
 export type ChessMessage = { type: "state"; state: ChessNetState };
@@ -57,7 +70,8 @@ export type ChessSendMessage =
       to: Square;
       promotion?: "q" | "r" | "b" | "n";
     }
-  | { type: "setTime"; baseSeconds: number }
+  | { type: "goose"; square: Square }
+  | { type: "setTime"; baseSeconds: number; incrementSeconds?: number }
   | { type: "reset" };
 
 export type LobbyKind = "park" | "scifi";
@@ -68,13 +82,20 @@ export type BoardControlsEvent =
       boardKey: string;
       lobby: LobbyKind;
       timeMinutes: number;
+      incrementSeconds: number;
       fen: string;
       mySide: Side | null;
       turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
+      gooseSquare?: string;
+      goosePhase?: "piece" | "goose";
+      canPlaceGoose?: boolean;
+      startledSquares?: string[];
       canInc: boolean;
       canDec: boolean;
+      canIncIncrement: boolean;
+      canDecIncrement: boolean;
       canReset: boolean;
       canCenter: boolean;
       onMove2d: (
@@ -82,8 +103,11 @@ export type BoardControlsEvent =
         to: string,
         promotion?: "q" | "r" | "b" | "n"
       ) => boolean;
+      onPlaceGoose?: (square: string) => boolean;
       onInc: () => void;
       onDec: () => void;
+      onIncIncrement: () => void;
+      onDecIncrement: () => void;
       onReset: () => void;
       onCenter: () => void;
     }
@@ -96,11 +120,16 @@ export type BoardControlsEvent =
       turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
+      gooseSquare?: string;
+      goosePhase?: "piece" | "goose";
+      canPlaceGoose?: boolean;
+      startledSquares?: string[];
       onMove2d: (
         from: string,
         to: string,
         promotion?: "q" | "r" | "b" | "n"
       ) => boolean;
+      onPlaceGoose?: (square: string) => boolean;
     }
   | { type: "close"; boardKey?: string };
 
@@ -111,6 +140,8 @@ export const TIME_OPTIONS_SECONDS = [
   10 * 60,
   15 * 60,
 ] as const;
+
+export const INCREMENT_OPTIONS_SECONDS = [0, 1, 2, 3, 5, 10] as const;
 
 export function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -943,6 +974,7 @@ export function AnimatedPiece({
   whiteTint,
   blackTint,
   chessTheme,
+  isStartled,
 }: {
   square: Square;
   type: string;
@@ -957,6 +989,7 @@ export function AnimatedPiece({
   whiteTint: THREE.Color;
   blackTint: THREE.Color;
   chessTheme?: string;
+  isStartled?: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const animRef = useRef<{
@@ -1023,6 +1056,7 @@ export function AnimatedPiece({
     <group
       ref={groupRef}
       onPointerDown={(e) => {
+        if (e.button !== 0) return; // Left click only
         e.stopPropagation();
         onPickPiece(square);
       }}
@@ -1051,10 +1085,12 @@ export type ChessSounds = {
   select: () => void;
   warning: () => void;
   click: () => void;
+  honk: () => void;
 };
 
 export type UseChessGameOptions = {
   enabled?: boolean;
+  variant?: "standard" | "goose";
   roomId: string;
   boardKey: string;
   origin: [number, number, number];
@@ -1087,11 +1123,17 @@ export type UseChessGameResult = {
   netState: ChessNetState;
   chessSelfId: string;
   turn: Side;
+  gooseSquare: Square | null;
+  goosePhase: "piece" | "goose" | null;
+  startledSquares: Square[];
   mySides: Set<Side>;
   myPrimarySide: Side | null;
   isSeated: boolean;
   selected: Square | null;
   legalTargets: Square[];
+  hoveredSquare: Square | null;
+  setHoveredSquare: (square: Square | null) => void;
+  pulseGoosePlacementUntilMs: number;
   lastMove: ChessNetState["lastMove"];
   pieces: Array<{ square: Square; type: string; color: Side }>;
   animatedFromByTo: Map<Square, Square>;
@@ -1115,10 +1157,12 @@ export type UseChessGameResult = {
   centerCamera: () => void;
   emitControlsOpen: () => void;
   resultLabel: string | null;
+  gooseBlocked: { gooseSquare: Square; pieceSquare: Square; at: number } | null;
 };
 
 export function useChessGame({
   enabled = true,
+  variant = "standard",
   roomId,
   boardKey,
   origin,
@@ -1168,6 +1212,7 @@ export function useChessGame({
     const baseMs = 5 * 60 * 1000;
     return {
       baseMs,
+      incrementMs: 0,
       remainingMs: { w: baseMs, b: baseMs },
       running: false,
       active: "w",
@@ -1181,7 +1226,24 @@ export function useChessGame({
     clock: defaultClock,
     result: null,
     lastMove: null,
+    gooseSquare: variant === "goose" ? ("d4" as Square) : undefined,
+    phase: variant === "goose" ? "piece" : undefined,
+    activeSide: variant === "goose" ? "w" : undefined,
   });
+
+  useEffect(() => {
+    setNetState({
+      seats: { w: null, b: null },
+      fen: initialFen,
+      seq: 0,
+      clock: defaultClock,
+      result: null,
+      lastMove: null,
+      gooseSquare: variant === "goose" ? ("d4" as Square) : undefined,
+      phase: variant === "goose" ? "piece" : undefined,
+      activeSide: variant === "goose" ? "w" : undefined,
+    });
+  }, [variant, initialFen, defaultClock]);
 
   const mySides = useMemo(() => {
     const sides = new Set<Side>();
@@ -1191,24 +1253,90 @@ export function useChessGame({
   }, [netState.seats.w, netState.seats.b, chessSelfId]);
 
   const isSeated = mySides.size > 0;
+  const seatOccupied = (seat: SeatInfo | null | undefined) =>
+    !!seat?.connId && !!seat?.playerId;
+  const bothSeatsOccupied =
+    seatOccupied(netState.seats.w) && seatOccupied(netState.seats.b);
+  const canUseControlTV = isSeated || !bothSeatsOccupied;
   const myPrimarySide: Side | null = mySides.has("w")
     ? "w"
     : mySides.has("b")
     ? "b"
     : null;
 
+  useEffect(() => {
+    if (enabled) return;
+
+    // Ensure we fully disconnect from the PartyKit room when switching modes.
+    if (socketRef.current) {
+      try {
+        socketRef.current.close();
+      } catch {
+        // ignore
+      }
+      socketRef.current = null;
+    }
+
+    pendingJoinRef.current = null;
+    setPendingJoinSide(null);
+    setSelected(null);
+    setLegalTargets([]);
+    setChessConnected(false);
+    chessConnectedRef.current = false;
+    setChessSelfId("");
+  }, [enabled]);
+
   const chess = useMemo(() => new Chess(netState.fen), [netState.fen]);
-  const turn = chess.turn();
+
+  const gooseSquare: Square | null =
+    variant === "goose" ? netState.gooseSquare ?? ("d4" as Square) : null;
+  const goosePhase: "piece" | "goose" | null =
+    variant === "goose" ? netState.phase ?? "piece" : null;
+  const activeSide: Side =
+    variant === "goose"
+      ? netState.activeSide ?? (chess.turn() as Side)
+      : (chess.turn() as Side);
+
+  const lastMove = netState.lastMove;
+
+  const startledSquares: Square[] = useMemo(() => {
+    if (variant !== "goose") return [];
+    // Avoid showing startled indicators before any move is played.
+    if (!lastMove) return [];
+    // Avoid showing startled indicators during goose placement.
+    if (goosePhase === "goose") return [];
+    if (!gooseSquare) return [];
+    return adjacentSquares(gooseSquare);
+  }, [variant, gooseSquare, lastMove, goosePhase]);
+
+  const turn = activeSide;
 
   const [selected, setSelected] = useState<Square | null>(null);
   const [legalTargets, setLegalTargets] = useState<Square[]>([]);
-  const lastMove = netState.lastMove;
+  const [hoveredSquare, setHoveredSquare] = useState<Square | null>(null);
+  const [pulseGoosePlacementUntilMs, setPulseGoosePlacementUntilMs] =
+    useState(0);
+  const [gooseBlocked, setGooseBlocked] = useState<{
+    gooseSquare: Square;
+    pieceSquare: Square;
+    at: number;
+  } | null>(null);
 
-  const { move, capture, select, warning, click } = sounds ?? {};
+  const { move, capture, select, warning, click, honk } = sounds ?? {};
 
   const prevFenForSound = useRef(initialFen);
   const lastSoundSeq = useRef(0);
   const hasWarnedRef = useRef(false);
+  const prevGoosePhaseRef = useRef<"piece" | "goose" | null>(null);
+
+  // Pulse placement squares when entering goose phase
+  useEffect(() => {
+    if (variant !== "goose") return;
+    if (goosePhase === "goose" && prevGoosePhaseRef.current !== "goose") {
+      setPulseGoosePlacementUntilMs(Date.now() + 1400);
+    }
+    prevGoosePhaseRef.current = goosePhase;
+  }, [variant, goosePhase]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -1317,10 +1445,13 @@ export function useChessGame({
     if (!enabled) return;
     if (!chessConnected) return;
 
+    const party = variant === "goose" ? "goose" : "chess";
+    const roomSuffix = variant === "goose" ? "goose" : "chess";
+
     const socket = new PartySocket({
       host: PARTYKIT_HOST,
-      party: "chess",
-      room: `${roomId}-chess-${boardKey}`,
+      party,
+      room: `${roomId}-${roomSuffix}-${boardKey}`,
     });
 
     socketRef.current = socket;
@@ -1360,7 +1491,7 @@ export function useChessGame({
     return () => {
       socket.close();
     };
-  }, [enabled, chessConnected, roomId, boardKey]);
+  }, [enabled, chessConnected, variant, roomId, boardKey]);
 
   const lastSeenSeqRef = useRef<number>(-1);
   useEffect(() => {
@@ -1388,13 +1519,41 @@ export function useChessGame({
     if (!isSeated) return;
     if (netState.result) return;
     if (!mySides.has(turn)) return;
+    if (variant === "goose" && goosePhase !== "piece") return;
 
     send({ type: "move", from, to, promotion });
+  };
+
+  const submitGoose = (square: Square) => {
+    if (variant !== "goose") return;
+    if (!isSeated) return;
+    if (netState.result) return;
+    if (goosePhase !== "goose") return;
+    if (!mySides.has(turn)) return;
+
+    const tmp = new Chess(netState.fen);
+    if (tmp.get(square)) return;
+
+    const moveNumber = parseFenMoveNumber(netState.fen);
+    if (moveNumber > 20 && isCenter4(square)) return;
+
+    click?.();
+    send({ type: "goose", square });
+    setSelected(null);
+    setLegalTargets([]);
   };
 
   const onPickSquare = (square: Square) => {
     if (!enabled) return;
     if (netState.result) return;
+
+    setGooseBlocked(null);
+
+    if (variant === "goose" && goosePhase === "goose") {
+      submitGoose(square);
+      return;
+    }
+
     if (selected && legalTargets.includes(square)) {
       const piece = chess.get(selected);
       const isPawn = piece?.type === "p";
@@ -1412,13 +1571,42 @@ export function useChessGame({
       return;
     }
 
+    if (variant === "goose" && selected && !legalTargets.includes(square)) {
+      const piece = chess.get(selected);
+      if (piece && piece.color === turn) {
+        const standardMoves = (
+          chess.moves({ square: selected, verbose: true }) as any[]
+        )
+          .map((m) => m.to)
+          .filter(isSquare);
+
+        if (standardMoves.includes(square)) {
+          honk?.();
+          if (gooseSquare) {
+            setGooseBlocked({
+              gooseSquare,
+              pieceSquare: selected,
+              at: Date.now(),
+            });
+          }
+          return;
+        }
+      }
+    }
+
     const piece = chess.get(square);
 
     if (piece && mySides.has(turn) && piece.color === turn) {
       select?.();
       setSelected(square);
-      const moves = chess.moves({ square, verbose: true }) as any[];
-      const targets = moves.map((m) => m.to).filter(isSquare);
+      const targets =
+        variant === "goose"
+          ? gooseLegalMovesForSquare(chess, square, gooseSquare).map(
+              (m) => m.to
+            )
+          : (chess.moves({ square, verbose: true }) as any[])
+              .map((m) => m.to)
+              .filter(isSquare);
       setLegalTargets(targets);
       return;
     }
@@ -1469,7 +1657,9 @@ export function useChessGame({
 
   const animatedFromByTo = useMemo(() => {
     const map = new Map<Square, Square>();
-    if (!lastMove) return map;
+    // Don't animate during goose placement phase
+    if (!lastMove || (variant === "goose" && goosePhase === "goose"))
+      return map;
 
     map.set(lastMove.to, lastMove.from);
 
@@ -1479,7 +1669,7 @@ export function useChessGame({
     if (lastMove.from === "e8" && lastMove.to === "c8") map.set("d8", "a8");
 
     return map;
-  }, [lastMove]);
+  }, [lastMove, variant, goosePhase]);
 
   const padOffset = boardSize / 2 + 1.1;
   const padSize: [number, number] = [2.1, 0.7];
@@ -1560,6 +1750,22 @@ export function useChessGame({
     onCenterCamera?.([originVec.x, originVec.y, originVec.z]);
   };
 
+  const prevIsSeatedRef = useRef(false);
+  useEffect(() => {
+    if (!enabled) {
+      prevIsSeatedRef.current = false;
+      return;
+    }
+
+    const wasSeated = prevIsSeatedRef.current;
+    prevIsSeatedRef.current = isSeated;
+
+    // When a player "starts" (first becomes seated), auto-center on the board.
+    if (isSeated && !wasSeated) {
+      onCenterCamera?.([originVec.x, originVec.y, originVec.z]);
+    }
+  }, [enabled, isSeated, onCenterCamera, originVec]);
+
   const clocks = useMemo(() => {
     const c = netState.clock;
     const now = netState.clock.running ? clockNow : Date.now();
@@ -1572,6 +1778,7 @@ export function useChessGame({
       remaining,
       active: c.running ? c.active : null,
       baseMs: c.baseMs,
+      incrementMs: c.incrementMs,
       running: c.running,
     };
   }, [netState.clock, clockNow]);
@@ -1590,15 +1797,40 @@ export function useChessGame({
     return bestIdx;
   }, [clocks.baseMs]);
 
+  const incrementIndex = useMemo(() => {
+    const incrementSeconds = Math.round(clocks.incrementMs / 1000);
+    let bestIdx = 0;
+    let bestDist = Number.POSITIVE_INFINITY;
+    INCREMENT_OPTIONS_SECONDS.forEach((s, idx) => {
+      const d = Math.abs(s - incrementSeconds);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = idx;
+      }
+    });
+    return bestIdx;
+  }, [clocks.incrementMs]);
+
   const canConfigure =
-    isSeated &&
     !netState.clock.running &&
     !netState.result &&
-    netState.fen === initialFen;
+    netState.fen === initialFen &&
+    (isSeated || !bothSeatsOccupied);
 
   const boardOrientation: "white" | "black" =
     myPrimarySide === "b" ? "black" : "white";
-  const canMove2d = isSeated && !netState.result && mySides.has(turn);
+  const canMove2d =
+    isSeated &&
+    !netState.result &&
+    mySides.has(turn) &&
+    (variant !== "goose" || goosePhase === "piece");
+
+  const canPlaceGoose =
+    variant === "goose" &&
+    isSeated &&
+    !netState.result &&
+    mySides.has(turn) &&
+    goosePhase === "goose";
 
   const tryMove2d = (
     from: string,
@@ -1608,6 +1840,7 @@ export function useChessGame({
     if (!isSeated) return false;
     if (netState.result) return false;
     if (!mySides.has(turn)) return false;
+    if (variant === "goose" && goosePhase !== "piece") return false;
 
     const source = from as Square;
     const target = to as Square;
@@ -1622,8 +1855,16 @@ export function useChessGame({
       if ((rank === "1" || rank === "8") && !promo) promo = "q";
     }
 
-    const mv = tmp.move({ from: source, to: target, promotion: promo });
-    if (!mv) return false;
+    if (variant === "goose") {
+      const legal = gooseLegalMovesForSquare(tmp, source, gooseSquare);
+      const match = legal.find(
+        (m) => m.to === target && (m.promotion ?? undefined) === (promo as any)
+      );
+      if (!match) return false;
+    } else {
+      const mv = tmp.move({ from: source, to: target, promotion: promo });
+      if (!mv) return false;
+    }
 
     click?.();
     send({ type: "move", from: source, to: target, promotion: promo });
@@ -1632,26 +1873,75 @@ export function useChessGame({
     return true;
   };
 
+  const tryPlaceGoose2d = (square: string) => {
+    if (!canPlaceGoose) return false;
+    const sq = square as Square;
+
+    const tmp = new Chess(netState.fen);
+    if (tmp.get(sq)) return false;
+
+    const moveNumber = parseFenMoveNumber(netState.fen);
+    if (moveNumber > 20 && isCenter4(sq)) return false;
+
+    click?.();
+    send({ type: "goose", square: sq });
+    setSelected(null);
+    setLegalTargets([]);
+    return true;
+  };
+
   const emitControlsOpen = () => {
-    if (!enabled) return;
-    if (!isSeated) return;
+    if (!enabled) {
+      console.log("[Chess emitControlsOpen] BLOCKED: enabled is false");
+      return;
+    }
+    if (!canUseControlTV) {
+      console.log(
+        "[Chess emitControlsOpen] BLOCKED: canUseControlTV is false",
+        {
+          canUseControlTV,
+          isSeated,
+          bothSeatsOccupied,
+          seats: { w: netState.seats.w, b: netState.seats.b },
+        }
+      );
+      return;
+    }
+    console.log("[Chess emitControlsOpen] ALLOWED: calling onBoardControls", {
+      enabled,
+      canUseControlTV,
+      isSeated,
+      bothSeatsOccupied,
+      hasCallback: !!onBoardControls,
+    });
     onBoardControls?.({
       type: "open",
       boardKey,
       lobby,
       timeMinutes: Math.round(clocks.baseMs / 60000),
+      incrementSeconds: Math.round(clocks.incrementMs / 1000),
       fen: netState.fen,
       mySide: myPrimarySide,
       turn,
       boardOrientation,
       canMove2d,
+      gooseSquare: gooseSquare ?? undefined,
+      goosePhase: goosePhase ?? undefined,
+      canPlaceGoose: canPlaceGoose || undefined,
+      startledSquares: variant === "goose" ? startledSquares : undefined,
       canInc: canConfigure && timeIndex < TIME_OPTIONS_SECONDS.length - 1,
       canDec: canConfigure && timeIndex > 0,
-      canReset: isSeated,
+      canIncIncrement:
+        canConfigure && incrementIndex < INCREMENT_OPTIONS_SECONDS.length - 1,
+      canDecIncrement: canConfigure && incrementIndex > 0,
+      canReset: isSeated || !bothSeatsOccupied,
       canCenter: !!onCenterCamera,
       onMove2d: tryMove2d,
+      onPlaceGoose: variant === "goose" ? tryPlaceGoose2d : undefined,
       onInc: () => setTimeControlByIndex(timeIndex + 1),
       onDec: () => setTimeControlByIndex(timeIndex - 1),
+      onIncIncrement: () => setIncrementByIndex(incrementIndex + 1),
+      onDecIncrement: () => setIncrementByIndex(incrementIndex - 1),
       onReset: clickReset,
       onCenter: centerCamera,
     });
@@ -1668,7 +1958,12 @@ export function useChessGame({
       turn,
       boardOrientation,
       canMove2d,
+      gooseSquare: gooseSquare ?? undefined,
+      goosePhase: goosePhase ?? undefined,
+      canPlaceGoose: canPlaceGoose || undefined,
+      startledSquares: variant === "goose" ? startledSquares : undefined,
       onMove2d: tryMove2d,
+      onPlaceGoose: variant === "goose" ? tryPlaceGoose2d : undefined,
     });
   };
 
@@ -1677,11 +1972,30 @@ export function useChessGame({
     click?.();
     const idx = clamp(nextIdx, 0, TIME_OPTIONS_SECONDS.length - 1);
     const secs = TIME_OPTIONS_SECONDS[idx]!;
-    send({ type: "setTime", baseSeconds: secs });
+    const currentIncrementSecs = Math.round(clocks.incrementMs / 1000);
+    send({
+      type: "setTime",
+      baseSeconds: secs,
+      incrementSeconds: currentIncrementSecs,
+    });
+  };
+
+  const setIncrementByIndex = (nextIdx: number) => {
+    if (!canConfigure) return;
+    click?.();
+    const idx = clamp(nextIdx, 0, INCREMENT_OPTIONS_SECONDS.length - 1);
+    const incSecs = INCREMENT_OPTIONS_SECONDS[idx]!;
+    const currentBaseSecs = Math.round(clocks.baseMs / 1000);
+    send({
+      type: "setTime",
+      baseSeconds: currentBaseSecs,
+      incrementSeconds: incSecs,
+    });
   };
 
   const clickReset = () => {
-    if (!isSeated) return;
+    // Allow reset if seated, OR as a spectator when at least one seat is empty.
+    if (!isSeated && bothSeatsOccupied) return;
     click?.();
     send({ type: "reset" });
   };
@@ -1704,7 +2018,7 @@ export function useChessGame({
   useEffect(() => {
     if (!enabled) return;
     if (!controlsOpen) return;
-    if (!isSeated) {
+    if (!canUseControlTV) {
       onBoardControls?.({ type: "close", boardKey });
       return;
     }
@@ -1713,10 +2027,12 @@ export function useChessGame({
   }, [
     enabled,
     controlsOpen,
-    isSeated,
+    canUseControlTV,
     canConfigure,
     timeIndex,
+    incrementIndex,
     clocks.baseMs,
+    clocks.incrementMs,
     myPrimarySide,
     onCenterCamera,
   ]);
@@ -1744,11 +2060,18 @@ export function useChessGame({
     netState,
     chessSelfId,
     turn,
+    gooseSquare,
+    goosePhase,
+    startledSquares,
     mySides,
     myPrimarySide,
     isSeated,
     selected,
     legalTargets,
+    hoveredSquare,
+    gooseBlocked,
+    setHoveredSquare,
+    pulseGoosePlacementUntilMs,
     lastMove,
     pieces,
     animatedFromByTo,

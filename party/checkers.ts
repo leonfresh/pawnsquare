@@ -21,6 +21,7 @@ type GameResult =
 
 type ClockState = {
   baseMs: number;
+  incrementMs: number;
   remainingMs: { w: number; b: number };
   running: boolean;
   active: Side;
@@ -42,22 +43,25 @@ type CheckersMessage =
   | { type: "join"; side: Side; playerId?: string; name?: string }
   | { type: "leave"; side: Side }
   | { type: "move"; from: Square; to: Square }
-  | { type: "setTime"; baseSeconds: number }
+  | { type: "setTime"; baseSeconds: number; incrementSeconds?: number }
   | { type: "reset" }
   | { type: "state"; state: CheckersState };
 
 const DEFAULT_TIME_SECONDS = 5 * 60;
 const MIN_TIME_SECONDS = 30;
 const MAX_TIME_SECONDS = 60 * 60;
+const MIN_INCREMENT_SECONDS = 0;
+const MAX_INCREMENT_SECONDS = 60;
 const AUTO_RESET_AFTER_TIMEOUT_MS = 60 * 1000;
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-function initialClock(baseMs: number): ClockState {
+function initialClock(baseMs: number, incrementMs = 0): ClockState {
   return {
     baseMs,
+    incrementMs,
     remainingMs: { w: baseMs, b: baseMs },
     running: false,
     active: "w",
@@ -343,10 +347,10 @@ export default class CheckersServer implements Party.Server {
     return false;
   }
 
-  resetGame(baseMs: number) {
+  resetGame(baseMs: number, incrementMs = 0) {
     this.state.board = initialBoard();
     this.state.turn = "w";
-    this.state.clock = initialClock(baseMs);
+    this.state.clock = initialClock(baseMs, incrementMs);
     this.state.result = null;
     this.state.lastMove = null;
     this.state.forcedFrom = null;
@@ -390,7 +394,10 @@ export default class CheckersServer implements Party.Server {
           JSON.stringify({ type: "state", state: this.state })
         );
       } else if (msg.type === "setTime") {
-        if (!isPlayerInSeat(this.state, sender.id)) return;
+        const canConfigureAsGuest =
+          this.state.seats.w === null || this.state.seats.b === null;
+        if (!isPlayerInSeat(this.state, sender.id) && !canConfigureAsGuest)
+          return;
         if (this.state.clock.running) return;
         if (this.state.result) return;
         // Only before any move has occurred.
@@ -406,17 +413,28 @@ export default class CheckersServer implements Party.Server {
           MAX_TIME_SECONDS
         );
         const baseMs = baseSeconds * 1000;
+
+        const incrementSeconds = clamp(
+          Math.floor(msg.incrementSeconds ?? 0),
+          MIN_INCREMENT_SECONDS,
+          MAX_INCREMENT_SECONDS
+        );
+        const incrementMs = incrementSeconds * 1000;
+
         this.cancelAutoReset();
-        this.resetGame(baseMs);
+        this.resetGame(baseMs, incrementMs);
         this.state.seq++;
         this.room.broadcast(
           JSON.stringify({ type: "state", state: this.state })
         );
       } else if (msg.type === "reset") {
-        if (!isPlayerInSeat(this.state, sender.id)) return;
+        const canResetAsGuest =
+          this.state.seats.w === null || this.state.seats.b === null;
+        if (!isPlayerInSeat(this.state, sender.id) && !canResetAsGuest) return;
         const baseMs = this.state.clock.baseMs;
+        const incrementMs = this.state.clock.incrementMs;
         this.cancelAutoReset();
-        this.resetGame(baseMs);
+        this.resetGame(baseMs, incrementMs);
         this.state.seq++;
         this.room.broadcast(
           JSON.stringify({ type: "state", state: this.state })
@@ -509,7 +527,15 @@ export default class CheckersServer implements Party.Server {
         }
 
         // Turn ends.
+        const movingSide = this.state.turn;
         this.state.forcedFrom = null;
+
+        // Add increment once per completed turn (not per capture in a multi-capture sequence).
+        if (this.state.clock.incrementMs > 0) {
+          this.state.clock.remainingMs[movingSide] +=
+            this.state.clock.incrementMs;
+        }
+
         this.state.turn = otherSide(this.state.turn);
 
         // Check win: opponent has no pieces or no moves.

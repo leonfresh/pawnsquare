@@ -19,6 +19,7 @@ import {
   type Player,
   type Vec3,
 } from "@/lib/partyRoom";
+import { gooseLegalMovesForSquare } from "@/lib/gooseChess";
 import { usePartyVoice } from "@/lib/partyVoice";
 import { useWASDKeys } from "@/lib/keyboard";
 import { PlayerAvatar } from "@/components/player-avatar";
@@ -30,6 +31,7 @@ import { CoinIcon } from "@/components/coin-icon";
 import { ChessSetPreview } from "@/components/chess-set-preview";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import type { User } from "@supabase/supabase-js";
+import { BOARD_MODE_DEFS, engineForMode } from "@/lib/boardModes";
 
 function makeRadialGlowTexture(size = 64) {
   const data = new Uint8Array(size * size * 4);
@@ -337,7 +339,6 @@ function GradientSky({
           "uniform float starThreshold;\n" +
           "uniform float starTwinkle;\n" +
           "varying vec3 vWorldPosition;\n" +
-          "\n" +
           "float hash12(vec2 p) {\n" +
           "  vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n" +
           "  p3 += dot(p3, p3.yzx + 33.33);\n" +
@@ -2389,9 +2390,15 @@ function RemoteAvatar({
 function FollowCamera({
   target,
   lookAtOverride,
+  orbitApiRef,
+  rotateModeRef,
 }: {
   target: React.RefObject<THREE.Vector3>;
   lookAtOverride?: React.RefObject<THREE.Vector3 | null>;
+  orbitApiRef?: React.MutableRefObject<{
+    rotateByPixels: (dx: number, dy: number) => void;
+  } | null>;
+  rotateModeRef?: React.MutableRefObject<boolean>;
 }) {
   const { gl } = useThree();
   const draggingRef = useRef(false);
@@ -2403,6 +2410,22 @@ function FollowCamera({
   const thetaRef = useRef(0); // azimuth around Y
   const phiRef = useRef(1.06); // polar from +Y (matches ~[0,4.5,8])
   const radiusRef = useRef(9.2);
+
+  useEffect(() => {
+    if (!orbitApiRef) return;
+    const rotSpeed = 0.004;
+
+    orbitApiRef.current = {
+      rotateByPixels: (dx: number, dy: number) => {
+        thetaRef.current -= dx * rotSpeed;
+        phiRef.current = clamp(phiRef.current + dy * rotSpeed, 0.45, 1.45);
+      },
+    };
+
+    return () => {
+      orbitApiRef.current = null;
+    };
+  }, [orbitApiRef]);
 
   useEffect(() => {
     const el = gl.domElement;
@@ -2425,8 +2448,14 @@ function FollowCamera({
     const onContextMenu = (e: MouseEvent) => e.preventDefault();
     const onDown = (e: PointerEvent) => {
       // Desktop: right mouse drag rotates camera.
+      // Optional: when rotateModeRef is enabled, left drag rotates too.
       if (e.pointerType !== "touch") {
-        if (e.button !== 2) return;
+        const rotateMode = rotateModeRef?.current ?? false;
+        if (rotateMode) {
+          if (e.button !== 0 && e.button !== 2) return;
+        } else {
+          if (e.button !== 2) return;
+        }
         draggingRef.current = true;
         lastRef.current = { x: e.clientX, y: e.clientY };
         try {
@@ -2456,7 +2485,15 @@ function FollowCamera({
     };
     const onUp = (e: PointerEvent) => {
       if (e.pointerType !== "touch") {
-        if (e.button !== 2) return;
+        if (!draggingRef.current) return;
+
+        const rotateMode = rotateModeRef?.current ?? false;
+        if (rotateMode) {
+          if (e.button !== 0 && e.button !== 2) return;
+        } else {
+          if (e.button !== 2) return;
+        }
+
         draggingRef.current = false;
         lastRef.current = null;
         try {
@@ -2792,13 +2829,21 @@ type BoardControlsOpen = {
   boardKey: string;
   lobby: "scifi" | "park";
   timeMinutes: number;
+  incrementSeconds: number;
   fen: string;
   mySide: "w" | "b" | null;
   turn: "w" | "b";
   boardOrientation: "white" | "black";
   canMove2d: boolean;
+  gooseSquare?: string;
+  goosePhase?: "piece" | "goose";
+  startledSquares?: string[];
+  canPlaceGoose?: boolean;
+  onPlaceGoose?: (sq: string) => boolean;
   canInc: boolean;
   canDec: boolean;
+  canIncIncrement: boolean;
+  canDecIncrement: boolean;
   canReset: boolean;
   canCenter: boolean;
   onMove2d: (
@@ -2808,6 +2853,8 @@ type BoardControlsOpen = {
   ) => boolean;
   onInc: () => void;
   onDec: () => void;
+  onIncIncrement: () => void;
+  onDecIncrement: () => void;
   onReset: () => void;
   onCenter: () => void;
 };
@@ -2821,6 +2868,11 @@ type Board2dSync = {
   turn: "w" | "b";
   boardOrientation: "white" | "black";
   canMove2d: boolean;
+  gooseSquare?: string;
+  goosePhase?: "piece" | "goose";
+  startledSquares?: string[];
+  canPlaceGoose?: boolean;
+  onPlaceGoose?: (sq: string) => boolean;
   onMove2d: (
     from: string,
     to: string,
@@ -3080,6 +3132,7 @@ import {
   ThemeIcon,
   CoinsIcon,
   MenuIcon,
+  RotateArrowsIcon,
   GoogleIcon,
   DiscordIcon,
   PaperPlaneIcon,
@@ -3812,6 +3865,16 @@ export default function World({
   const selfSpeedRef = useRef<number>(0);
   const lookAtTargetRef = useRef<THREE.Vector3 | null>(null);
 
+  const cameraOrbitApiRef = useRef<{
+    rotateByPixels: (dx: number, dy: number) => void;
+  } | null>(null);
+
+  const cameraRotateModeRef = useRef(false);
+  const [cameraRotateMode, setCameraRotateMode] = useState(false);
+  const [cameraRotateToast, setCameraRotateToast] = useState<"" | "on" | "off">(
+    ""
+  );
+
   const handleCenterCamera = useCallback((target: Vec3) => {
     if (!lookAtTargetRef.current) {
       lookAtTargetRef.current = new THREE.Vector3(
@@ -3831,6 +3894,7 @@ export default function World({
   const [board2d, setBoard2d] = useState<Board2dSync | null>(null);
   const [board2dArrows, setBoard2dArrows] = useState<Arrow[]>([]);
   const [board2dSelected, setBoard2dSelected] = useState<string | null>(null);
+  const [showGooseInfo, setShowGooseInfo] = useState(false);
 
   const computeBoard2dCenteredPos = useCallback(() => {
     if (typeof window === "undefined") return { x: 16, y: 16 };
@@ -4356,7 +4420,12 @@ export default function World({
             </group>
           ))}
 
-          <FollowCamera target={selfPosRef} lookAtOverride={lookAtTargetRef} />
+          <FollowCamera
+            target={selfPosRef}
+            lookAtOverride={lookAtTargetRef}
+            orbitApiRef={cameraOrbitApiRef}
+            rotateModeRef={cameraRotateModeRef}
+          />
 
           <VoiceProximityUpdater
             enabled={!!self}
@@ -4734,6 +4803,38 @@ export default function World({
         </div>
       )}
 
+      {/* Camera rotate toast */}
+      {cameraRotateToast ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            display: "grid",
+            placeItems: "center",
+            pointerEvents: "none",
+            zIndex: 9999,
+          }}
+        >
+          <div
+            style={{
+              padding: "10px 14px",
+              borderRadius: 999,
+              background: "rgba(0,0,0,0.72)",
+              backdropFilter: "blur(10px)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              color: "white",
+              fontSize: 14,
+              fontWeight: 700,
+              letterSpacing: 0.2,
+            }}
+          >
+            {cameraRotateToast === "on"
+              ? "Rotate camera: drag anywhere"
+              : "Camera rotation off"}
+          </div>
+        </div>
+      ) : null}
+
       {/* Top Left HUD */}
       <div
         style={{
@@ -4746,6 +4847,45 @@ export default function World({
           pointerEvents: "none", // Let clicks pass through to canvas where possible
         }}
       >
+        {/* Camera rotate toggle */}
+        <button
+          onClick={() => {
+            setCameraRotateMode((prev) => {
+              const next = !prev;
+              cameraRotateModeRef.current = next;
+              setCameraRotateToast(next ? "on" : "off");
+              window.setTimeout(() => setCameraRotateToast(""), 1200);
+              return next;
+            });
+          }}
+          title={cameraRotateMode ? "Stop rotating camera" : "Rotate camera"}
+          style={{
+            pointerEvents: "auto",
+            height: 44,
+            borderRadius: 12,
+            background: cameraRotateMode
+              ? "rgba(0,0,0,0.6)"
+              : "rgba(0,0,0,0.4)",
+            backdropFilter: "blur(8px)",
+            border: cameraRotateMode
+              ? "1px solid rgba(255,255,255,0.22)"
+              : "1px solid rgba(255,255,255,0.1)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "0 12px",
+            color: "white",
+            touchAction: "manipulation",
+            userSelect: "none",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          <RotateArrowsIcon size={18} />
+          <span style={{ lineHeight: 1 }}>Camera</span>
+        </button>
+
         {/* Room Info Card */}
         <div
           style={{
@@ -5451,17 +5591,20 @@ export default function World({
         >
           <div
             style={{
-              width: 420,
-              maxWidth: "min(92vw, 520px)",
-              borderRadius: 16,
-              padding: 16,
+              width: 480,
+              maxWidth: "min(94vw, 550px)",
+              maxHeight: "90vh",
+              borderRadius: 20,
+              overflow: "hidden",
               border: "1px solid rgba(255,255,255,0.18)",
               background:
                 boardControls.lobby === "scifi"
                   ? "linear-gradient(135deg, rgba(0,255,255,0.16), rgba(80,0,120,0.25))"
-                  : "linear-gradient(135deg, rgba(255,255,255,0.82), rgba(230,245,250,0.88))",
-              boxShadow: "0 22px 60px rgba(0,0,0,0.45)",
+                  : "linear-gradient(135deg, rgba(255,255,255,0.88), rgba(230,245,250,0.92))",
+              boxShadow: "0 24px 70px rgba(0,0,0,0.5)",
               color: boardControls.lobby === "scifi" ? "#e6f7ff" : "#0f2c34",
+              display: "flex",
+              flexDirection: "column",
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -5471,66 +5614,50 @@ export default function World({
 
               return (
                 <>
+                  {/* Header */}
                   <div
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      marginBottom: 10,
-                      gap: 10,
-                      fontWeight: 700,
-                      letterSpacing: 0.4,
+                      padding: "20px 24px",
+                      borderBottom:
+                        boardControls.lobby === "scifi"
+                          ? "1px solid rgba(0,255,255,0.2)"
+                          : "1px solid rgba(0,0,0,0.08)",
+                      background:
+                        boardControls.lobby === "scifi"
+                          ? "rgba(0,0,0,0.25)"
+                          : "rgba(255,255,255,0.45)",
                     }}
                   >
                     <div
                       style={{
                         display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: 12,
                       }}
                     >
-                      <span style={{ fontSize: 13, opacity: 0.8 }}>Board</span>
-                      <span style={{ fontSize: 16 }}>
-                        {boardControls.boardKey.toUpperCase()}
-                      </span>
-                    </div>
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 8 }}
-                    >
-                      <div
-                        style={{
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border:
-                            boardControls.lobby === "scifi"
-                              ? "1px solid rgba(0,255,255,0.35)"
-                              : "1px solid rgba(0,0,0,0.12)",
-                          background:
-                            boardControls.lobby === "scifi"
-                              ? "rgba(0,0,0,0.35)"
-                              : "rgba(255,255,255,0.7)",
-                          fontSize: 13,
-                          textTransform: "capitalize",
-                        }}
-                      >
-                        {mode}
-                      </div>
-                      <div
-                        style={{
-                          padding: "6px 10px",
-                          borderRadius: 999,
-                          border:
-                            boardControls.lobby === "scifi"
-                              ? "1px solid rgba(0,255,255,0.35)"
-                              : "1px solid rgba(0,0,0,0.12)",
-                          background:
-                            boardControls.lobby === "scifi"
-                              ? "rgba(0,0,0,0.35)"
-                              : "rgba(255,255,255,0.7)",
-                          fontSize: 13,
-                        }}
-                      >
-                        Time {boardControls.timeMinutes}m
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            opacity: 0.65,
+                            marginBottom: 4,
+                            textTransform: "uppercase",
+                            letterSpacing: 1,
+                            fontWeight: 600,
+                          }}
+                        >
+                          Board Controls
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 22,
+                            fontWeight: 800,
+                            letterSpacing: 0.5,
+                          }}
+                        >
+                          {boardControls.boardKey.toUpperCase()}
+                        </div>
                       </div>
                       <button
                         onClick={() => setBoardControls(null)}
@@ -5538,249 +5665,675 @@ export default function World({
                           border: "none",
                           background:
                             boardControls.lobby === "scifi"
-                              ? "rgba(255,255,255,0.14)"
-                              : "rgba(0,0,0,0.08)",
+                              ? "rgba(255,255,255,0.12)"
+                              : "rgba(0,0,0,0.06)",
                           color: "inherit",
-                          padding: "6px 10px",
-                          borderRadius: 10,
+                          width: 36,
+                          height: 36,
+                          borderRadius: "50%",
                           cursor: "pointer",
-                          fontWeight: 700,
+                          fontSize: 18,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                        title="Close"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div
+                        style={{
+                          padding: "8px 14px",
+                          borderRadius: 12,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.35)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.4)"
+                              : "rgba(255,255,255,0.75)",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          textTransform: "capitalize",
                         }}
                       >
-                        Close
-                      </button>
+                        {mode}
+                      </div>
+                      <div
+                        style={{
+                          padding: "8px 14px",
+                          borderRadius: 12,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.35)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.4)"
+                              : "rgba(255,255,255,0.75)",
+                          fontSize: 13,
+                          fontWeight: 600,
+                        }}
+                      >
+                        ⏱ {boardControls.timeMinutes}min
+                        {boardControls.incrementSeconds > 0
+                          ? ` + ${boardControls.incrementSeconds}s`
+                          : ""}
+                      </div>
                     </div>
                   </div>
 
+                  {/* Content */}
                   <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                      gap: 10,
-                      marginBottom: 10,
-                    }}
+                    style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}
                   >
+                    {/* Game Mode Section */}
+                    <div style={{ marginBottom: 24 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 700,
+                          marginBottom: 12,
+                          opacity: 0.75,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Game Mode
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(140px, 1fr))",
+                          gap: 10,
+                        }}
+                      >
+                        {BOARD_MODE_DEFS.map((def) => {
+                          const selected = mode === def.key;
+                          const isGoose = def.key === "goose";
+                          const borderSelected = isGoose
+                            ? boardControls.lobby === "scifi"
+                              ? "2px solid rgba(255,200,0,0.6)"
+                              : "2px solid rgba(255,180,0,0.5)"
+                            : boardControls.lobby === "scifi"
+                            ? "2px solid rgba(0,255,255,0.6)"
+                            : "2px solid rgba(100,100,255,0.5)";
+                          const borderIdle =
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.25)"
+                              : "1px solid rgba(0,0,0,0.12)";
+                          const bgSelected = isGoose
+                            ? boardControls.lobby === "scifi"
+                              ? "rgba(255,200,0,0.15)"
+                              : "rgba(255,180,0,0.12)"
+                            : boardControls.lobby === "scifi"
+                            ? "rgba(0,255,255,0.15)"
+                            : "rgba(100,100,255,0.12)";
+                          const bgIdle =
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.25)"
+                              : "rgba(255,255,255,0.65)";
+
+                          const button = (
+                            <button
+                              key={def.key}
+                              onClick={() => {
+                                setBoardMode(boardControls.boardKey, def.key);
+                                setJoinedBoardKey((prev) =>
+                                  prev === boardControls.boardKey ? null : prev
+                                );
+                                setPendingJoinBoardKey(null);
+                                setBoardControls(null);
+                              }}
+                              style={{
+                                padding: "14px",
+                                borderRadius: 12,
+                                border: selected ? borderSelected : borderIdle,
+                                background: selected ? bgSelected : bgIdle,
+                                color: "inherit",
+                                cursor: "pointer",
+                                fontWeight: selected ? 800 : 600,
+                                fontSize: 14,
+                                transition: "all 0.2s",
+                                width: "100%",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                gap: 6,
+                              }}
+                            >
+                              {def.icon} {def.label}
+                            </button>
+                          );
+
+                          if (def.key !== "goose") return button;
+
+                          return (
+                            <div key={def.key} style={{ position: "relative" }}>
+                              {button}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowGooseInfo(true);
+                                }}
+                                style={{
+                                  position: "absolute",
+                                  top: 4,
+                                  right: 4,
+                                  border: "none",
+                                  background: "rgba(0,0,0,0.2)",
+                                  color: "inherit",
+                                  width: 18,
+                                  height: 18,
+                                  borderRadius: "50%",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                                title="Learn about Goose Chess"
+                              >
+                                ?
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          marginTop: 16,
+                          marginBottom: 8,
+                          opacity: 0.65,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Time
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 700,
+                          marginBottom: 10,
+                          opacity: 0.75,
+                        }}
+                      >
+                        Current: {boardControls.timeMinutes}min
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                          gap: 10,
+                        }}
+                      >
+                        <button
+                          onClick={boardControls.onDec}
+                          disabled={!boardControls.canDec}
+                          style={{
+                            padding: "14px",
+                            borderRadius: 12,
+                            border:
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(0,255,255,0.35)"
+                                : "1px solid rgba(0,0,0,0.12)",
+                            background:
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,0,0,0.3)"
+                                : "rgba(255,255,255,0.8)",
+                            color: "inherit",
+                            cursor: boardControls.canDec
+                              ? "pointer"
+                              : "not-allowed",
+                            opacity: boardControls.canDec ? 1 : 0.4,
+                            fontWeight: 600,
+                            fontSize: 14,
+                          }}
+                        >
+                          ⏱ Decrease Time
+                        </button>
+                        <button
+                          onClick={boardControls.onInc}
+                          disabled={!boardControls.canInc}
+                          style={{
+                            padding: "14px",
+                            borderRadius: 12,
+                            border:
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(0,255,255,0.35)"
+                                : "1px solid rgba(0,0,0,0.12)",
+                            background:
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,0,0,0.3)"
+                                : "rgba(255,255,255,0.8)",
+                            color: "inherit",
+                            cursor: boardControls.canInc
+                              ? "pointer"
+                              : "not-allowed",
+                            opacity: boardControls.canInc ? 1 : 0.4,
+                            fontWeight: 600,
+                            fontSize: 14,
+                          }}
+                        >
+                          ⏱ Increase Time
+                        </button>
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          marginTop: 16,
+                          marginBottom: 8,
+                          opacity: 0.65,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Increment
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 700,
+                          marginBottom: 10,
+                          opacity: 0.75,
+                        }}
+                      >
+                        Current: {boardControls.incrementSeconds}s
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                          gap: 10,
+                        }}
+                      >
+                        <button
+                          onClick={boardControls.onDecIncrement}
+                          disabled={!boardControls.canDecIncrement}
+                          style={{
+                            padding: "14px",
+                            borderRadius: 12,
+                            border:
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(0,255,255,0.35)"
+                                : "1px solid rgba(0,0,0,0.12)",
+                            background:
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,0,0,0.3)"
+                                : "rgba(255,255,255,0.8)",
+                            color: "inherit",
+                            cursor: boardControls.canDecIncrement
+                              ? "pointer"
+                              : "not-allowed",
+                            opacity: boardControls.canDecIncrement ? 1 : 0.4,
+                            fontWeight: 600,
+                            fontSize: 14,
+                          }}
+                        >
+                          ➖ Decrease
+                        </button>
+                        <button
+                          onClick={boardControls.onIncIncrement}
+                          disabled={!boardControls.canIncIncrement}
+                          style={{
+                            padding: "14px",
+                            borderRadius: 12,
+                            border:
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(0,255,255,0.35)"
+                                : "1px solid rgba(0,0,0,0.12)",
+                            background:
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,0,0,0.3)"
+                                : "rgba(255,255,255,0.8)",
+                            color: "inherit",
+                            cursor: boardControls.canIncIncrement
+                              ? "pointer"
+                              : "not-allowed",
+                            opacity: boardControls.canIncIncrement ? 1 : 0.4,
+                            fontWeight: 600,
+                            fontSize: 14,
+                          }}
+                        >
+                          ➕ Increase
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Actions Section */}
+                    <div style={{ marginBottom: 20 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 700,
+                          marginBottom: 12,
+                          opacity: 0.75,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Actions
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                          gap: 10,
+                        }}
+                      >
+                        <button
+                          onClick={() => {
+                            boardControls.onCenter();
+                            setBoardControls(null);
+                          }}
+                          disabled={!boardControls.canCenter}
+                          style={{
+                            padding: "14px",
+                            borderRadius: 12,
+                            border:
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(0,255,180,0.35)"
+                                : "1px solid rgba(0,120,90,0.35)",
+                            background:
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,50,40,0.4)"
+                                : "rgba(210,255,245,0.85)",
+                            color:
+                              boardControls.lobby === "scifi"
+                                ? "#7cffd8"
+                                : "#0d2a32",
+                            cursor: boardControls.canCenter
+                              ? "pointer"
+                              : "not-allowed",
+                            opacity: boardControls.canCenter ? 1 : 0.4,
+                            fontWeight: 600,
+                            fontSize: 14,
+                          }}
+                        >
+                          🎯 Center Camera
+                        </button>
+                        <button
+                          onClick={boardControls.onReset}
+                          disabled={!boardControls.canReset}
+                          style={{
+                            padding: "14px",
+                            borderRadius: 12,
+                            border:
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(255,90,90,0.5)"
+                                : "1px solid rgba(200,40,40,0.35)",
+                            background:
+                              boardControls.lobby === "scifi"
+                                ? "rgba(50,0,0,0.45)"
+                                : "rgba(255,230,230,0.8)",
+                            color:
+                              boardControls.lobby === "scifi"
+                                ? "#ffb3b3"
+                                : "#5c0f0f",
+                            cursor: boardControls.canReset
+                              ? "pointer"
+                              : "not-allowed",
+                            opacity: boardControls.canReset ? 1 : 0.4,
+                            fontWeight: 600,
+                            fontSize: 14,
+                          }}
+                        >
+                          ↺ Reset Game
+                        </button>
+                      </div>
+                    </div>
+
                     <button
                       onClick={() => {
-                        setBoardMode(boardControls.boardKey, "chess");
-                        setJoinedBoardKey((prev) =>
-                          prev === boardControls.boardKey ? null : prev
+                        if (engineForMode(mode) !== "chess") return;
+                        setBoard2dArrows([]);
+                        setBoard2dPos(
+                          isMobile
+                            ? { x: 8, y: 8 }
+                            : computeBoard2dCenteredPos()
                         );
-                        setPendingJoinBoardKey(null);
+                        setBoard2d({
+                          type: "sync2d",
+                          boardKey: boardControls.boardKey,
+                          lobby: boardControls.lobby,
+                          fen: boardControls.fen,
+                          mySide: boardControls.mySide,
+                          turn: boardControls.turn,
+                          boardOrientation: boardControls.boardOrientation,
+                          canMove2d: boardControls.canMove2d,
+                          gooseSquare: boardControls.gooseSquare,
+                          goosePhase: boardControls.goosePhase,
+                          startledSquares: boardControls.startledSquares,
+                          canPlaceGoose: boardControls.canPlaceGoose,
+                          onPlaceGoose: boardControls.onPlaceGoose,
+                          onMove2d: boardControls.onMove2d,
+                        });
                         setBoardControls(null);
                       }}
+                      disabled={engineForMode(mode) !== "chess"}
                       style={{
-                        padding: "12px",
+                        width: "100%",
+                        padding: "16px",
                         borderRadius: 12,
                         border:
                           boardControls.lobby === "scifi"
-                            ? "1px solid rgba(0,255,255,0.35)"
-                            : "1px solid rgba(0,0,0,0.12)",
+                            ? "2px solid rgba(0,255,255,0.45)"
+                            : "2px solid rgba(100,100,255,0.35)",
                         background:
-                          mode === "chess"
-                            ? boardControls.lobby === "scifi"
-                              ? "rgba(0,0,0,0.45)"
-                              : "rgba(255,255,255,0.95)"
-                            : boardControls.lobby === "scifi"
-                            ? "rgba(0,0,0,0.28)"
-                            : "rgba(255,255,255,0.78)",
-                        color: "inherit",
-                        cursor: "pointer",
-                        fontWeight: 800,
-                      }}
-                    >
-                      Chess
-                    </button>
-                    <button
-                      onClick={() => {
-                        setBoardMode(boardControls.boardKey, "checkers");
-                        setJoinedBoardKey((prev) =>
-                          prev === boardControls.boardKey ? null : prev
-                        );
-                        setPendingJoinBoardKey(null);
-                        setBoardControls(null);
-                      }}
-                      style={{
-                        padding: "12px",
-                        borderRadius: 12,
-                        border:
                           boardControls.lobby === "scifi"
-                            ? "1px solid rgba(0,255,255,0.35)"
-                            : "1px solid rgba(0,0,0,0.12)",
-                        background:
-                          mode === "checkers"
-                            ? boardControls.lobby === "scifi"
-                              ? "rgba(0,0,0,0.45)"
-                              : "rgba(255,255,255,0.95)"
-                            : boardControls.lobby === "scifi"
-                            ? "rgba(0,0,0,0.28)"
-                            : "rgba(255,255,255,0.78)",
+                            ? "linear-gradient(135deg, rgba(0,255,255,0.2), rgba(0,200,255,0.15))"
+                            : "linear-gradient(135deg, rgba(100,100,255,0.15), rgba(150,150,255,0.1))",
                         color: "inherit",
-                        cursor: "pointer",
-                        fontWeight: 800,
+                        cursor:
+                          engineForMode(mode) === "chess"
+                            ? "pointer"
+                            : "not-allowed",
+                        fontWeight: 700,
+                        fontSize: 15,
+                        letterSpacing: 0.5,
+                        opacity: engineForMode(mode) === "chess" ? 1 : 0.4,
                       }}
                     >
-                      Checkers
+                      📋 Open 2D Board
                     </button>
                   </div>
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                      gap: 10,
-                    }}
-                  >
-                    <button
-                      onClick={boardControls.onDec}
-                      disabled={!boardControls.canDec}
-                      style={{
-                        padding: "12px",
-                        borderRadius: 12,
-                        border:
-                          boardControls.lobby === "scifi"
-                            ? "1px solid rgba(0,255,255,0.35)"
-                            : "1px solid rgba(0,0,0,0.12)",
-                        background:
-                          boardControls.lobby === "scifi"
-                            ? "rgba(0,0,0,0.35)"
-                            : "rgba(255,255,255,0.9)",
-                        color: "inherit",
-                        cursor: boardControls.canDec
-                          ? "pointer"
-                          : "not-allowed",
-                        opacity: boardControls.canDec ? 1 : 0.5,
-                        fontWeight: 700,
-                      }}
-                    >
-                      Time -
-                    </button>
-                    <button
-                      onClick={boardControls.onInc}
-                      disabled={!boardControls.canInc}
-                      style={{
-                        padding: "12px",
-                        borderRadius: 12,
-                        border:
-                          boardControls.lobby === "scifi"
-                            ? "1px solid rgba(0,255,255,0.35)"
-                            : "1px solid rgba(0,0,0,0.12)",
-                        background:
-                          boardControls.lobby === "scifi"
-                            ? "rgba(0,0,0,0.35)"
-                            : "rgba(255,255,255,0.9)",
-                        color: "inherit",
-                        cursor: boardControls.canInc
-                          ? "pointer"
-                          : "not-allowed",
-                        opacity: boardControls.canInc ? 1 : 0.5,
-                        fontWeight: 700,
-                      }}
-                    >
-                      Time +
-                    </button>
-                    <button
-                      onClick={boardControls.onReset}
-                      disabled={!boardControls.canReset}
-                      style={{
-                        padding: "12px",
-                        borderRadius: 12,
-                        border:
-                          boardControls.lobby === "scifi"
-                            ? "1px solid rgba(255,90,90,0.5)"
-                            : "1px solid rgba(200,40,40,0.35)",
-                        background:
-                          boardControls.lobby === "scifi"
-                            ? "rgba(50,0,0,0.5)"
-                            : "rgba(255,230,230,0.85)",
-                        color:
-                          boardControls.lobby === "scifi"
-                            ? "#ffb3b3"
-                            : "#5c0f0f",
-                        cursor: boardControls.canReset
-                          ? "pointer"
-                          : "not-allowed",
-                        opacity: boardControls.canReset ? 1 : 0.55,
-                        fontWeight: 700,
-                      }}
-                    >
-                      Reset Game
-                    </button>
-                    <button
-                      onClick={boardControls.onCenter}
-                      disabled={!boardControls.canCenter}
-                      style={{
-                        padding: "12px",
-                        borderRadius: 12,
-                        border:
-                          boardControls.lobby === "scifi"
-                            ? "1px solid rgba(0,255,180,0.35)"
-                            : "1px solid rgba(0,120,90,0.35)",
-                        background:
-                          boardControls.lobby === "scifi"
-                            ? "rgba(0,50,40,0.45)"
-                            : "rgba(210,255,245,0.9)",
-                        color:
-                          boardControls.lobby === "scifi"
-                            ? "#7cffd8"
-                            : "#0d2a32",
-                        cursor: boardControls.canCenter
-                          ? "pointer"
-                          : "not-allowed",
-                        opacity: boardControls.canCenter ? 1 : 0.55,
-                        fontWeight: 700,
-                      }}
-                    >
-                      Center Camera
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      if (mode !== "chess") return;
-                      setBoard2dArrows([]);
-                      setBoard2dPos(
-                        isMobile ? { x: 8, y: 8 } : computeBoard2dCenteredPos()
-                      );
-                      setBoard2d({
-                        type: "sync2d",
-                        boardKey: boardControls.boardKey,
-                        lobby: boardControls.lobby,
-                        fen: boardControls.fen,
-                        mySide: boardControls.mySide,
-                        turn: boardControls.turn,
-                        boardOrientation: boardControls.boardOrientation,
-                        canMove2d: boardControls.canMove2d,
-                        onMove2d: boardControls.onMove2d,
-                      });
-                      setBoardControls(null);
-                    }}
-                    disabled={mode !== "chess"}
-                    style={{
-                      marginTop: 12,
-                      width: "100%",
-                      padding: "12px",
-                      borderRadius: 12,
-                      border:
-                        boardControls.lobby === "scifi"
-                          ? "1px solid rgba(0,255,255,0.35)"
-                          : "1px solid rgba(0,0,0,0.12)",
-                      background:
-                        boardControls.lobby === "scifi"
-                          ? "rgba(0,0,0,0.35)"
-                          : "rgba(255,255,255,0.9)",
-                      color: "inherit",
-                      cursor: mode === "chess" ? "pointer" : "not-allowed",
-                      fontWeight: 800,
-                      letterSpacing: 0.2,
-                      opacity: mode === "chess" ? 1 : 0.6,
-                    }}
-                  >
-                    Open 2D Board
-                  </button>
                 </>
               );
             })()}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Goose Info Modal */}
+      {showGooseInfo ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.65)",
+            backdropFilter: "blur(8px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 56,
+            pointerEvents: "auto",
+            padding: 16,
+          }}
+          onClick={() => setShowGooseInfo(false)}
+        >
+          <div
+            style={{
+              width: 520,
+              maxWidth: "94vw",
+              borderRadius: 20,
+              overflow: "hidden",
+              border: "2px solid rgba(255,200,0,0.3)",
+              background:
+                "linear-gradient(135deg, rgba(255,240,200,0.95), rgba(255,250,220,0.98))",
+              boxShadow: "0 24px 70px rgba(0,0,0,0.5)",
+              color: "#2a1800",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "24px",
+                borderBottom: "1px solid rgba(255,200,0,0.2)",
+                background:
+                  "linear-gradient(135deg, rgba(255,200,0,0.15), rgba(255,220,100,0.1))",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 24,
+                    fontWeight: 800,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                  }}
+                >
+                  <span>🪿</span>
+                  <span>Goose Chess Rules</span>
+                </div>
+                <button
+                  onClick={() => setShowGooseInfo(false)}
+                  style={{
+                    border: "none",
+                    background: "rgba(0,0,0,0.08)",
+                    color: "inherit",
+                    width: 36,
+                    height: 36,
+                    borderRadius: "50%",
+                    cursor: "pointer",
+                    fontSize: 18,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            <div
+              style={{ padding: "24px", maxHeight: "70vh", overflowY: "auto" }}
+            >
+              <div style={{ marginBottom: 24 }}>
+                <div
+                  style={{
+                    fontSize: 16,
+                    fontWeight: 700,
+                    marginBottom: 12,
+                    color: "#8b5a00",
+                  }}
+                >
+                  How to Play
+                </div>
+                <div
+                  style={{
+                    fontSize: 14,
+                    lineHeight: 1.6,
+                    padding: "12px 16px",
+                    background: "rgba(255,255,255,0.5)",
+                    borderRadius: 12,
+                    border: "1px solid rgba(255,200,0,0.2)",
+                  }}
+                >
+                  Each turn has two phases:
+                  <br />
+                  1. <strong>Move your piece</strong> (like normal chess)
+                  <br />
+                  2. <strong>Move the Goose</strong> to any empty square
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 24 }}>
+                <div
+                  style={{
+                    fontSize: 16,
+                    fontWeight: 700,
+                    marginBottom: 12,
+                    color: "#8b5a00",
+                  }}
+                >
+                  Special Rules
+                </div>
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 12 }}
+                >
+                  <div
+                    style={{
+                      padding: "12px 16px",
+                      background: "rgba(255,255,255,0.5)",
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,200,0,0.2)",
+                      fontSize: 14,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                      🦆 Semi-Solid Goose
+                    </div>
+                    Pieces (except the King) can jump through the goose square
+                    but cannot land on it.
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "12px 16px",
+                      background: "rgba(255,255,255,0.5)",
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,200,0,0.2)",
+                      fontSize: 14,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                      📢 Honk Effect
+                    </div>
+                    Pieces adjacent to the goose are "startled" and cannot
+                    capture or give check.
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "12px 16px",
+                      background: "rgba(255,255,255,0.5)",
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,200,0,0.2)",
+                      fontSize: 14,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                      🎯 Center Restriction
+                    </div>
+                    After move 20, the goose cannot be placed in the center 4
+                    squares (d4, e4, d5, e5).
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -6045,6 +6598,19 @@ export default function World({
                               return moved;
                             },
                             onSquareClick: ({ square, piece }) => {
+                              const canPlaceGoose = !!(board2d as any)
+                                .canPlaceGoose;
+                              const onPlaceGoose = (board2d as any)
+                                .onPlaceGoose as
+                                | ((sq: string) => boolean)
+                                | undefined;
+
+                              if (canPlaceGoose && onPlaceGoose && !piece) {
+                                const placed = onPlaceGoose(square);
+                                if (placed) setBoard2dSelected(null);
+                                return;
+                              }
+
                               if (!board2d.canMove2d) return;
                               // If clicking another own piece, switch selection without attempting a move.
                               if (
@@ -6070,15 +6636,84 @@ export default function World({
                                 string,
                                 React.CSSProperties
                               > = {};
+
+                              const gooseSquare = (board2d as any)
+                                .gooseSquare as string | undefined;
+                              const startledSquares = (board2d as any)
+                                .startledSquares as string[] | undefined;
+
+                              // Custom goose SVG icon
+                              const gooseSvg = `<svg viewBox="0 0 45 45" xmlns="http://www.w3.org/2000/svg" style="width:80%;height:80%;position:absolute;top:10%;left:10%;pointer-events:none;">
+                                <g transform="translate(22.5,22.5)">
+                                  <!-- Body -->
+                                  <ellipse cx="0" cy="2" rx="10" ry="12" fill="#ffd700" stroke="#ff8c00" stroke-width="1.2"/>
+                                  <!-- Neck -->
+                                  <path d="M 0,-8 Q -2,-12 -3,-16 L -1,-16 Q 0,-12 2,-8 Z" fill="#ffd700" stroke="#ff8c00" stroke-width="1"/>
+                                  <!-- Head -->
+                                  <circle cx="0" cy="-17" r="4" fill="#ffd700" stroke="#ff8c00" stroke-width="1"/>
+                                  <!-- Beak -->
+                                  <path d="M -1,-17 L -5,-17 L -3,-19 Z" fill="#ff6b00"/>
+                                  <!-- Eye -->
+                                  <circle cx="1.5" cy="-18" r="0.8" fill="#000"/>
+                                  <!-- Wing -->
+                                  <path d="M 6,0 Q 10,-2 11,2 Q 10,4 6,3 Z" fill="#ffb700" stroke="#ff8c00" stroke-width="0.8"/>
+                                  <!-- Tail feathers -->
+                                  <path d="M -8,8 Q -10,10 -7,11 Q -8,12 -5,11 Q -6,13 -3,11 L -3,8 Z" fill="#ffb700" stroke="#ff8c00" stroke-width="0.8"/>
+                                  <!-- Feet -->
+                                  <path d="M -3,13 L -3,15 M -3,15 L -5,15 M -3,15 L -1,15" stroke="#ff8c00" stroke-width="1.2" stroke-linecap="round"/>
+                                  <path d="M 3,13 L 3,15 M 3,15 L 1,15 M 3,15 L 5,15" stroke="#ff8c00" stroke-width="1.2" stroke-linecap="round"/>
+                                </g>
+                              </svg>`;
+
+                              if (gooseSquare) {
+                                styles[gooseSquare] = {
+                                  background:
+                                    "radial-gradient(circle, rgba(255,220,100,0.45) 0%, rgba(255,200,50,0.25) 50%, transparent 70%)",
+                                  position: "relative",
+                                };
+                                // Add goose icon as background image
+                                const gooseDataUrl = `data:image/svg+xml;base64,${btoa(
+                                  gooseSvg
+                                )}`;
+                                styles[
+                                  gooseSquare
+                                ].backgroundImage = `url("${gooseDataUrl}")`;
+                                styles[gooseSquare].backgroundSize = "80%";
+                                styles[gooseSquare].backgroundPosition =
+                                  "center";
+                                styles[gooseSquare].backgroundRepeat =
+                                  "no-repeat";
+                              }
+
+                              if (Array.isArray(startledSquares)) {
+                                for (const sq of startledSquares) {
+                                  styles[sq] = {
+                                    ...(styles[sq] ?? {}),
+                                    boxShadow:
+                                      "inset 0 0 0 3px rgba(255,100,0,0.35), inset 0 0 12px rgba(255,150,0,0.25)",
+                                  };
+                                }
+                              }
+
                               if (board2dSelected) {
                                 const tmpChess =
                                   new (require("chess.js").Chess)(board2d.fen);
-                                const moves = tmpChess.moves({
-                                  square: board2dSelected,
-                                  verbose: true,
-                                });
-                                moves.forEach((m: any) => {
-                                  styles[m.to] = {
+
+                                const targets = gooseSquare
+                                  ? gooseLegalMovesForSquare(
+                                      tmpChess,
+                                      board2dSelected as any,
+                                      gooseSquare as any
+                                    ).map((m) => m.to)
+                                  : tmpChess
+                                      .moves({
+                                        square: board2dSelected,
+                                        verbose: true,
+                                      })
+                                      .map((m: any) => m.to);
+
+                                targets.forEach((toSq: string) => {
+                                  styles[toSq] = {
                                     background:
                                       "radial-gradient(circle, rgba(0,0,0,0.2) 25%, transparent 25%)",
                                     borderRadius: "50%",

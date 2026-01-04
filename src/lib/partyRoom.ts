@@ -3,6 +3,9 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import PartySocket from "partysocket";
 import { colorFromId } from "@/lib/hashColor";
+import type { BoardMode } from "@/lib/boardModes";
+
+export type { BoardMode } from "@/lib/boardModes";
 
 export type Vec3 = [number, number, number];
 
@@ -24,8 +27,6 @@ export type ChatMessage = {
   text: string;
   t: number;
 };
-
-export type BoardMode = "chess" | "checkers";
 
 type PartyMessage =
   | {
@@ -279,7 +280,7 @@ export function usePartyRoom(
 
   const setBoardMode = useCallback((boardKey: string, mode: BoardMode) => {
     const cleanedKey = (boardKey ?? "").toString().trim().slice(0, 8);
-    const cleanedMode: BoardMode = mode === "checkers" ? "checkers" : "chess";
+    const cleanedMode: BoardMode = mode;
     if (!cleanedKey) return;
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(

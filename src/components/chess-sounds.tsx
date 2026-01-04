@@ -32,6 +32,7 @@ export function useChessSounds() {
       // Select.mp3 doesn't exist, will use fallback synth
       // load("select", "/sounds/Select.mp3");
       load("warning", "/sounds/LowTime.mp3");
+      load("honk", "/sounds/Honk.mp3");
     }
     return () => {
       audioContextRef.current?.close();
@@ -159,11 +160,19 @@ export function useChessSounds() {
     });
   }, [playOrFallback, playTone]);
 
+  const playHonk = useCallback(() => {
+    playOrFallback("honk", () => {
+      playTone(400, "sawtooth", 0.2, 0.5, -100);
+      setTimeout(() => playTone(350, "sawtooth", 0.2, 0.5, -100), 100);
+    });
+  }, [playOrFallback, playTone]);
+
   return {
     playMove,
     playCapture,
     playSelect,
     playWarning,
     playClick,
+    playHonk,
   };
 }

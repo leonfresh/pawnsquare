@@ -2,8 +2,6 @@
 
 import { RoundedBox, Text, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { Chess, type Square } from "chess.js";
-import PartySocket from "partysocket";
 import {
   type RefObject,
   useCallback,
@@ -13,126 +11,23 @@ import {
   useState,
 } from "react";
 import * as THREE from "three";
-import type { Vec3 } from "@/lib/partyRoom";
+import type { BoardMode, Vec3 } from "@/lib/partyRoom";
+import {
+  chessVariantForMode,
+  engineForMode,
+  isGooseMode,
+} from "@/lib/boardModes";
 import { useChessSounds } from "./chess-sounds";
 import { useCheckersGame } from "./checkers-core";
-import { applyChessThemeToMaterial } from "./chess-core";
-
-type Side = "w" | "b";
-
-type GameMode = "chess" | "checkers";
-
-type GameResult =
-  | { type: "timeout"; winner: Side }
-  | { type: "checkmate"; winner: Side }
-  | {
-      type: "draw";
-      reason: "stalemate" | "insufficient" | "fifty-move" | "draw";
-    };
-
-type ClockState = {
-  baseMs: number;
-  remainingMs: { w: number; b: number };
-  running: boolean;
-  active: Side;
-  lastTickMs: number | null;
-};
-
-type SeatInfo = {
-  connId: string;
-  playerId: string;
-  name: string;
-};
-
-type ChessNetState = {
-  seats: { w: SeatInfo | null; b: SeatInfo | null };
-  fen: string;
-  seq: number;
-  clock: ClockState;
-  result: GameResult | null;
-  lastMove: { from: Square; to: Square } | null;
-};
-
-type ChessMessage = { type: "state"; state: ChessNetState };
-
-type ChessSendMessage =
-  | { type: "join"; side: Side; playerId?: string; name?: string }
-  | { type: "leave"; side: Side }
-  | {
-      type: "move";
-      from: Square;
-      to: Square;
-      promotion?: "q" | "r" | "b" | "n";
-    }
-  | { type: "setTime"; baseSeconds: number }
-  | { type: "reset" };
+import {
+  applyChessThemeToMaterial,
+  useChessGame,
+  type BoardControlsEvent,
+  type Side,
+  type Square,
+} from "./chess-core";
 
 type CheckersPiece = { color: Side; king: boolean };
-
-type CheckersNetState = {
-  seats: { w: SeatInfo | null; b: SeatInfo | null };
-  board: Record<string, CheckersPiece>;
-  turn: Side;
-  seq: number;
-  clock: ClockState;
-  result:
-    | { type: "win"; winner: Side }
-    | { type: "timeout"; winner: Side }
-    | null;
-  lastMove: { from: string; to: string; captured: string[] } | null;
-  forcedFrom: string | null;
-};
-
-type CheckersMessage = { type: "state"; state: CheckersNetState };
-
-type CheckersSendMessage =
-  | { type: "join"; side: Side; playerId?: string; name?: string }
-  | { type: "leave"; side: Side }
-  | { type: "move"; from: string; to: string }
-  | { type: "setTime"; baseSeconds: number }
-  | { type: "reset" };
-
-type BoardControlsEvent =
-  | {
-      type: "open";
-      boardKey: string;
-      lobby: "park";
-      timeMinutes: number;
-      fen: string;
-      mySide: Side | null;
-      turn: Side;
-      boardOrientation: "white" | "black";
-      canMove2d: boolean;
-      canInc: boolean;
-      canDec: boolean;
-      canReset: boolean;
-      canCenter: boolean;
-      onMove2d: (
-        from: string,
-        to: string,
-        promotion?: "q" | "r" | "b" | "n"
-      ) => boolean;
-      onInc: () => void;
-      onDec: () => void;
-      onReset: () => void;
-      onCenter: () => void;
-    }
-  | {
-      type: "sync2d";
-      boardKey: string;
-      lobby: "park";
-      fen: string;
-      mySide: Side | null;
-      turn: Side;
-      boardOrientation: "white" | "black";
-      canMove2d: boolean;
-      onMove2d: (
-        from: string,
-        to: string,
-        promotion?: "q" | "r" | "b" | "n"
-      ) => boolean;
-    }
-  | { type: "close"; boardKey?: string };
 
 function CheckerPiece({
   position,
@@ -210,6 +105,105 @@ function CheckerPiece({
   );
 }
 
+function HolographicPlacementText({
+  originVec,
+  boardSize,
+  squareSize,
+}: {
+  originVec: THREE.Vector3;
+  boardSize: number;
+  squareSize: number;
+}) {
+  const textRef = useRef<any>(null);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const time = performance.now() * 0.001;
+    // Gentle float animation
+    textRef.current.position.y =
+      originVec.y + 1.8 + Math.sin(time * 1.5) * 0.08;
+    // Subtle pulse on opacity
+    const opacity = 0.85 + Math.sin(time * 2) * 0.15;
+    if (textRef.current.material) {
+      textRef.current.material.opacity = opacity;
+    }
+  });
+
+  return (
+    <Text
+      ref={textRef}
+      position={[
+        originVec.x,
+        originVec.y + 1.8,
+        originVec.z - boardSize / 2 - 0.8,
+      ]}
+      fontSize={0.28}
+      color="#00d9ff"
+      anchorX="center"
+      anchorY="middle"
+      outlineWidth={0.015}
+      outlineColor="#003d4d"
+      font="/fonts/Orbitron-Bold.ttf"
+    >
+      PLACE GOOSE
+      <meshBasicMaterial
+        attach="material"
+        color="#00d9ff"
+        transparent
+        opacity={0.85}
+        toneMapped={false}
+      />
+    </Text>
+  );
+}
+
+function GooseWarningText({
+  position,
+  startMs,
+}: {
+  position: [number, number, number];
+  startMs: number;
+}) {
+  const textRef = useRef<any>(null);
+  const [opacity, setOpacity] = useState(1);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const elapsed = performance.now() - startMs;
+    const duration = 900;
+    const t = Math.min(elapsed / duration, 1);
+
+    // Hover above goose head and fly upward
+    const y = position[1] + 0.85 + t * 0.55;
+    const op = 1 - t;
+    textRef.current.position.set(position[0], y, position[2]);
+    setOpacity(op);
+  });
+
+  return (
+    <Text
+      ref={textRef}
+      position={[position[0], position[1] + 0.85, position[2]]}
+      fontSize={0.34}
+      color="#ff4444"
+      anchorX="center"
+      anchorY="middle"
+      fillOpacity={opacity}
+      renderOrder={10}
+    >
+      !
+      <meshBasicMaterial
+        attach="material"
+        color="#ff4444"
+        transparent
+        opacity={opacity}
+        depthTest={false}
+        toneMapped={false}
+      />
+    </Text>
+  );
+}
+
 function PulsingIndicatorMaterial({
   color,
   baseOpacity,
@@ -231,6 +225,45 @@ function PulsingIndicatorMaterial({
     } else {
       mat.opacity = baseOpacity;
     }
+  });
+
+  return (
+    <meshBasicMaterial
+      ref={matRef}
+      color={color}
+      transparent
+      opacity={baseOpacity}
+      blending={THREE.AdditiveBlending}
+      depthWrite={false}
+      polygonOffset
+      polygonOffsetFactor={-1}
+      polygonOffsetUnits={-1}
+    />
+  );
+}
+
+function SlowPulsingIndicatorMaterial({
+  color,
+  baseOpacity,
+  periodSeconds = 2.2,
+}: {
+  color: string;
+  baseOpacity: number;
+  periodSeconds?: number;
+}) {
+  const matRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  useFrame(({ clock }) => {
+    const mat = matRef.current;
+    if (!mat) return;
+    const t = clock.getElapsedTime();
+    const phase = (t * 2 * Math.PI) / periodSeconds;
+    const pulse = 0.5 + 0.5 * Math.sin(phase);
+    // Slow fade in/out around baseOpacity.
+    mat.opacity = Math.min(
+      0.95,
+      Math.max(0.02, baseOpacity * (0.55 + 0.65 * pulse))
+    );
   });
 
   return (
@@ -397,6 +430,7 @@ function ControlTV({
 }
 
 const TIME_OPTIONS_SECONDS = [60, 3 * 60, 5 * 60, 10 * 60, 15 * 60] as const;
+const INCREMENT_OPTIONS_SECONDS = [0, 1, 2, 3, 5, 10] as const;
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -1127,6 +1161,7 @@ function AnimatedPiece({
   whiteTint,
   blackTint,
   chessTheme,
+  isStartled,
 }: {
   square: Square;
   type: string;
@@ -1141,6 +1176,7 @@ function AnimatedPiece({
   whiteTint: THREE.Color;
   blackTint: THREE.Color;
   chessTheme?: string;
+  isStartled?: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const animRef = useRef<{
@@ -1207,6 +1243,7 @@ function AnimatedPiece({
     <group
       ref={groupRef}
       onPointerDown={(e) => {
+        if (e.button !== 0) return; // Left click only
         e.stopPropagation();
         onPickPiece(square);
       }}
@@ -1246,6 +1283,7 @@ function JoinPad({
 }) {
   const [w, d] = size;
   const handleClick = (e: any) => {
+    if (e.button !== 0) return; // Left click only
     e.stopPropagation();
     if (disabled) return;
     onClick();
@@ -2008,7 +2046,7 @@ export type OutdoorChessProps = {
   board2dOpen?: boolean;
   chessTheme?: string;
   chessBoardTheme?: string;
-  gameMode?: GameMode;
+  gameMode?: BoardMode;
 };
 
 function OutdoorChessChessMode({
@@ -2032,12 +2070,76 @@ function OutdoorChessChessMode({
   chessBoardTheme,
   gameMode = "chess",
 }: OutdoorChessProps) {
-  const originVec = useMemo(
-    () => new THREE.Vector3(origin[0], origin[1], origin[2]),
-    [origin]
-  );
-  const squareSize = 0.6;
-  const boardSize = squareSize * 8;
+  const {
+    playMove,
+    playCapture,
+    playSelect,
+    playWarning,
+    playClick,
+    playHonk,
+  } = useChessSounds();
+
+  const chessGame = useChessGame({
+    enabled: true,
+    variant: chessVariantForMode(gameMode),
+    roomId,
+    boardKey,
+    origin,
+    selfPositionRef,
+    selfId,
+    selfName,
+    joinLockedBoardKey,
+    leaveAllNonce,
+    leaveAllExceptBoardKey,
+    onJoinIntent,
+    onSelfSeatChange,
+    onRequestMove,
+    onCenterCamera,
+    onBoardControls,
+    controlsOpen,
+    board2dOpen,
+    chessTheme,
+    lobby: "park",
+    sounds: {
+      move: playMove,
+      capture: playCapture,
+      select: playSelect,
+      warning: playWarning,
+      click: playClick,
+      honk: playHonk,
+    },
+  });
+
+  const {
+    originVec,
+    squareSize,
+    boardSize,
+    netState,
+    chessSelfId,
+    turn,
+    gooseSquare,
+    goosePhase,
+    startledSquares,
+    mySides,
+    myPrimarySide,
+    isSeated,
+    selected,
+    legalTargets,
+    hoveredSquare,
+    setHoveredSquare,
+    pulseGoosePlacementUntilMs,
+    lastMove,
+    pieces,
+    animatedFromByTo,
+    pendingJoinSide,
+    clocks,
+    emitControlsOpen,
+    onPickSquare,
+    onPickPiece,
+    clickJoin,
+    resultLabel,
+    gooseBlocked,
+  } = chessGame;
 
   const whiteTint = useMemo(() => {
     if (chessTheme === "chess_wood") return new THREE.Color("#e1c28b");
@@ -2064,15 +2166,15 @@ function OutdoorChessChessMode({
     }
   }, [chessBoardTheme]);
 
-  const socketRef = useRef<PartySocket | null>(null);
-  const [chessSelfId, setChessSelfId] = useState<string>("");
-  const [chessConnected, setChessConnected] = useState(false);
-  const chessConnectedRef = useRef(false);
-  const pendingJoinRef = useRef<Side | null>(null);
-  const [pendingJoinSide, setPendingJoinSide] = useState<Side | null>(null);
+  const seatOccupied = (
+    seat?: { connId?: string | null; playerId?: string | null } | null
+  ) => !!seat?.connId && !!seat?.playerId;
+  const bothSeatsOccupied =
+    seatOccupied(netState.seats.w) && seatOccupied(netState.seats.b);
+  const canUseControlTV = isSeated || !bothSeatsOccupied;
+
   const controlsHintTimerRef = useRef<number | null>(null);
   const [controlsHintOpen, setControlsHintOpen] = useState(false);
-
   const showControlsHint = () => {
     setControlsHintOpen(true);
     if (controlsHintTimerRef.current !== null) {
@@ -2083,7 +2185,6 @@ function OutdoorChessChessMode({
       controlsHintTimerRef.current = null;
     }, 2200);
   };
-
   useEffect(() => {
     return () => {
       if (controlsHintTimerRef.current !== null) {
@@ -2092,340 +2193,8 @@ function OutdoorChessChessMode({
     };
   }, []);
 
-  useEffect(() => {
-    chessConnectedRef.current = chessConnected;
-  }, [chessConnected]);
-
-  const initialFen = useMemo(() => new Chess().fen(), []);
-  const defaultClock = useMemo<ClockState>(() => {
-    const baseMs = 5 * 60 * 1000;
-    return {
-      baseMs,
-      remainingMs: { w: baseMs, b: baseMs },
-      running: false,
-      active: "w",
-      lastTickMs: null,
-    };
-  }, []);
-  const [netState, setNetState] = useState<ChessNetState>({
-    seats: { w: null, b: null },
-    fen: initialFen,
-    seq: 0,
-    clock: defaultClock,
-    result: null,
-    lastMove: null,
-  });
-
-  const mySides = useMemo(() => {
-    const sides = new Set<Side>();
-    if (netState.seats.w?.connId === chessSelfId) sides.add("w");
-    if (netState.seats.b?.connId === chessSelfId) sides.add("b");
-    return sides;
-  }, [netState.seats.w, netState.seats.b, chessSelfId]);
-
-  const isSeated = mySides.size > 0;
-  const myPrimarySide: Side | null = mySides.has("w")
-    ? "w"
-    : mySides.has("b")
-    ? "b"
-    : null;
-
-  const chess = useMemo(() => new Chess(netState.fen), [netState.fen]);
-
-  const turn = chess.turn();
-
-  const [selected, setSelected] = useState<Square | null>(null);
-  const [legalTargets, setLegalTargets] = useState<Square[]>([]);
-  const lastMove = netState.lastMove;
-
-  const { playMove, playCapture, playSelect, playWarning, playClick } =
-    useChessSounds();
-  const prevFenForSound = useRef(initialFen);
-  const lastSoundSeq = useRef(0);
-  const hasWarnedRef = useRef(false);
-
-  // Sound effects for moves (only for players who are seated)
-  useEffect(() => {
-    if (!isSeated) return; // Only play sounds if we're a player
-    if (netState.seq <= lastSoundSeq.current) return;
-    lastSoundSeq.current = netState.seq;
-
-    if (netState.lastMove) {
-      try {
-        const tempChess = new Chess(prevFenForSound.current);
-        // Try to make the move to see if it was a capture
-        // We guess promotion to 'q' if needed, just to check capture flag
-        const moveResult = tempChess.move({
-          from: netState.lastMove.from,
-          to: netState.lastMove.to,
-          promotion: "q",
-        });
-
-        if (moveResult && moveResult.captured) {
-          playCapture();
-        } else {
-          playMove();
-        }
-      } catch (e) {
-        // Fallback if move validation fails (shouldn't happen with valid server state)
-        playMove();
-      }
-    }
-
-    prevFenForSound.current = netState.fen;
-    // Reset warning flag on new move
-    hasWarnedRef.current = false;
-  }, [
-    isSeated,
-    netState.seq,
-    netState.fen,
-    netState.lastMove,
-    playCapture,
-    playMove,
-  ]);
-
-  // Drive clock rendering while it's running.
-  const [clockNow, setClockNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!netState.clock.running) return;
-    const id = window.setInterval(() => setClockNow(Date.now()), 200);
-    return () => window.clearInterval(id);
-  }, [netState.clock.running]);
-
-  // Clock warning sound (only for the player whose clock is running low)
-  useEffect(() => {
-    if (!isSeated) return; // Only play warning if we're a player
-    if (!netState.clock.running) return;
-    const c = netState.clock;
-
-    // Only warn if it's OUR clock running low
-    if (!mySides.has(c.active)) return;
-
-    const now = clockNow;
-    const remaining = c.remainingMs[c.active];
-    const elapsed = c.lastTickMs ? Math.max(0, now - c.lastTickMs) : 0;
-    const currentRemaining = Math.max(0, remaining - elapsed);
-
-    // Warn at 30 seconds remaining
-    if (
-      currentRemaining < 30000 &&
-      currentRemaining > 0 &&
-      !hasWarnedRef.current
-    ) {
-      playWarning();
-      hasWarnedRef.current = true;
-    }
-  }, [isSeated, mySides, clockNow, netState.clock, playWarning]);
-
-  const send = (msg: ChessSendMessage) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(msg));
-    }
-  };
-
-  useEffect(() => {
-    onSelfSeatChange?.(boardKey, isSeated);
-    if (isSeated) setPendingJoinSide(null);
-  }, [boardKey, isSeated, onSelfSeatChange]);
-
-  useEffect(() => {
-    if (!leaveAllNonce) return;
-    if (leaveAllExceptBoardKey && leaveAllExceptBoardKey === boardKey) return;
-    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN)
-      return;
-
-    if (netState.seats.w?.connId === chessSelfId)
-      send({ type: "leave", side: "w" });
-    if (netState.seats.b?.connId === chessSelfId)
-      send({ type: "leave", side: "b" });
-  }, [
-    leaveAllNonce,
-    leaveAllExceptBoardKey,
-    boardKey,
-    chessSelfId,
-    netState.seats.w,
-    netState.seats.b,
-  ]);
-
-  useEffect(() => {
-    if (!chessConnected) return;
-
-    console.log(`[Chess] Connecting to room ${roomId}-chess-${boardKey}`);
-    const socket = new PartySocket({
-      host: PARTYKIT_HOST,
-      party: "chess",
-      room: `${roomId}-chess-${boardKey}`,
-    });
-
-    socketRef.current = socket;
-
-    socket.addEventListener("open", () => {
-      console.log("[Chess] Connected");
-
-      // IMPORTANT: PartyKit ids are per-connection. Use the chess socket id
-      // for seat ownership checks and move permissions.
-      setChessSelfId(socket.id);
-
-      // Request any pending join
-      const pendingSide = pendingJoinRef.current;
-      if (pendingSide) {
-        pendingJoinRef.current = null;
-        send({ type: "join", side: pendingSide });
-      }
-    });
-
-    socket.addEventListener("message", (event) => {
-      try {
-        const msg = JSON.parse(event.data) as ChessMessage;
-
-        if (msg.type === "state") {
-          setNetState((prev) => {
-            if (msg.state.seq < prev.seq) return prev;
-            if (msg.state.seq === prev.seq && msg.state.fen === prev.fen)
-              return prev;
-            return msg.state;
-          });
-        }
-      } catch (err) {
-        console.error("[Chess] Error parsing message:", err);
-      }
-    });
-
-    socket.addEventListener("close", () => {
-      console.log("[Chess] Disconnected");
-    });
-
-    return () => {
-      socket.close();
-    };
-  }, [chessConnected, roomId, boardKey]);
-
-  const lastSeenSeqRef = useRef<number>(-1);
-  useEffect(() => {
-    if (netState.seq === lastSeenSeqRef.current) return;
-    lastSeenSeqRef.current = netState.seq;
-    setSelected(null);
-    setLegalTargets([]);
-  }, [netState.seq]);
-
-  const requestJoin = (side: Side) => {
-    const seat = netState.seats[side];
-    if (seat && seat.connId !== chessSelfId) return; // Taken by someone else
-    send({ type: "join", side, playerId: selfId, name: selfName });
-  };
-
-  const requestLeave = (side: Side) => {
-    send({ type: "leave", side });
-  };
-
-  const submitMove = (
-    from: Square,
-    to: Square,
-    promotion?: "q" | "r" | "b" | "n"
-  ) => {
-    if (!isSeated) return;
-    if (netState.result) return;
-    if (!mySides.has(turn)) return;
-
-    send({ type: "move", from, to, promotion });
-  };
-
-  const onPickSquare = (square: Square) => {
-    if (netState.result) return;
-    // If we have a selection and click a legal target, move there
-    if (selected && legalTargets.includes(square)) {
-      const piece = chess.get(selected);
-      const isPawn = piece?.type === "p";
-      const toRank = Number(square[1]);
-      const promotion =
-        isPawn &&
-        ((piece?.color === "w" && toRank === 8) ||
-          (piece?.color === "b" && toRank === 1))
-          ? "q"
-          : undefined;
-
-      submitMove(selected, square, promotion);
-      setSelected(null);
-      setLegalTargets([]);
-      return;
-    }
-
-    // Check if there's a piece on this square we can select
-    const piece = chess.get(square);
-
-    // If clicking the current-turn side's piece and we control that side, select it
-    if (piece && mySides.has(turn) && piece.color === turn) {
-      if (isSeated) playSelect();
-      setSelected(square);
-      const moves = chess.moves({ square, verbose: true }) as any[];
-      const targets = moves.map((m) => m.to).filter(isSquare);
-      setLegalTargets(targets);
-      return;
-    }
-
-    // Otherwise deselect
-    setSelected(null);
-    setLegalTargets([]);
-  };
-
-  const onPickPiece = (square: Square) => {
-    // Clicking a piece is the same as clicking its square
-    onPickSquare(square);
-  };
-
-  useFrame(({ clock }) => {
-    const pos = selfPositionRef.current;
-    if (!pos) return;
-
-    // Only connect to the chess room when the player is near the board.
-    // This avoids doubling WebRTC room overhead for everyone.
-    if (!chessConnectedRef.current) {
-      const dx = pos.x - originVec.x;
-      const dz = pos.z - originVec.z;
-      const near = dx * dx + dz * dz < 12 * 12;
-      if (near) {
-        chessConnectedRef.current = true;
-        setChessConnected(true);
-      }
-      return;
-    }
-
-    void clock; // keep signature stable; no per-frame join behavior anymore
-  });
-
-  const pieces = useMemo(() => {
-    const out: Array<{ square: Square; type: string; color: Side }> = [];
-    const board = chess.board(); // ranks 8..1
-
-    for (let r = 0; r < 8; r++) {
-      for (let f = 0; f < 8; f++) {
-        const p = board[r]?.[f];
-        if (!p) continue;
-        const file = FILES[f]!;
-        const rank = 8 - r;
-        const sq = `${file}${rank}`;
-        if (!isSquare(sq)) continue;
-        out.push({ square: sq, type: p.type, color: p.color });
-      }
-    }
-
-    return out;
-  }, [chess]);
-
-  const animatedFromByTo = useMemo(() => {
-    const map = new Map<Square, Square>();
-    if (!lastMove) return map;
-
-    map.set(lastMove.to, lastMove.from);
-
-    // Castling rook animation: infer rook move from king move.
-    if (lastMove.from === "e1" && lastMove.to === "g1") map.set("f1", "h1");
-    if (lastMove.from === "e1" && lastMove.to === "c1") map.set("d1", "a1");
-    if (lastMove.from === "e8" && lastMove.to === "g8") map.set("f8", "h8");
-    if (lastMove.from === "e8" && lastMove.to === "c8") map.set("d8", "a8");
-
-    return map;
-  }, [lastMove]);
+  const [warningSquare, setWarningSquare] = useState<Square | null>(null);
+  const [warningStartMs, setWarningStartMs] = useState(0);
 
   const padOffset = boardSize / 2 + 1.1;
   const padSize: [number, number] = [2.1, 0.7];
@@ -2438,263 +2207,9 @@ function OutdoorChessChessMode({
     [originVec, padOffset]
   );
   const controlPadCenter = useMemo(
-    () =>
-      new THREE.Vector3(originVec.x + boardSize / 2 + 1.6, 0.06, originVec.z),
-    [originVec, boardSize]
+    () => new THREE.Vector3(originVec.x + padOffset, 0.06, originVec.z),
+    [originVec, padOffset]
   );
-
-  const joinScheduleRef = useRef<number | null>(null);
-
-  const clickJoin = (side: Side) => {
-    if (joinLockedBoardKey && joinLockedBoardKey !== boardKey) return;
-
-    // Lock the user's intent globally so they can't start joining another board.
-    // Do this synchronously so the UI can immediately show "Joining…" and lock other boards.
-    onJoinIntent?.(boardKey);
-    setPendingJoinSide(side);
-
-    // Avoid doing heavy work inside the click handler (audio decode / socket connect can hitch).
-    if (joinScheduleRef.current) {
-      window.clearTimeout(joinScheduleRef.current);
-      joinScheduleRef.current = null;
-    }
-
-    joinScheduleRef.current = window.setTimeout(() => {
-      joinScheduleRef.current = null;
-
-      // Play click after the event returns to reduce interaction hitch.
-      try {
-        playClick();
-      } catch {
-        // ignore
-      }
-
-      // Ensure we are connected, then join.
-      if (!chessConnectedRef.current) {
-        pendingJoinRef.current = side;
-        chessConnectedRef.current = true;
-        setChessConnected(true);
-        return;
-      }
-
-      // If socket isn't open yet, queue the join.
-      if (
-        !socketRef.current ||
-        socketRef.current.readyState !== WebSocket.OPEN
-      ) {
-        pendingJoinRef.current = side;
-        return;
-      }
-
-      // Toggle behavior:
-      // - Clicking a side you already occupy leaves that side
-      // - Clicking an empty/your-own side seats you there (does NOT unseat the other side)
-      if (mySides.has(side)) {
-        requestLeave(side);
-        setPendingJoinSide(null);
-        return;
-      }
-
-      requestJoin(side);
-    }, 0);
-  };
-
-  const requestSitAt = (seatX: number, seatZ: number) => {
-    if (!onRequestMove) return;
-    const dx = originVec.x - seatX;
-    const dz = originVec.z - seatZ;
-    const face = Math.atan2(dx, dz);
-
-    // Calculate approach point (0.5m in front of the seat, towards the table)
-    const len = Math.sqrt(dx * dx + dz * dz);
-    const ux = dx / len;
-    const uz = dz / len;
-    const approachDist = 0.5;
-    const approachX = seatX + ux * approachDist;
-    const approachZ = seatZ + uz * approachDist;
-
-    onRequestMove([approachX, 0, approachZ], {
-      rotY: face,
-      sit: true,
-      sitDest: [seatX, 0.36, seatZ],
-      lookAtTarget: [originVec.x, originVec.y, originVec.z],
-    });
-  };
-
-  const centerCamera = () => {
-    onCenterCamera?.([originVec.x, originVec.y, originVec.z]);
-  };
-
-  const clocks = useMemo(() => {
-    const c = netState.clock;
-    const now = netState.clock.running ? clockNow : Date.now();
-    const remaining = { ...c.remainingMs };
-    if (c.running && c.lastTickMs !== null) {
-      const elapsed = Math.max(0, now - c.lastTickMs);
-      remaining[c.active] = Math.max(0, remaining[c.active] - elapsed);
-    }
-    return {
-      remaining,
-      active: c.running ? c.active : null,
-      baseMs: c.baseMs,
-      running: c.running,
-    };
-  }, [netState.clock, clockNow]);
-
-  const timeIndex = useMemo(() => {
-    const baseSeconds = Math.round(clocks.baseMs / 1000);
-    let bestIdx = 0;
-    let bestDist = Number.POSITIVE_INFINITY;
-    TIME_OPTIONS_SECONDS.forEach((s, idx) => {
-      const d = Math.abs(s - baseSeconds);
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx = idx;
-      }
-    });
-    return bestIdx;
-  }, [clocks.baseMs]);
-
-  const canConfigure =
-    isSeated &&
-    !netState.clock.running &&
-    !netState.result &&
-    netState.fen === initialFen;
-
-  // Keep orientation fixed to your primary side to avoid per-move flipping.
-  const boardOrientation: "white" | "black" =
-    myPrimarySide === "b" ? "black" : "white";
-  const canMove2d = isSeated && !netState.result && mySides.has(turn);
-
-  const tryMove2d = (
-    from: string,
-    to: string,
-    promotion?: "q" | "r" | "b" | "n"
-  ) => {
-    if (!isSeated) return false;
-    if (netState.result) return false;
-    if (!mySides.has(turn)) return false;
-
-    const source = from as Square;
-    const target = to as Square;
-    const tmp = new Chess(netState.fen);
-    const piece = tmp.get(source);
-    if (!piece) return false;
-    if (piece.color !== turn) return false;
-
-    let promo = promotion;
-    if (piece.type === "p") {
-      const rank = String(target[1] ?? "");
-      if ((rank === "1" || rank === "8") && !promo) promo = "q";
-    }
-
-    const mv = tmp.move({ from: source, to: target, promotion: promo });
-    if (!mv) return false;
-
-    playClick();
-    send({ type: "move", from: source, to: target, promotion: promo });
-    setSelected(null);
-    setLegalTargets([]);
-    return true;
-  };
-
-  const emitControlsOpen = () => {
-    if (!isSeated) return;
-    onBoardControls?.({
-      type: "open",
-      boardKey,
-      lobby: "park",
-      timeMinutes: Math.round(clocks.baseMs / 60000),
-      fen: netState.fen,
-      mySide: myPrimarySide,
-      turn,
-      boardOrientation,
-      canMove2d,
-      canInc: canConfigure && timeIndex < TIME_OPTIONS_SECONDS.length - 1,
-      canDec: canConfigure && timeIndex > 0,
-      canReset: isSeated,
-      canCenter: !!onCenterCamera,
-      onMove2d: tryMove2d,
-      onInc: () => setTimeControlByIndex(timeIndex + 1),
-      onDec: () => setTimeControlByIndex(timeIndex - 1),
-      onReset: clickReset,
-      onCenter: centerCamera,
-    });
-  };
-
-  const emit2dSync = () => {
-    onBoardControls?.({
-      type: "sync2d",
-      boardKey,
-      lobby: "park",
-      fen: netState.fen,
-      mySide: myPrimarySide,
-      turn,
-      boardOrientation,
-      canMove2d,
-      onMove2d: tryMove2d,
-    });
-  };
-
-  const setTimeControlByIndex = (nextIdx: number) => {
-    if (!canConfigure) return;
-    playClick();
-    const idx = clamp(nextIdx, 0, TIME_OPTIONS_SECONDS.length - 1);
-    const secs = TIME_OPTIONS_SECONDS[idx]!;
-    send({ type: "setTime", baseSeconds: secs });
-  };
-
-  const clickReset = () => {
-    if (!isSeated) return;
-    playClick();
-    send({ type: "reset" });
-  };
-
-  const resultLabel = useMemo(() => {
-    const r = netState.result;
-    if (!r) return null;
-    if (r.type === "timeout") return `${winnerLabel(r.winner)} wins (time)`;
-    if (r.type === "checkmate") return `${winnerLabel(r.winner)} wins (mate)`;
-    return `Draw (${r.reason})`;
-  }, [netState.result]);
-
-  useEffect(() => {
-    return () => {
-      onBoardControls?.({ type: "close", boardKey });
-    };
-  }, [onBoardControls, boardKey]);
-
-  useEffect(() => {
-    if (!controlsOpen) return;
-    if (!isSeated) {
-      onBoardControls?.({ type: "close", boardKey });
-      return;
-    }
-    emitControlsOpen();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    controlsOpen,
-    isSeated,
-    canConfigure,
-    timeIndex,
-    clocks.baseMs,
-    myPrimarySide,
-    onCenterCamera,
-  ]);
-
-  useEffect(() => {
-    if (!board2dOpen) return;
-    emit2dSync();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    board2dOpen,
-    netState.fen,
-    myPrimarySide,
-    turn,
-    netState.result,
-    canMove2d,
-    isSeated,
-  ]);
 
   return (
     <group>
@@ -2809,25 +2324,49 @@ function OutdoorChessChessMode({
           const isSel = selected === (square as any);
           const isLastMoveFrom = lastMove?.from === square;
           const isLastMoveTo = lastMove?.to === square;
-          const pieceOnSquare = chess.get(square as Square);
+          const pieceOnSquare = pieces.find(
+            (p) => p.square === (square as Square)
+          );
+          const isStartled =
+            gameMode === "goose" &&
+            !!pieceOnSquare &&
+            goosePhase !== "goose" &&
+            startledSquares.includes(square as Square);
           const canInteract =
             isTarget ||
             (pieceOnSquare &&
               mySides.has(pieceOnSquare.color) &&
               turn === pieceOnSquare.color);
 
+          // Check if this is a valid goose placement square
+          const isValidGoosePlacement =
+            gameMode === "goose" &&
+            goosePhase === "goose" &&
+            !pieceOnSquare &&
+            !(square === gooseSquare) &&
+            !(
+              Number(netState.fen.split(" ")[5] ?? "1") > 20 &&
+              (square === "d4" ||
+                square === "e4" ||
+                square === "d5" ||
+                square === "e5")
+            );
+
           return (
             <group
               key={square}
               position={[x, 0, z]}
               onPointerDown={(e) => {
+                if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
                 onPickSquare(square as any);
               }}
               onPointerEnter={() => {
+                setHoveredSquare(square as Square);
                 if (canInteract) document.body.style.cursor = "pointer";
               }}
               onPointerLeave={() => {
+                setHoveredSquare(null);
                 document.body.style.cursor = "default";
               }}
             >
@@ -2891,6 +2430,34 @@ function OutdoorChessChessMode({
                     polygonOffsetUnits={-1}
                   />
                 </mesh>
+              )}
+
+              {/* Startled square indicator (bluish overlay) */}
+              {isStartled && (
+                <group
+                  position={[0, SQUARE_TOP_Y + 0.02, 0]}
+                  rotation={[-Math.PI / 2, 0, 0]}
+                  renderOrder={1}
+                >
+                  <mesh rotation={[0, 0, -Math.PI / 4]}>
+                    <planeGeometry
+                      args={[squareSize * 0.91, squareSize * 0.104]}
+                    />
+                    <SlowPulsingIndicatorMaterial
+                      color="#4a9eff"
+                      baseOpacity={0.22}
+                    />
+                  </mesh>
+                  <mesh rotation={[0, 0, Math.PI / 4]}>
+                    <planeGeometry
+                      args={[squareSize * 0.91, squareSize * 0.104]}
+                    />
+                    <SlowPulsingIndicatorMaterial
+                      color="#4a9eff"
+                      baseOpacity={0.22}
+                    />
+                  </mesh>
+                </group>
               )}
 
               {isLastMoveFrom && (
@@ -2983,25 +2550,124 @@ function OutdoorChessChessMode({
       <ControlTV
         center={controlPadCenter}
         active={controlsOpen}
-        hintText={controlsHintOpen ? "Join a side first" : null}
+        hintText={controlsHintOpen ? "Both seats occupied" : null}
         onClick={() => {
-          if (!isSeated) {
+          console.log("[ControlTV Chess] Click detected", {
+            isSeated,
+            bothSeatsOccupied,
+            canUseControlTV,
+            seats: {
+              w: netState.seats.w,
+              b: netState.seats.b,
+            },
+            controlsOpen,
+          });
+          if (!canUseControlTV) {
+            console.log("[ControlTV Chess] Blocked: canUseControlTV is false");
             showControlsHint();
             return;
           }
+          console.log("[ControlTV Chess] Allowed: proceeding");
           if (controlsOpen) {
+            console.log("[ControlTV Chess] Closing controls");
             onBoardControls?.({ type: "close", boardKey });
             return;
           }
+          console.log(
+            "[ControlTV Chess] Opening controls via emitControlsOpen"
+          );
           emitControlsOpen();
         }}
       />
+
+      {/* Goose Chess visuals */}
+      {gameMode === "goose"
+        ? (() => {
+            // Position goose off-board initially or during placement
+            if (gooseSquare && lastMove && goosePhase !== "goose") {
+              // On board at gooseSquare (only if a move has been played and not placing)
+              const sq = gooseSquare;
+              const file = sq.charCodeAt(0) - 97;
+              const rank = Number(sq[1]);
+              const rankFromTop = 8 - rank;
+              const x = (file - 3.5) * squareSize;
+              const z = (rankFromTop - 3.5) * squareSize;
+              const y = originVec.y + SQUARE_TOP_Y;
+
+              // Face the bottom of the board by default.
+              let yaw = 0;
+              let warningStartMs = 0;
+
+              const nowMs = Date.now();
+              const warningActive =
+                !!gooseBlocked &&
+                gooseBlocked.gooseSquare === sq &&
+                nowMs - gooseBlocked.at < 950;
+
+              if (warningActive) {
+                const psq = gooseBlocked!.pieceSquare;
+                const pFile = psq.charCodeAt(0) - 97;
+                const pRank = Number(psq[1]);
+                const pRankFromTop = 8 - pRank;
+                const px = (pFile - 3.5) * squareSize;
+                const pz = (pRankFromTop - 3.5) * squareSize;
+                const dx = px - x;
+                const dz = pz - z;
+                yaw = Math.atan2(dx, dz);
+                warningStartMs = gooseBlocked!.at;
+              }
+
+              return (
+                <group key={`goose:${sq}`}>
+                  <GooseModel
+                    position={[originVec.x + x, y, originVec.z + z]}
+                    rotation={[0, yaw, 0]}
+                    scale={squareSize * 0.525}
+                  />
+                  {warningActive && warningStartMs > 0 && (
+                    <GooseWarningText
+                      position={[originVec.x + x, y, originVec.z + z]}
+                      startMs={warningStartMs}
+                    />
+                  )}
+                </group>
+              );
+            } else {
+              // Off to the side near control TV (before first move or during placement)
+              return (
+                <GooseModel
+                  key="goose-waiting"
+                  position={[
+                    originVec.x + boardSize / 2 + 1.2,
+                    originVec.y + 0.15,
+                    originVec.z + 0.6,
+                  ]}
+                  rotation={[0, -Math.PI / 3, 0]}
+                  scale={squareSize * 0.525}
+                />
+              );
+            }
+          })()
+        : null}
+
+      {/* Holographic "Place Goose" text during placement phase */}
+      {gameMode === "goose" && goosePhase === "goose" && (
+        <HolographicPlacementText
+          originVec={originVec}
+          boardSize={boardSize}
+          squareSize={squareSize}
+        />
+      )}
+
+      {/* Startled squares handled by shader effect on pieces */}
 
       {/* Pieces */}
       {pieces.map((p) => {
         const isMyPiece = mySides.has(p.color);
         const canMove = turn === p.color && isMyPiece;
         const animateFrom = animatedFromByTo.get(p.square) ?? null;
+        const isStartled =
+          gameMode === "goose" && startledSquares.includes(p.square);
 
         // Keep key stable for the duration of a move animation.
         const animKey = animateFrom
@@ -3009,22 +2675,24 @@ function OutdoorChessChessMode({
           : `static:${p.color}:${p.type}:${p.square}`;
 
         return (
-          <AnimatedPiece
-            key={animKey}
-            square={p.square}
-            type={p.type}
-            color={p.color}
-            originVec={originVec}
-            squareSize={squareSize}
-            animateFrom={animateFrom}
-            animSeq={netState.seq}
-            canMove={canMove}
-            mySide={myPrimarySide}
-            onPickPiece={onPickPiece}
-            whiteTint={whiteTint}
-            blackTint={blackTint}
-            chessTheme={chessTheme}
-          />
+          <group key={animKey}>
+            <AnimatedPiece
+              square={p.square}
+              type={p.type}
+              color={p.color}
+              originVec={originVec}
+              squareSize={squareSize}
+              animateFrom={animateFrom}
+              animSeq={netState.seq}
+              canMove={canMove}
+              mySide={myPrimarySide}
+              onPickPiece={onPickPiece}
+              whiteTint={whiteTint}
+              blackTint={blackTint}
+              chessTheme={chessTheme}
+              isStartled={isStartled}
+            />
+          </group>
         );
       })}
     </group>
@@ -3371,16 +3039,40 @@ function OutdoorChessCheckersMode({
       <ControlTV
         center={controlPadCenter}
         active={controlsOpen}
-        hintText={controlsHintOpen ? "Join a side first" : null}
+        hintText={controlsHintOpen ? "Both seats occupied" : null}
         onClick={() => {
-          if (!isSeated) {
+          const seatOccupied = (
+            seat?: { connId?: string | null; playerId?: string | null } | null
+          ) => !!seat?.connId && !!seat?.playerId;
+          const bothSeatsOccupied =
+            seatOccupied(netState.seats.w) && seatOccupied(netState.seats.b);
+          const canUseControlTV = isSeated || !bothSeatsOccupied;
+          console.log("[ControlTV Checkers] Click detected", {
+            isSeated,
+            bothSeatsOccupied,
+            canUseControlTV,
+            seats: {
+              w: netState.seats.w,
+              b: netState.seats.b,
+            },
+            controlsOpen,
+          });
+          if (!canUseControlTV) {
+            console.log(
+              "[ControlTV Checkers] Blocked: canUseControlTV is false"
+            );
             showControlsHint();
             return;
           }
+          console.log("[ControlTV Checkers] Allowed: proceeding");
           if (controlsOpen) {
+            console.log("[ControlTV Checkers] Closing controls");
             onBoardControls?.({ type: "close", boardKey });
             return;
           }
+          console.log(
+            "[ControlTV Checkers] Opening controls via emitControlsOpen"
+          );
           emitControlsOpen();
         }}
       />
@@ -3415,10 +3107,69 @@ function OutdoorChessCheckersMode({
   );
 }
 
+function GooseModel({
+  position,
+  rotation,
+  scale,
+}: {
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  scale: number;
+}) {
+  const { scene } = useGLTF("/models/goose.glb");
+  const gooseRef = useRef<THREE.Group>(null);
+  const idleRef = useRef<THREE.Group>(null);
+  const seed = useMemo(() => Math.random() * 1000, []);
+  const baseYRef = useRef(position[1]);
+
+  useEffect(() => {
+    baseYRef.current = position[1];
+  }, [position[1]]);
+
+  // Clone the scene to avoid sharing geometry between instances
+  const clonedScene = useMemo(() => scene.clone(), [scene]);
+
+  useEffect(() => {
+    if (gooseRef.current) {
+      gooseRef.current.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+    }
+  }, []);
+
+  useFrame(({ clock }) => {
+    const g = idleRef.current;
+    if (!g) return;
+    const t = clock.getElapsedTime() + seed;
+
+    // Cute idle: gentle bob + tiny sway/tilt. (No yaw so facing stays stable.)
+    g.position.y = Math.sin(t * 1.3) * 0.035;
+    g.rotation.x = Math.sin(t * 1.9) * 0.06;
+    g.rotation.z = Math.sin(t * 1.6) * 0.05;
+  });
+
+  return (
+    <group
+      ref={gooseRef}
+      position={[position[0], baseYRef.current, position[2]]}
+      rotation={rotation}
+      scale={[scale, scale, scale]}
+    >
+      <group ref={idleRef}>
+        <primitive object={clonedScene} />
+      </group>
+    </group>
+  );
+}
+
 export function OutdoorChess(props: OutdoorChessProps) {
   const squareSize = 0.6;
   const boardSize = squareSize * 8;
   const padOffset = boardSize / 2 + 1.1;
+  const engine = engineForMode(props.gameMode ?? "chess");
 
   return (
     <group>
@@ -3427,7 +3178,7 @@ export function OutdoorChess(props: OutdoorChessProps) {
         padOffset={padOffset}
         onRequestMove={props.onRequestMove}
       />
-      {props.gameMode === "checkers" ? (
+      {engine === "checkers" ? (
         <OutdoorChessCheckersMode {...props} />
       ) : (
         <OutdoorChessChessMode {...props} />

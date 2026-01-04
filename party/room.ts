@@ -18,7 +18,7 @@ type ChatMessage = {
   t: number;
 };
 
-type BoardMode = "chess" | "checkers";
+type BoardMode = "chess" | "checkers" | "goose";
 
 type Message =
   | {
@@ -131,7 +131,12 @@ export default class RoomServer implements Party.Server {
         this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
       } else if (msg.type === "board:set-mode") {
         const boardKey = (msg.boardKey ?? "").toString().trim().slice(0, 8);
-        const mode: BoardMode = msg.mode === "checkers" ? "checkers" : "chess";
+        const mode: BoardMode =
+          msg.mode === "checkers"
+            ? "checkers"
+            : msg.mode === "goose"
+            ? "goose"
+            : "chess";
         if (!boardKey) return;
 
         const prev = this.boardModes[boardKey] ?? "chess";

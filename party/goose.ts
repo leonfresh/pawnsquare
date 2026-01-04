@@ -1,7 +1,15 @@
 import type * as Party from "partykit/server";
 import { Chess, type Square } from "chess.js";
-
-type Side = "w" | "b";
+import {
+  applyGooseMove,
+  gooseHasAnyLegalMove,
+  gooseKingInCheck,
+  gooseLegalMovesForSquare,
+  isCenter4,
+  parseFenMoveNumber,
+  type Side,
+  type GoosePhase,
+} from "../src/lib/gooseChess";
 
 type SeatInfo = {
   connId: string;
@@ -30,16 +38,19 @@ type ClockState = {
   lastTickMs: number | null;
 };
 
-type ChessState = {
+type GooseChessState = {
   seats: { w: SeatInfo | null; b: SeatInfo | null };
   fen: string;
   seq: number;
   clock: ClockState;
   result: GameResult | null;
   lastMove: { from: Square; to: Square } | null;
+  gooseSquare: Square;
+  phase: GoosePhase;
+  activeSide: Side;
 };
 
-type ChessMessage =
+type GooseChessMessage =
   | { type: "join"; side: Side; playerId?: string; name?: string }
   | { type: "leave"; side: Side }
   | {
@@ -48,15 +59,14 @@ type ChessMessage =
       to: Square;
       promotion?: "q" | "r" | "b" | "n";
     }
+  | { type: "goose"; square: Square }
   | { type: "setTime"; baseSeconds: number; incrementSeconds?: number }
   | { type: "reset" }
-  | { type: "state"; state: ChessState };
+  | { type: "state"; state: GooseChessState };
 
 const DEFAULT_TIME_SECONDS = 5 * 60;
 const MIN_TIME_SECONDS = 30;
 const MAX_TIME_SECONDS = 60 * 60;
-const MIN_INCREMENT_SECONDS = 0;
-const MAX_INCREMENT_SECONDS = 60;
 const AUTO_RESET_AFTER_TIMEOUT_MS = 60 * 1000;
 
 function clamp(n: number, min: number, max: number) {
@@ -74,16 +84,11 @@ function initialClock(baseMs: number, incrementMs = 0): ClockState {
   };
 }
 
-function isPlayerInSeat(state: ChessState, connId: string) {
-  return state.seats.w?.connId === connId || state.seats.b?.connId === connId;
-}
-
 function otherSide(side: Side): Side {
   return side === "w" ? "b" : "w";
 }
 
 function computeDrawReason(chess: Chess): DrawReason {
-  // chess.js naming varies slightly across versions; check what exists.
   const anyChess = chess as any;
   if (typeof anyChess.isStalemate === "function" && anyChess.isStalemate())
     return "stalemate";
@@ -105,8 +110,8 @@ function computeDrawReason(chess: Chess): DrawReason {
   return "draw";
 }
 
-export default class ChessServer implements Party.Server {
-  state: ChessState;
+export default class GooseChessServer implements Party.Server {
+  state: GooseChessState;
   timeoutCheck: ReturnType<typeof setInterval> | null = null;
   autoResetTimer: ReturnType<typeof setTimeout> | null = null;
   autoResetToken = 0;
@@ -120,9 +125,11 @@ export default class ChessServer implements Party.Server {
       clock: initialClock(baseMs),
       result: null,
       lastMove: null,
+      gooseSquare: "d4",
+      phase: "piece",
+      activeSide: "w",
     };
 
-    // Enforce timeouts even if nobody sends messages.
     this.timeoutCheck = setInterval(() => {
       if (!this.state.clock.running) return;
       if (this.state.result) return;
@@ -154,14 +161,12 @@ export default class ChessServer implements Party.Server {
   scheduleAutoResetAfterTimeout() {
     if (this.state.result?.type !== "timeout") return;
 
-    // Only one timer at a time; reschedule replaces prior.
     this.cancelAutoReset();
     const token = this.autoResetToken;
     const expectedSeq = this.state.seq;
     const baseMs = this.state.clock.baseMs;
 
     this.autoResetTimer = setTimeout(() => {
-      // If anything changed (manual reset, new game, etc.), do nothing.
       if (token !== this.autoResetToken) return;
       if (this.state.seq !== expectedSeq) return;
       if (this.state.result?.type !== "timeout") return;
@@ -186,12 +191,11 @@ export default class ChessServer implements Party.Server {
     return { remainingMs, nowMs };
   }
 
-  startClockIfNeeded(nowMs: number, chess: Chess) {
+  startClockIfNeeded(nowMs: number) {
     if (this.state.clock.running) return;
     if (this.state.result) return;
-    // Start on first move, not on join.
     this.state.clock.running = true;
-    this.state.clock.active = chess.turn();
+    this.state.clock.active = this.state.activeSide;
     this.state.clock.lastTickMs = nowMs;
   }
 
@@ -216,18 +220,48 @@ export default class ChessServer implements Party.Server {
     this.state.clock = initialClock(baseMs, incrementMs);
     this.state.result = null;
     this.state.lastMove = null;
+    this.state.gooseSquare = "d4";
+    this.state.phase = "piece";
+    this.state.activeSide = "w";
+  }
+
+  broadcastState() {
+    this.room.broadcast(JSON.stringify({ type: "state", state: this.state }));
+  }
+
+  evaluateResultIfNeeded(chess: Chess) {
+    if (this.state.result) return;
+    if (this.state.phase !== "piece") return;
+
+    // Only evaluate at the start of a normal piece turn.
+    const gooseSquare = this.state.gooseSquare;
+    const sideToMove = chess.turn() as Side;
+
+    const anyLegal = gooseHasAnyLegalMove(chess, gooseSquare);
+    if (anyLegal) {
+      const anyChess = chess as any;
+      if (typeof anyChess.isDraw === "function" && anyChess.isDraw()) {
+        this.state.result = { type: "draw", reason: computeDrawReason(chess) };
+      }
+      return;
+    }
+
+    const inCheck = gooseKingInCheck(chess, sideToMove, gooseSquare);
+    if (inCheck) {
+      this.state.result = { type: "checkmate", winner: otherSide(sideToMove) };
+    } else {
+      this.state.result = { type: "draw", reason: "stalemate" };
+    }
   }
 
   onConnect(conn: Party.Connection) {
-    console.log(`[Chess] Player connected: ${conn.id}`);
-
-    // Send current state
+    console.log(`[Goose] Player connected: ${conn.id}`);
     conn.send(JSON.stringify({ type: "state", state: this.state }));
   }
 
   onMessage(message: string, sender: Party.Connection) {
     try {
-      const msg = JSON.parse(message) as ChessMessage;
+      const msg = JSON.parse(message) as GooseChessMessage;
 
       if (msg.type === "join") {
         const seat = msg.side;
@@ -235,7 +269,6 @@ export default class ChessServer implements Party.Server {
           this.state.seats[seat] &&
           this.state.seats[seat]?.connId !== sender.id
         ) {
-          // Seat taken by someone else
           return;
         }
 
@@ -247,164 +280,154 @@ export default class ChessServer implements Party.Server {
           typeof msg.name === "string" && msg.name ? msg.name : "Player";
         this.state.seats[seat] = { connId: sender.id, playerId, name };
         this.state.seq++;
-
-        this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
-        );
+        this.broadcastState();
       } else if (msg.type === "leave") {
         const seat = msg.side;
         if (this.state.seats[seat]?.connId !== sender.id) return;
 
         this.state.seats[seat] = null;
         this.state.seq++;
-        this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
-        );
-      } else if (msg.type === "move") {
-        if (this.state.result) return;
-
-        const chess = new Chess(this.state.fen);
-        const turn = chess.turn();
-        const expectedPlayer =
-          turn === "w"
-            ? this.state.seats.w?.connId
-            : this.state.seats.b?.connId;
-
-        if (expectedPlayer !== sender.id) {
-          console.log(`[Chess] Unauthorized move from ${sender.id}`);
-          return;
-        }
-
-        const nowMs = Date.now();
-        this.startClockIfNeeded(nowMs, chess);
-
-        // Update active side time (and potentially end by timeout) before move.
-        if (this.applyClockAndMaybeTimeout(nowMs)) {
-          this.state.seq++;
-          this.room.broadcast(
-            JSON.stringify({ type: "state", state: this.state })
-          );
-          return;
-        }
-
-        const result = chess.move({
-          from: msg.from,
-          to: msg.to,
-          promotion: msg.promotion,
-        });
-
-        if (!result) {
-          console.log(`[Chess] Invalid move from ${sender.id}`);
-          return;
-        }
-
-        this.state.fen = chess.fen();
-        this.state.lastMove = { from: msg.from, to: msg.to };
-
-        // Add increment to the side that just moved
-        const movingSide = otherSide(chess.turn());
-        if (this.state.clock.incrementMs > 0) {
-          this.state.clock.remainingMs[movingSide] +=
-            this.state.clock.incrementMs;
-        }
-
-        // If the move ended the game, lock clocks.
-        const anyChess = chess as any;
-        const isGameOver =
-          typeof anyChess.isGameOver === "function"
-            ? anyChess.isGameOver()
-            : false;
-        if (isGameOver) {
-          if (
-            typeof anyChess.isCheckmate === "function" &&
-            anyChess.isCheckmate()
-          ) {
-            // After a checkmating move, the turn is the losing side.
-            const winner = otherSide(chess.turn());
-            this.state.result = { type: "checkmate", winner };
-          } else if (
-            (typeof anyChess.isDraw === "function" && anyChess.isDraw()) ||
-            (typeof anyChess.isStalemate === "function" &&
-              anyChess.isStalemate())
-          ) {
-            this.state.result = {
-              type: "draw",
-              reason: computeDrawReason(chess),
-            };
-          } else {
-            // Fallback
-            this.state.result = { type: "draw", reason: "draw" };
-          }
-          this.state.clock.running = false;
-          this.state.clock.lastTickMs = null;
-
-          // Only auto-reset on timeout; cancel any prior timeout timers on normal game end.
-          this.cancelAutoReset();
-        } else {
-          // Switch active side and continue timing.
-          this.state.clock.active = chess.turn();
-          this.state.clock.lastTickMs = nowMs;
-        }
-
-        this.state.seq++;
-
-        this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
-        );
+        this.broadcastState();
       } else if (msg.type === "setTime") {
-        // Allow players to change time control only before the game starts.
+        const isSeated =
+          this.state.seats.w?.connId === sender.id ||
+          this.state.seats.b?.connId === sender.id;
         const canConfigureAsGuest =
           this.state.seats.w === null || this.state.seats.b === null;
-        if (!isPlayerInSeat(this.state, sender.id) && !canConfigureAsGuest)
-          return;
+
+        // Allow changing time control only before the game starts.
+        if (!isSeated && !canConfigureAsGuest) return;
         if (this.state.clock.running) return;
         if (this.state.result) return;
-
-        const chess = new Chess(this.state.fen);
-        const isStartPos = chess.fen() === new Chess().fen();
+        const isStartPos = this.state.fen === new Chess().fen();
         if (!isStartPos) return;
 
         const baseSeconds = clamp(
-          Math.floor(msg.baseSeconds),
+          Math.floor(msg.baseSeconds ?? DEFAULT_TIME_SECONDS),
           MIN_TIME_SECONDS,
           MAX_TIME_SECONDS
         );
         const baseMs = baseSeconds * 1000;
         const incrementSeconds = clamp(
           Math.floor(msg.incrementSeconds ?? 0),
-          MIN_INCREMENT_SECONDS,
-          MAX_INCREMENT_SECONDS
+          0,
+          60
         );
         const incrementMs = incrementSeconds * 1000;
+
         this.cancelAutoReset();
         this.resetGame(baseMs, incrementMs);
         this.state.seq++;
-        this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
-        );
+        this.broadcastState();
       } else if (msg.type === "reset") {
-        // Allow reset if seated, OR as a spectator when at least one seat is empty.
+        const isSeated =
+          this.state.seats.w?.connId === sender.id ||
+          this.state.seats.b?.connId === sender.id;
         const canResetAsGuest =
           this.state.seats.w === null || this.state.seats.b === null;
-        if (!isPlayerInSeat(this.state, sender.id) && !canResetAsGuest) return;
+
+        // Allow reset if seated, OR as a spectator when at least one seat is empty.
+        if (!isSeated && !canResetAsGuest) return;
+
+        this.cancelAutoReset();
         const baseMs = this.state.clock.baseMs;
         const incrementMs = this.state.clock.incrementMs;
-        this.cancelAutoReset();
         this.resetGame(baseMs, incrementMs);
         this.state.seq++;
-        this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
+        this.broadcastState();
+      } else if (msg.type === "move") {
+        if (this.state.result) return;
+        if (this.state.phase !== "piece") return;
+
+        const side = this.state.activeSide;
+        if (this.state.seats[side]?.connId !== sender.id) return;
+
+        const chess = new Chess(this.state.fen);
+        if ((chess.turn() as Side) !== side) return;
+
+        const now = Date.now();
+        this.startClockIfNeeded(now);
+        if (this.applyClockAndMaybeTimeout(now)) {
+          this.state.seq++;
+          this.broadcastState();
+          return;
+        }
+
+        const from = msg.from;
+        const to = msg.to;
+        const promotion = msg.promotion;
+
+        const legal = gooseLegalMovesForSquare(
+          chess,
+          from,
+          this.state.gooseSquare
         );
+        const match = legal.find(
+          (m) =>
+            m.to === to &&
+            ((m.promotion ?? undefined) as any) === (promotion as any)
+        );
+        if (!match) return;
+
+        applyGooseMove(chess, match);
+
+        this.state.fen = chess.fen();
+        this.state.lastMove = { from, to };
+        this.state.phase = "goose";
+        this.state.activeSide = side;
+        this.state.clock.active = side;
+
+        // Add increment after piece move
+        if (this.state.clock.incrementMs > 0) {
+          this.state.clock.remainingMs[side] += this.state.clock.incrementMs;
+        }
+
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "goose") {
+        if (this.state.result) return;
+        if (this.state.phase !== "goose") return;
+
+        const side = this.state.activeSide;
+        if (this.state.seats[side]?.connId !== sender.id) return;
+
+        const chess = new Chess(this.state.fen);
+        const square = msg.square;
+
+        // if (square === this.state.gooseSquare) return;
+        if (chess.get(square)) return;
+
+        const moveNumber = parseFenMoveNumber(this.state.fen);
+        if (moveNumber > 20 && isCenter4(square)) return;
+
+        const now = Date.now();
+        this.startClockIfNeeded(now);
+        if (this.applyClockAndMaybeTimeout(now)) {
+          this.state.seq++;
+          this.broadcastState();
+          return;
+        }
+
+        this.state.gooseSquare = square;
+        this.state.phase = "piece";
+        this.state.activeSide = otherSide(side);
+        this.state.clock.active = this.state.activeSide;
+        this.state.clock.lastTickMs = now;
+
+        // Evaluate result after goose placement (since honk can change check).
+        this.evaluateResultIfNeeded(chess);
+
+        this.state.seq++;
+        this.broadcastState();
       }
     } catch (err) {
-      console.error("[Chess] Error processing message:", err);
+      console.error("[Goose] Error parsing message:", err);
     }
   }
 
   onClose(conn: Party.Connection) {
-    console.log(`[Chess] Player disconnected: ${conn.id}`);
+    console.log(`[Goose] Player disconnected: ${conn.id}`);
 
-    // Remove seats held by this player
     let changed = false;
     if (this.state.seats.w?.connId === conn.id) {
       this.state.seats.w = null;
@@ -414,12 +437,9 @@ export default class ChessServer implements Party.Server {
       this.state.seats.b = null;
       changed = true;
     }
-
     if (changed) {
       this.state.seq++;
-      this.room.broadcast(JSON.stringify({ type: "state", state: this.state }));
+      this.broadcastState();
     }
   }
 }
-
-ChessServer satisfies Party.Worker;
