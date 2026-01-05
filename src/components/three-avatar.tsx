@@ -673,8 +673,12 @@ export function ThreeAvatar({
 
   // Throttle animation updates based on distance from camera
   const updateThrottleRef = useRef(0);
+  const skippedDeltaRef = useRef(0);
   const shouldUpdateThisFrame = (camera: THREE.Camera) => {
     if (!avatarRef.current) return false;
+
+    // If the avatar is visibly moving, keep animation smooth even when zoomed out.
+    if ((movingSpeed ?? 0) > 0.03) return true;
 
     const pos = avatarRef.current.object3D.position;
     const camPos = camera.position;
@@ -701,9 +705,15 @@ export function ThreeAvatar({
     if (!a) return;
 
     // Throttle updates for distant avatars
-    if (!shouldUpdateThisFrame(state.camera)) return;
+    if (!shouldUpdateThisFrame(state.camera)) {
+      skippedDeltaRef.current += dt;
+      return;
+    }
 
-    a.tick(dt);
+    const delta = dt + skippedDeltaRef.current;
+    skippedDeltaRef.current = 0;
+
+    a.tick(delta);
 
     // Small idle wiggle to help drive VRM spring bones (hair/cloth) in previews.
     // This is applied on top of the current animation pose.
@@ -726,7 +736,7 @@ export function ThreeAvatar({
 
       const vrm = a.vrm;
       const humanoid = vrm?.humanoid;
-      const k = Math.min(1, dt * 5);
+      const k = Math.min(1, delta * 5);
 
       const applyToNode = (node: THREE.Object3D | undefined | null) => {
         if (!node) return false;

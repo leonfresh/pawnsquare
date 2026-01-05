@@ -20,9 +20,7 @@ export default function Home() {
   const [gender, setGender] = useState<"male" | "female">("male");
   const [inputValue, setInputValue] = useState("");
   const [selectedRoom, setSelectedRoom] = useState<string>("main-room");
-  const [selectedMode, setSelectedMode] = useState<"normal" | "4p">(
-    "normal"
-  );
+  const [selectedMode, setSelectedMode] = useState<"normal" | "4p">("normal");
   const [lobbyType, setLobbyType] = useState<"park" | "scifi">("park");
   const [worldReady, setWorldReady] = useState(false);
 
@@ -41,7 +39,12 @@ export default function Home() {
 
   const channelForRoomId = (base: string, roomId: string) => {
     if (roomId === base) return 1;
-    const m = roomId.match(new RegExp(`^${base.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}-ch(\\d+)$`, "i"));
+    const m = roomId.match(
+      new RegExp(
+        `^${base.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}-ch(\\d+)$`,
+        "i"
+      )
+    );
     if (!m) return null;
     const n = parseInt(m[1]!, 10);
     if (!Number.isFinite(n)) return null;
@@ -58,8 +61,9 @@ export default function Home() {
         playerCount: r.playerCount,
         ch: channelForRoomId(base, r.roomId),
       }))
-      .filter((r): r is { roomId: string; playerCount: number; ch: number } =>
-        typeof r.ch === "number"
+      .filter(
+        (r): r is { roomId: string; playerCount: number; ch: number } =>
+          typeof r.ch === "number"
       )
       .sort((a, b) => a.ch - b.ch);
 
@@ -352,8 +356,8 @@ export default function Home() {
               })}
             </div>
             <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
-              Rooms are capped at {MAX_PLAYERS_PER_ROOM} players. If a channel is
-              full, use Auto or pick another channel.
+              Rooms are capped at {MAX_PLAYERS_PER_ROOM} players. If a channel
+              is full, use Auto or pick another channel.
             </div>
           </div>
 
