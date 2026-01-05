@@ -26,12 +26,14 @@ import { PlayerAvatar } from "@/components/player-avatar";
 import { getAvatarSystem } from "@/lib/avatarSystem";
 import { OutdoorChess } from "@/components/outdoor-chess";
 import { ScifiChess } from "@/components/scifi-chess";
+import { OutdoorChess4P } from "@/components/outdoor-chess-4way";
 import { VrmPreview } from "@/components/vrm-preview";
 import { CoinIcon } from "@/components/coin-icon";
 import { ChessSetPreview } from "@/components/chess-set-preview";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import type { User } from "@supabase/supabase-js";
 import { BOARD_MODE_DEFS, engineForMode } from "@/lib/boardModes";
+import { useRoomDiscovery } from "@/lib/roomDiscovery";
 
 function makeRadialGlowTexture(size = 64) {
   const data = new Uint8Array(size * size * 4);
@@ -2392,6 +2394,10 @@ function FollowCamera({
   lookAtOverride,
   orbitApiRef,
   rotateModeRef,
+  suppressRightDragRef,
+  povMode,
+  yawRef,
+  setPovMode,
 }: {
   target: React.RefObject<THREE.Vector3>;
   lookAtOverride?: React.RefObject<THREE.Vector3 | null>;
@@ -2399,12 +2405,50 @@ function FollowCamera({
     rotateByPixels: (dx: number, dy: number) => void;
   } | null>;
   rotateModeRef?: React.MutableRefObject<boolean>;
+  suppressRightDragRef?: React.MutableRefObject<boolean>;
+  povMode?: boolean;
+  yawRef?: React.RefObject<number>;
+  setPovMode?: (next: boolean) => void;
 }) {
   const { gl } = useThree();
   const draggingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   const pinchRef = useRef<{ dist: number; radius: number } | null>(null);
   const touchIdsRef = useRef<Set<number>>(new Set());
+
+  // POV orientation (yaw/pitch) controlled by drag.
+  const povYawRef = useRef(0);
+  const povPitchRef = useRef(0);
+  const povModeRef = useRef(!!povMode);
+
+  const setPovModeRef = useRef<((next: boolean) => void) | undefined>(
+    setPovMode
+  );
+
+  // Cache the orbit camera's forward direction so POV entry aligns with what you're looking at.
+  const lastOrbitDirRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, -1));
+
+  useEffect(() => {
+    povModeRef.current = !!povMode;
+  }, [povMode]);
+
+  useEffect(() => {
+    setPovModeRef.current = setPovMode;
+  }, [setPovMode]);
+
+  useEffect(() => {
+    if (!povMode) return;
+    // When entering POV, initialize to the current camera direction if available,
+    // otherwise fall back to the avatar's facing direction.
+    const d = lastOrbitDirRef.current;
+    if (Number.isFinite(d.x) && Number.isFinite(d.y) && Number.isFinite(d.z)) {
+      povYawRef.current = Math.atan2(d.x, d.z);
+      povPitchRef.current = clamp(Math.asin(clamp(d.y, -1, 1)), -1.2, 1.2);
+    } else {
+      povYawRef.current = yawRef?.current ?? povYawRef.current;
+      povPitchRef.current = 0;
+    }
+  }, [povMode, yawRef]);
 
   // Camera orbit state (spherical)
   const thetaRef = useRef(0); // azimuth around Y
@@ -2417,8 +2461,18 @@ function FollowCamera({
 
     orbitApiRef.current = {
       rotateByPixels: (dx: number, dy: number) => {
+        if (povModeRef.current) {
+          povYawRef.current -= dx * rotSpeed;
+          povPitchRef.current = clamp(
+            povPitchRef.current - dy * rotSpeed,
+            -1.2,
+            1.2
+          );
+          return;
+        }
+
         thetaRef.current -= dx * rotSpeed;
-        phiRef.current = clamp(phiRef.current + dy * rotSpeed, 0.45, 1.45);
+        phiRef.current = clamp(phiRef.current - dy * rotSpeed, 0.45, 1.45);
       },
     };
 
@@ -2518,6 +2572,23 @@ function FollowCamera({
     const onMove = (e: PointerEvent) => {
       if (!draggingRef.current) return;
 
+      // If something (like 4P arrow indicators) is using right-drag,
+      // cancel camera rotation for this drag.
+      if (
+        suppressRightDragRef?.current &&
+        e.pointerType !== "touch" &&
+        (e.buttons & 2) === 2
+      ) {
+        draggingRef.current = false;
+        lastRef.current = null;
+        try {
+          el.releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
       if (e.pointerType === "touch") {
         // Only rotate on single-finger drag.
         if (touchIdsRef.current.size !== 1) return;
@@ -2529,8 +2600,18 @@ function FollowCamera({
       lastRef.current = { x: e.clientX, y: e.clientY };
 
       const rotSpeed = 0.004;
+      if (povModeRef.current) {
+        povYawRef.current -= dx * rotSpeed;
+        povPitchRef.current = clamp(
+          povPitchRef.current - dy * rotSpeed,
+          -1.2,
+          1.2
+        );
+        return;
+      }
+
       thetaRef.current -= dx * rotSpeed;
-      phiRef.current = clamp(phiRef.current + dy * rotSpeed, 0.45, 1.45);
+      phiRef.current = clamp(phiRef.current - dy * rotSpeed, 0.45, 1.45);
     };
 
     const wheelOptions: AddEventListenerOptions = { passive: false };
@@ -2542,6 +2623,17 @@ function FollowCamera({
       const zoomSpeed = 0.0015;
       const factor = Math.exp(e.deltaY * zoomSpeed);
       radiusRef.current = clampRadius(radiusRef.current * factor);
+
+      // Auto-enter POV when zooming in close, and auto-exit when zooming out.
+      // Hysteresis avoids toggling back/forth on tiny wheel movements.
+      const POV_ENTER_RADIUS = 3.7;
+      const POV_EXIT_RADIUS = 4.4;
+      const isPov = povModeRef.current;
+      if (!isPov && radiusRef.current <= POV_ENTER_RADIUS) {
+        setPovModeRef.current?.(true);
+      } else if (isPov && radiusRef.current >= POV_EXIT_RADIUS) {
+        setPovModeRef.current?.(false);
+      }
     };
 
     const onTouchStart = (e: TouchEvent) => {
@@ -2603,6 +2695,24 @@ function FollowCamera({
     const t = target.current;
     if (!t) return;
 
+    if (povMode) {
+      const eyeHeight = 1.55;
+
+      const yaw = povYawRef.current;
+      const pitch = povPitchRef.current;
+      const cy = Math.cos(pitch);
+      const forward = new THREE.Vector3(
+        Math.sin(yaw) * cy,
+        Math.sin(pitch),
+        Math.cos(yaw) * cy
+      );
+
+      const desired = new THREE.Vector3(t.x, t.y + eyeHeight, t.z);
+      camera.position.lerp(desired, clamp(dt * 14, 0, 1));
+      camera.lookAt(desired.clone().add(forward));
+      return;
+    }
+
     // Use lookAtOverride as orbit center when watching a board
     const orbitCenter = lookAtOverride?.current || t;
 
@@ -2618,6 +2728,9 @@ function FollowCamera({
     ).add(offset);
     camera.position.lerp(desired, clamp(dt * 6, 0, 1));
     camera.lookAt(orbitCenter.x, orbitCenter.y + 1.0, orbitCenter.z);
+
+    // Cache direction so POV entry can align with current camera heading.
+    camera.getWorldDirection(lastOrbitDirRef.current);
   });
 
   return null;
@@ -2835,6 +2948,17 @@ type BoardControlsOpen = {
   turn: "w" | "b";
   boardOrientation: "white" | "black";
   canMove2d: boolean;
+  chess4Variant?: "2v2" | "ffa";
+  canSetChess4Variant?: boolean;
+  onSetChess4Variant?: (variant: "2v2" | "ffa") => void;
+  chess4Scores?: Record<"r" | "g" | "y" | "b", number>;
+  chess4Claimable?: {
+    leader: "r" | "g" | "y" | "b";
+    runnerUp: "r" | "g" | "y" | "b";
+    lead: number;
+  } | null;
+  chess4CanClaimWin?: boolean;
+  onChess4ClaimWin?: () => void;
   gooseSquare?: string;
   goosePhase?: "piece" | "goose";
   startledSquares?: string[];
@@ -3138,6 +3262,7 @@ import {
   PaperPlaneIcon,
 } from "@/components/icons";
 import { ChessBoardPreview } from "@/components/chess-board-preview";
+import { LoadTestPanel } from "@/components/load-test-panel";
 
 export default function World({
   roomId,
@@ -3870,22 +3995,30 @@ export default function World({
   } | null>(null);
 
   const cameraRotateModeRef = useRef(false);
+  const suppressCameraRightDragRef = useRef(false);
   const [cameraRotateMode, setCameraRotateMode] = useState(false);
   const [cameraRotateToast, setCameraRotateToast] = useState<"" | "on" | "off">(
     ""
   );
 
-  const handleCenterCamera = useCallback((target: Vec3) => {
-    if (!lookAtTargetRef.current) {
-      lookAtTargetRef.current = new THREE.Vector3(
-        target[0],
-        target[1],
-        target[2]
-      );
-    } else {
-      lookAtTargetRef.current.set(target[0], target[1], target[2]);
-    }
-  }, []);
+  const [povMode, setPovMode] = useState(false);
+
+  const handleCenterCamera = useCallback(
+    (target: Vec3) => {
+      // Centering the camera (board focus) should always exit POV.
+      setPovMode(false);
+      if (!lookAtTargetRef.current) {
+        lookAtTargetRef.current = new THREE.Vector3(
+          target[0],
+          target[1],
+          target[2]
+        );
+      } else {
+        lookAtTargetRef.current.set(target[0], target[1], target[2]);
+      }
+    },
+    [setPovMode]
+  );
 
   const [boardControls, setBoardControls] = useState<BoardControlsOpen | null>(
     null
@@ -3964,6 +4097,29 @@ export default function World({
     []
   );
 
+  // Room ID parsing:
+  // - Channels: `base-chN` (where `base` alone is treated as channel 1 in UI)
+  // - 4P rooms: `base-4p` (and optionally `base-4p-chN`)
+  const roomIdNoChannel = useMemo(
+    () => roomId.replace(/-ch\d+$/i, ""),
+    [roomId]
+  );
+  const is4pRoom = useMemo(
+    () => roomIdNoChannel.toLowerCase().endsWith("-4p"),
+    [roomIdNoChannel]
+  );
+  const baseRoomId = useMemo(
+    () =>
+      roomIdNoChannel.toLowerCase().endsWith("-4p")
+        ? roomIdNoChannel.slice(0, -3)
+        : roomIdNoChannel,
+    [roomIdNoChannel]
+  );
+  const activeBoards = useMemo(
+    () => (is4pRoom ? [] : boards),
+    [is4pRoom, boards]
+  );
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -4012,7 +4168,7 @@ export default function World({
       if (cancelled) return;
       nextBoardIndex += 1;
       setMountedBoardCount(nextBoardIndex);
-      if (nextBoardIndex < boards.length) {
+      if (nextBoardIndex < activeBoards.length) {
         runIdle(() => runSoon(mountNextBoard, 80));
       }
     };
@@ -4026,7 +4182,9 @@ export default function World({
     runIdle(() =>
       runSoon(() => {
         setSceneStage(2);
-        mountNextBoard();
+        if (activeBoards.length > 0) {
+          mountNextBoard();
+        }
       }, 60)
     );
 
@@ -4035,7 +4193,7 @@ export default function World({
       clearTimers();
     };
     // Re-stage on scene/room changes.
-  }, [boards.length, lobbyType, roomId]);
+  }, [activeBoards.length, lobbyType, roomId]);
 
   const lastSentRef = useRef<{ t: number; p: Vec3; r: number }>({
     t: 0,
@@ -4043,8 +4201,103 @@ export default function World({
     r: 0,
   });
 
-  const [copied, setCopied] = useState(false);
+  const [showRoomsModal, setShowRoomsModal] = useState(false);
   const [nameInput, setNameInput] = useState("");
+
+  const { allRooms, setMyRoom } = useRoomDiscovery();
+
+  // Broadcast our current room/channel + player count to the discovery room.
+  useEffect(() => {
+    // Derive a best-effort player count from the PartyKit world state.
+    // Use `players` directly to avoid referencing `remotePlayers` before it is declared.
+    const count = Object.keys(players).length;
+    try {
+      setMyRoom(roomId, Math.max(1, count));
+    } catch {
+      // ignore
+    }
+  }, [players, roomId, setMyRoom]);
+
+  const maxPlayersPerRoom = 16;
+
+  const getChannelNumberForRoomId = useCallback(
+    (base: string, fullRoomId: string) => {
+      // UI channel numbering:
+      // - base itself -> CH.1
+      // - base-ch1 -> CH.2
+      // - base-ch2 -> CH.3 ...
+      if (fullRoomId === base) return 1;
+      const m = fullRoomId.match(
+        new RegExp(
+          `^${base.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}-ch(\\d+)$`,
+          "i"
+        )
+      );
+      if (!m) return null;
+      const n = parseInt(m[1]!, 10);
+      if (!Number.isFinite(n)) return null;
+      return n + 1;
+    },
+    []
+  );
+
+  const listOccupiedChannels = useCallback(
+    (base: string) => {
+      // Only show channels with people in them.
+      const entries = (allRooms || [])
+        .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
+        .filter((r) => r.playerCount > 0)
+        .map((r) => {
+          const ch = getChannelNumberForRoomId(base, r.roomId);
+          return { ...r, ch };
+        })
+        .filter((r) => typeof r.ch === "number")
+        .sort((a, b) => a.ch! - b.ch!);
+
+      return entries as Array<{
+        roomId: string;
+        playerCount: number;
+        ch: number;
+      }>;
+    },
+    [allRooms, getChannelNumberForRoomId]
+  );
+
+  const pickBestRoomForBase = useCallback(
+    (base: string) => {
+      const existing = (allRooms || [])
+        .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
+        .sort((a, b) => b.playerCount - a.playerCount);
+
+      const available = existing.filter(
+        (r) => r.playerCount < maxPlayersPerRoom
+      );
+      if (available[0]) return available[0].roomId;
+
+      // All known channels are full (or none exist). Create the next channel.
+      const channels = existing
+        .map((r) => getChannelNumberForRoomId(base, r.roomId))
+        .filter((n): n is number => typeof n === "number");
+
+      const maxCh = channels.length ? Math.max(...channels) : 1;
+      // Next UI channel number -> room id:
+      // CH.1 => base
+      // CH.k (k>1) => base-ch(k-1)
+      const nextUiCh = maxCh + 1;
+      return nextUiCh <= 1 ? base : `${base}-ch${nextUiCh - 1}`;
+    },
+    [allRooms, getChannelNumberForRoomId]
+  );
+
+  const goToRoom = useCallback((nextRoomId: string) => {
+    if (typeof window === "undefined") return;
+    const targetPath = `/room/${encodeURIComponent(nextRoomId)}`;
+    if (window.location.pathname === targetPath) {
+      setShowRoomsModal(false);
+      return;
+    }
+    window.location.assign(targetPath);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4079,11 +4332,6 @@ export default function World({
     };
   }, []);
 
-  const roomLink = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    return window.location.href;
-  }, []);
-
   useEffect(() => {
     try {
       const saved = window.sessionStorage.getItem("pawnsquare:name") ?? "";
@@ -4096,12 +4344,6 @@ export default function World({
       // ignore
     }
   }, [setName]);
-
-  useEffect(() => {
-    if (!copied) return;
-    const to = window.setTimeout(() => setCopied(false), 900);
-    return () => window.clearTimeout(to);
-  }, [copied]);
 
   useEffect(() => {
     if (!canvasEl) return;
@@ -4277,6 +4519,10 @@ export default function World({
         lookAtTarget?: Vec3;
       }
     ) => {
+      if (opts?.sit) {
+        // Benches / seating should behave like normal camera: exit POV.
+        setPovMode(false);
+      }
       moveTargetRef.current = {
         dest,
         rotY: opts?.rotY,
@@ -4286,7 +4532,7 @@ export default function World({
       };
       sittingRef.current = false;
     },
-    []
+    [setPovMode]
   );
 
   const renderBoardLamp = useCallback(
@@ -4404,7 +4650,7 @@ export default function World({
         >
           {lobbyType === "scifi" ? <SciFiLobby /> : <ParkLobby />}
 
-          {boards.map((b, idx) => (
+          {activeBoards.map((b, idx) => (
             <group key={b.key}>
               {sceneStage >= 1 ? renderBoardLamp(b.origin) : null}
 
@@ -4420,11 +4666,41 @@ export default function World({
             </group>
           ))}
 
+          {/* 4P chess lives in the dedicated "-4p" room */}
+          {sceneStage >= 2 && is4pRoom ? (
+            <Suspense fallback={null}>
+              <OutdoorChess4P
+                roomId={roomId}
+                boardKey={"m"}
+                origin={[0, 0.04, 0]}
+                selfPositionRef={selfPosRef}
+                selfId={self?.id || ""}
+                selfName={self?.name || ""}
+                joinLockedBoardKey={joinLockedBoardKey}
+                leaveAllNonce={leaveAllNonce}
+                leaveAllExceptBoardKey={leaveAllExceptBoardKey}
+                onJoinIntent={handleJoinIntent}
+                onSelfSeatChange={handleSelfSeatChange}
+                onRequestMove={handleRequestMove}
+                onCenterCamera={handleCenterCamera}
+                onBoardControls={handleBoardControls}
+                controlsOpen={boardControls?.boardKey === "m"}
+                board2dOpen={board2d?.boardKey === "m"}
+                chessTheme={chessTheme}
+                suppressCameraRotateRef={suppressCameraRightDragRef}
+              />
+            </Suspense>
+          ) : null}
+
           <FollowCamera
             target={selfPosRef}
             lookAtOverride={lookAtTargetRef}
             orbitApiRef={cameraOrbitApiRef}
             rotateModeRef={cameraRotateModeRef}
+            suppressRightDragRef={suppressCameraRightDragRef}
+            povMode={povMode}
+            yawRef={selfRotRef}
+            setPovMode={setPovMode}
           />
 
           <VoiceProximityUpdater
@@ -4456,19 +4732,21 @@ export default function World({
 
           {self ? (
             <Suspense fallback={null}>
-              <SelfAvatar
-                color={self.color}
-                name={self.name}
-                pos={selfPosRef}
-                rotY={selfRotRef}
-                speed={selfSpeedRef}
-                gender={self.gender}
-                avatarUrl={
-                  avatarSystem === "three-avatar" ? debugAvatarUrl : undefined
-                }
-                sittingRef={sittingRef}
-                bubbleText={bubbles[self.id]?.text}
-              />
+              {!povMode ? (
+                <SelfAvatar
+                  color={self.color}
+                  name={self.name}
+                  pos={selfPosRef}
+                  rotY={selfRotRef}
+                  speed={selfSpeedRef}
+                  gender={self.gender}
+                  avatarUrl={
+                    avatarSystem === "three-avatar" ? debugAvatarUrl : undefined
+                  }
+                  sittingRef={sittingRef}
+                  bubbleText={bubbles[self.id]?.text}
+                />
+              ) : null}
             </Suspense>
           ) : null}
 
@@ -4847,44 +5125,77 @@ export default function World({
           pointerEvents: "none", // Let clicks pass through to canvas where possible
         }}
       >
-        {/* Camera rotate toggle */}
-        <button
-          onClick={() => {
-            setCameraRotateMode((prev) => {
-              const next = !prev;
-              cameraRotateModeRef.current = next;
-              setCameraRotateToast(next ? "on" : "off");
-              window.setTimeout(() => setCameraRotateToast(""), 1200);
-              return next;
-            });
-          }}
-          title={cameraRotateMode ? "Stop rotating camera" : "Rotate camera"}
-          style={{
-            pointerEvents: "auto",
-            height: 44,
-            borderRadius: 12,
-            background: cameraRotateMode
-              ? "rgba(0,0,0,0.6)"
-              : "rgba(0,0,0,0.4)",
-            backdropFilter: "blur(8px)",
-            border: cameraRotateMode
-              ? "1px solid rgba(255,255,255,0.22)"
-              : "1px solid rgba(255,255,255,0.1)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "0 12px",
-            color: "white",
-            touchAction: "manipulation",
-            userSelect: "none",
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: 600,
-          }}
-        >
-          <RotateArrowsIcon size={18} />
-          <span style={{ lineHeight: 1 }}>Camera</span>
-        </button>
+        <div style={{ display: "flex", gap: 8, pointerEvents: "none" }}>
+          {/* POV (first-person) toggle */}
+          <button
+            onClick={() => setPovMode((prev) => !prev)}
+            title={povMode ? "Exit POV mode" : "Enter POV mode"}
+            style={{
+              pointerEvents: "auto",
+              height: 38,
+              borderRadius: 12,
+              background: povMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.4)",
+              backdropFilter: "blur(8px)",
+              border: povMode
+                ? "1px solid rgba(255,255,255,0.22)"
+                : "1px solid rgba(255,255,255,0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              padding: "0 10px",
+              color: "white",
+              touchAction: "manipulation",
+              userSelect: "none",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <UserIcon size={16} />
+            <span style={{ lineHeight: 1 }}>POV</span>
+          </button>
+
+          {/* Camera rotate toggle */}
+          <button
+            onClick={() => {
+              setCameraRotateMode((prev) => {
+                const next = !prev;
+                cameraRotateModeRef.current = next;
+                setCameraRotateToast(next ? "on" : "off");
+                window.setTimeout(() => setCameraRotateToast(""), 1200);
+                return next;
+              });
+            }}
+            title={cameraRotateMode ? "Stop rotating camera" : "Rotate camera"}
+            style={{
+              pointerEvents: "auto",
+              height: 38,
+              borderRadius: 12,
+              background: cameraRotateMode
+                ? "rgba(0,0,0,0.6)"
+                : "rgba(0,0,0,0.4)",
+              backdropFilter: "blur(8px)",
+              border: cameraRotateMode
+                ? "1px solid rgba(255,255,255,0.22)"
+                : "1px solid rgba(255,255,255,0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              padding: "0 10px",
+              color: "white",
+              touchAction: "manipulation",
+              userSelect: "none",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <RotateArrowsIcon size={16} />
+            <span style={{ lineHeight: 1 }}>Camera</span>
+          </button>
+        </div>
 
         {/* Room Info Card */}
         <div
@@ -4993,10 +5304,17 @@ export default function World({
               letterSpacing: 0.5,
             }}
           >
-            Players
+            Players ({hudPlayers.length})
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {hudPlayers.slice(0, 10).map((p) => (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              overflowY: "auto",
+            }}
+          >
+            {hudPlayers.map((p) => (
               <div
                 key={p.id}
                 style={{
@@ -5034,14 +5352,7 @@ export default function World({
         {/* Controls / Actions */}
         <div style={{ display: "flex", gap: 8, pointerEvents: "auto" }}>
           <button
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(roomLink);
-                setCopied(true);
-              } catch {
-                // ignore
-              }
-            }}
+            onClick={() => setShowRoomsModal(true)}
             style={{
               padding: "8px 12px",
               borderRadius: 8,
@@ -5054,7 +5365,7 @@ export default function World({
               transition: "background 0.2s",
             }}
           >
-            {copied ? "Copied!" : "Share Link"}
+            Rooms
           </button>
 
           <button
@@ -5075,6 +5386,208 @@ export default function World({
           </button>
         </div>
       </div>
+
+      {/* Rooms Modal */}
+      {showRoomsModal ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.65)",
+            backdropFilter: "blur(8px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 60,
+            pointerEvents: "auto",
+            padding: 16,
+          }}
+          onClick={() => setShowRoomsModal(false)}
+        >
+          <div
+            style={{
+              width: 360,
+              maxWidth: "94vw",
+              borderRadius: 16,
+              overflow: "hidden",
+              border: "1px solid rgba(255,255,255,0.14)",
+              background: "rgba(10,10,12,0.92)",
+              color: "white",
+              boxShadow: "0 24px 70px rgba(0,0,0,0.55)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "14px 14px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                borderBottom: "1px solid rgba(255,255,255,0.1)",
+              }}
+            >
+              <div
+                style={{ fontWeight: 800, fontSize: 14, letterSpacing: 0.4 }}
+              >
+                Rooms
+              </div>
+              <button
+                onClick={() => setShowRoomsModal(false)}
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "white",
+                  cursor: "pointer",
+                  display: "grid",
+                  placeItems: "center",
+                }}
+                aria-label="Close"
+                title="Close"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </div>
+
+            <div
+              style={{
+                padding: 14,
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  borderRadius: 12,
+                  background: "rgba(255,255,255,0.06)",
+                  overflow: "hidden",
+                }}
+              >
+                <button
+                  onClick={() => goToRoom(pickBestRoomForBase(baseRoomId))}
+                  style={{
+                    width: "100%",
+                    padding: "14px 14px",
+                    border: "none",
+                    background: "transparent",
+                    color: "white",
+                    cursor: "pointer",
+                    fontWeight: 800,
+                    textAlign: "left",
+                  }}
+                >
+                  Normal Chess
+                </button>
+                <div
+                  style={{
+                    padding: "0 14px 12px 14px",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
+                  {listOccupiedChannels(baseRoomId).map((r) => (
+                    <button
+                      key={r.roomId}
+                      onClick={() => goToRoom(r.roomId)}
+                      style={{
+                        height: 30,
+                        padding: "0 10px",
+                        borderRadius: 8,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "rgba(0,0,0,0.25)",
+                        color: "white",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                      title={`${r.playerCount}/${maxPlayersPerRoom}`}
+                      aria-label={`Channel ${r.ch} (${r.playerCount}/${maxPlayersPerRoom})`}
+                    >
+                      <span style={{ opacity: 0.95 }}>{`CH.${r.ch}`}</span>
+                      <span
+                        style={{ opacity: 0.75, fontWeight: 700 }}
+                      >{`${r.playerCount}/${maxPlayersPerRoom}`}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  borderRadius: 12,
+                  background: "rgba(255,255,255,0.06)",
+                  overflow: "hidden",
+                }}
+              >
+                <button
+                  onClick={() =>
+                    goToRoom(pickBestRoomForBase(`${baseRoomId}-4p`))
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "14px 14px",
+                    border: "none",
+                    background: "transparent",
+                    color: "white",
+                    cursor: "pointer",
+                    fontWeight: 800,
+                    textAlign: "left",
+                  }}
+                >
+                  4P Chess
+                </button>
+                <div
+                  style={{
+                    padding: "0 14px 12px 14px",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                  }}
+                >
+                  {listOccupiedChannels(`${baseRoomId}-4p`).map((r) => (
+                    <button
+                      key={r.roomId}
+                      onClick={() => goToRoom(r.roomId)}
+                      style={{
+                        height: 30,
+                        padding: "0 10px",
+                        borderRadius: 8,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "rgba(0,0,0,0.25)",
+                        color: "white",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                      title={`${r.playerCount}/${maxPlayersPerRoom}`}
+                      aria-label={`Channel ${r.ch} (${r.playerCount}/${maxPlayersPerRoom})`}
+                    >
+                      <span style={{ opacity: 0.95 }}>{`CH.${r.ch}`}</span>
+                      <span
+                        style={{ opacity: 0.75, fontWeight: 700 }}
+                      >{`${r.playerCount}/${maxPlayersPerRoom}`}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <LoadTestPanel roomId={roomId} />
 
       <div
         style={{
@@ -5611,6 +6124,8 @@ export default function World({
             {(() => {
               const mode: BoardMode =
                 (boardModes?.[boardControls.boardKey] as BoardMode) ?? "chess";
+              const isChess4Way = boardControls.boardKey === "m";
+              const canOpen2d = engineForMode(mode) === "chess" && !isChess4Way;
 
               return (
                 <>
@@ -5700,7 +6215,7 @@ export default function World({
                           textTransform: "capitalize",
                         }}
                       >
-                        {mode}
+                        {isChess4Way ? "Chess 4P" : mode}
                       </div>
                       <div
                         style={{
@@ -5744,108 +6259,234 @@ export default function World({
                       >
                         Game Mode
                       </div>
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns:
-                            "repeat(auto-fit, minmax(140px, 1fr))",
-                          gap: 10,
-                        }}
-                      >
-                        {BOARD_MODE_DEFS.map((def) => {
-                          const selected = mode === def.key;
-                          const isGoose = def.key === "goose";
-                          const borderSelected = isGoose
-                            ? boardControls.lobby === "scifi"
-                              ? "2px solid rgba(255,200,0,0.6)"
-                              : "2px solid rgba(255,180,0,0.5)"
-                            : boardControls.lobby === "scifi"
-                            ? "2px solid rgba(0,255,255,0.6)"
-                            : "2px solid rgba(100,100,255,0.5)";
-                          const borderIdle =
-                            boardControls.lobby === "scifi"
-                              ? "1px solid rgba(0,255,255,0.25)"
-                              : "1px solid rgba(0,0,0,0.12)";
-                          const bgSelected = isGoose
-                            ? boardControls.lobby === "scifi"
-                              ? "rgba(255,200,0,0.15)"
-                              : "rgba(255,180,0,0.12)"
-                            : boardControls.lobby === "scifi"
-                            ? "rgba(0,255,255,0.15)"
-                            : "rgba(100,100,255,0.12)";
-                          const bgIdle =
-                            boardControls.lobby === "scifi"
-                              ? "rgba(0,0,0,0.25)"
-                              : "rgba(255,255,255,0.65)";
 
-                          const button = (
-                            <button
-                              key={def.key}
-                              onClick={() => {
-                                setBoardMode(boardControls.boardKey, def.key);
-                                setJoinedBoardKey((prev) =>
-                                  prev === boardControls.boardKey ? null : prev
-                                );
-                                setPendingJoinBoardKey(null);
-                                setBoardControls(null);
-                              }}
-                              style={{
-                                padding: "14px",
-                                borderRadius: 12,
-                                border: selected ? borderSelected : borderIdle,
-                                background: selected ? bgSelected : bgIdle,
-                                color: "inherit",
-                                cursor: "pointer",
-                                fontWeight: selected ? 800 : 600,
-                                fontSize: 14,
-                                transition: "all 0.2s",
-                                width: "100%",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                gap: 6,
-                              }}
-                            >
-                              {def.icon} {def.label}
-                            </button>
-                          );
+                      {isChess4Way ? (
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns:
+                              "repeat(auto-fit, minmax(140px, 1fr))",
+                            gap: 10,
+                          }}
+                        >
+                          {(
+                            [
+                              { key: "2v2", label: "2v2" },
+                              { key: "ffa", label: "FFA" },
+                            ] as const
+                          ).map((v) => {
+                            const selected =
+                              boardControls.chess4Variant === v.key;
+                            const canClick =
+                              !!boardControls.onSetChess4Variant &&
+                              (boardControls.canSetChess4Variant ?? false);
+                            const borderSelected =
+                              boardControls.lobby === "scifi"
+                                ? "2px solid rgba(0,255,255,0.6)"
+                                : "2px solid rgba(100,100,255,0.5)";
+                            const borderIdle =
+                              boardControls.lobby === "scifi"
+                                ? "1px solid rgba(0,255,255,0.25)"
+                                : "1px solid rgba(0,0,0,0.12)";
+                            const bgSelected =
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,255,255,0.15)"
+                                : "rgba(100,100,255,0.12)";
+                            const bgIdle =
+                              boardControls.lobby === "scifi"
+                                ? "rgba(0,0,0,0.25)"
+                                : "rgba(255,255,255,0.65)";
 
-                          if (def.key !== "goose") return button;
-
-                          return (
-                            <div key={def.key} style={{ position: "relative" }}>
-                              {button}
+                            return (
                               <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setShowGooseInfo(true);
+                                key={v.key}
+                                onClick={() => {
+                                  if (!canClick) return;
+                                  boardControls.onSetChess4Variant?.(v.key);
+                                  setBoardControls(null);
                                 }}
+                                disabled={!canClick}
                                 style={{
-                                  position: "absolute",
-                                  top: 4,
-                                  right: 4,
-                                  border: "none",
-                                  background: "rgba(0,0,0,0.2)",
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border: selected
+                                    ? borderSelected
+                                    : borderIdle,
+                                  background: selected ? bgSelected : bgIdle,
                                   color: "inherit",
-                                  width: 18,
-                                  height: 18,
-                                  borderRadius: "50%",
-                                  cursor: "pointer",
-                                  fontSize: 11,
-                                  fontWeight: 700,
+                                  cursor: canClick ? "pointer" : "not-allowed",
+                                  fontWeight: selected ? 800 : 600,
+                                  fontSize: 14,
+                                  transition: "all 0.2s",
+                                  width: "100%",
                                   display: "flex",
                                   alignItems: "center",
                                   justifyContent: "center",
+                                  gap: 6,
+                                  opacity: canClick ? 1 : 0.4,
                                 }}
-                                title="Learn about Goose Chess"
                               >
-                                ?
+                                {v.label}
                               </button>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+
+                      {isChess4Way ? (
+                        boardControls.chess4CanClaimWin ? (
+                          <div style={{ marginTop: 14 }}>
+                            <button
+                              onClick={() => {
+                                boardControls.onChess4ClaimWin?.();
+                                setBoardControls(null);
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "14px",
+                                borderRadius: 12,
+                                border:
+                                  boardControls.lobby === "scifi"
+                                    ? "2px solid rgba(0,255,255,0.45)"
+                                    : "2px solid rgba(100,100,255,0.35)",
+                                background:
+                                  boardControls.lobby === "scifi"
+                                    ? "linear-gradient(135deg, rgba(0,255,255,0.18), rgba(0,200,255,0.12))"
+                                    : "linear-gradient(135deg, rgba(100,100,255,0.14), rgba(150,150,255,0.09))",
+                                color: "inherit",
+                                cursor: "pointer",
+                                fontWeight: 800,
+                                fontSize: 14,
+                                letterSpacing: 0.4,
+                              }}
+                            >
+                              Claim Win
+                            </button>
+                          </div>
+                        ) : null
+                      ) : (
+                        <>
+                          {/*
+                            Unification note:
+                            - This list is rendered from `BOARD_MODE_DEFS` (see `src/lib/boardModes.ts`).
+                            - Adding a new mode should only require adding it to the registry.
+                            - The “Open 2D Board” button is intentionally restricted to chess-engine modes
+                              (`engineForMode(mode) === "chess"`).
+                          */}
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns:
+                                "repeat(auto-fit, minmax(140px, 1fr))",
+                              gap: 10,
+                            }}
+                          >
+                            {BOARD_MODE_DEFS.map((def) => {
+                              const selected = mode === def.key;
+                              const isGoose = def.key === "goose";
+                              const borderSelected = isGoose
+                                ? boardControls.lobby === "scifi"
+                                  ? "2px solid rgba(255,200,0,0.6)"
+                                  : "2px solid rgba(255,180,0,0.5)"
+                                : boardControls.lobby === "scifi"
+                                ? "2px solid rgba(0,255,255,0.6)"
+                                : "2px solid rgba(100,100,255,0.5)";
+                              const borderIdle =
+                                boardControls.lobby === "scifi"
+                                  ? "1px solid rgba(0,255,255,0.25)"
+                                  : "1px solid rgba(0,0,0,0.12)";
+                              const bgSelected = isGoose
+                                ? boardControls.lobby === "scifi"
+                                  ? "rgba(255,200,0,0.15)"
+                                  : "rgba(255,180,0,0.12)"
+                                : boardControls.lobby === "scifi"
+                                ? "rgba(0,255,255,0.15)"
+                                : "rgba(100,100,255,0.12)";
+                              const bgIdle =
+                                boardControls.lobby === "scifi"
+                                  ? "rgba(0,0,0,0.25)"
+                                  : "rgba(255,255,255,0.65)";
+
+                              const button = (
+                                <button
+                                  key={def.key}
+                                  onClick={() => {
+                                    setBoardMode(
+                                      boardControls.boardKey,
+                                      def.key
+                                    );
+                                    setJoinedBoardKey((prev) =>
+                                      prev === boardControls.boardKey
+                                        ? null
+                                        : prev
+                                    );
+                                    setPendingJoinBoardKey(null);
+                                    setBoardControls(null);
+                                  }}
+                                  style={{
+                                    padding: "14px",
+                                    borderRadius: 12,
+                                    border: selected
+                                      ? borderSelected
+                                      : borderIdle,
+                                    background: selected ? bgSelected : bgIdle,
+                                    color: "inherit",
+                                    cursor: "pointer",
+                                    fontWeight: selected ? 800 : 600,
+                                    fontSize: 14,
+                                    transition: "all 0.2s",
+                                    width: "100%",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    gap: 6,
+                                  }}
+                                >
+                                  {def.icon} {def.label}
+                                </button>
+                              );
+
+                              if (def.key !== "goose") return button;
+
+                              return (
+                                <div
+                                  key={def.key}
+                                  style={{ position: "relative" }}
+                                >
+                                  {button}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setShowGooseInfo(true);
+                                    }}
+                                    style={{
+                                      position: "absolute",
+                                      top: 4,
+                                      right: 4,
+                                      border: "none",
+                                      background: "rgba(0,0,0,0.2)",
+                                      color: "inherit",
+                                      width: 18,
+                                      height: 18,
+                                      borderRadius: "50%",
+                                      cursor: "pointer",
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                    }}
+                                    title="Learn about Goose Chess"
+                                  >
+                                    ?
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
 
                       <div
                         style={{
@@ -6097,7 +6738,7 @@ export default function World({
 
                     <button
                       onClick={() => {
-                        if (engineForMode(mode) !== "chess") return;
+                        if (!canOpen2d) return;
                         setBoard2dArrows([]);
                         setBoard2dPos(
                           isMobile
@@ -6122,7 +6763,7 @@ export default function World({
                         });
                         setBoardControls(null);
                       }}
-                      disabled={engineForMode(mode) !== "chess"}
+                      disabled={!canOpen2d}
                       style={{
                         width: "100%",
                         padding: "16px",
@@ -6136,14 +6777,11 @@ export default function World({
                             ? "linear-gradient(135deg, rgba(0,255,255,0.2), rgba(0,200,255,0.15))"
                             : "linear-gradient(135deg, rgba(100,100,255,0.15), rgba(150,150,255,0.1))",
                         color: "inherit",
-                        cursor:
-                          engineForMode(mode) === "chess"
-                            ? "pointer"
-                            : "not-allowed",
+                        cursor: canOpen2d ? "pointer" : "not-allowed",
                         fontWeight: 700,
                         fontSize: 15,
                         letterSpacing: 0.5,
-                        opacity: engineForMode(mode) === "chess" ? 1 : 0.4,
+                        opacity: canOpen2d ? 1 : 0.4,
                       }}
                     >
                       📋 Open 2D Board

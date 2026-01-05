@@ -3,6 +3,7 @@
   "main": "party/room.ts",
   "parties": {
     "chess": "party/chess.ts",
+    "chess4": "party/chess4.ts",
     "checkers": "party/checkers.ts",
     "goose": "party/goose.ts"
   }

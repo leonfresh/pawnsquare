@@ -41,7 +41,9 @@ export type CheckersNetState = {
   forcedFrom: string | null;
 };
 
-export type CheckersMessage = { type: "state"; state: CheckersNetState };
+export type CheckersMessage =
+  | { type: "state"; state: CheckersNetState }
+  | { type: "seats"; seats: CheckersNetState["seats"]; seq: number };
 
 export type CheckersSendMessage =
   | { type: "join"; side: Side; playerId?: string; name?: string }
@@ -372,6 +374,17 @@ export function useCheckersGame({
     connectedRef.current = connected;
   }, [connected]);
 
+  // Pre-connect as soon as the board is mounted.
+  // This moves the initial websocket + state sync off the "join" click.
+  useEffect(() => {
+    if (!enabled) return;
+    if (!connectedRef.current) {
+      connectedRef.current = true;
+      setConnected(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
+
   useEffect(() => {
     if (enabled) return;
 
@@ -577,13 +590,43 @@ export function useCheckersGame({
       if (!activeModeRef.current) return;
       try {
         const msg = JSON.parse(event.data) as CheckersMessage;
-        if (msg.type !== "state") return;
 
-        setNetState((prev) => {
-          if (msg.state.seq < prev.seq) return prev;
-          if (msg.state.seq === prev.seq) return prev;
-          return msg.state;
-        });
+        if (msg.type === "seats") {
+          setNetState((prev) => {
+            if (msg.seq <= prev.seq) return prev;
+
+            const prevW = prev.seats.w;
+            const prevB = prev.seats.b;
+            const nextW = msg.seats.w;
+            const nextB = msg.seats.b;
+            const sameW =
+              (prevW === null && nextW === null) ||
+              (prevW !== null &&
+                nextW !== null &&
+                prevW.connId === nextW.connId &&
+                prevW.playerId === nextW.playerId &&
+                prevW.name === nextW.name);
+            const sameB =
+              (prevB === null && nextB === null) ||
+              (prevB !== null &&
+                nextB !== null &&
+                prevB.connId === nextB.connId &&
+                prevB.playerId === nextB.playerId &&
+                prevB.name === nextB.name);
+            if (sameW && sameB) return prev;
+
+            return { ...prev, seats: msg.seats, seq: msg.seq };
+          });
+          return;
+        }
+
+        if (msg.type === "state") {
+          setNetState((prev) => {
+            if (msg.state.seq < prev.seq) return prev;
+            if (msg.state.seq === prev.seq) return prev;
+            return msg.state;
+          });
+        }
       } catch (err) {
         console.error("[Checkers] Error parsing message:", err);
       }

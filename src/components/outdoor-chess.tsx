@@ -27,6 +27,17 @@ import {
   type Square,
 } from "./chess-core";
 
+/**
+ * Park board implementation notes (unified game logic)
+ *
+ * Like `scifi-chess.tsx`, this component should keep mode logic centralized:
+ * - Route gameplay by `engineForMode(mode)`.
+ * - For chess-like modes, choose the variant via `chessVariantForMode(mode)`.
+ *
+ * The goal is: adding a new mode does not require duplicating per-world logic.
+ * Only update this file when introducing a new engine/hook or adding park-only visuals.
+ */
+
 type CheckersPiece = { color: Side; king: boolean };
 
 function CheckerPiece({
@@ -1998,28 +2009,52 @@ function OutdoorBenches({
     <group>
       {/* Decorative benches */}
       {/* White side benches (facing board -> -Z) */}
-      <Bench
-        position={[ox - 3.5, 0, oz + padOffset + 1.5]}
-        rotation={[0, Math.PI, 0]}
-        onClick={() => requestSitAt(ox - 3.5, oz + padOffset + 1.35)}
-      />
-      <Bench
-        position={[ox + 3.5, 0, oz + padOffset + 1.5]}
-        rotation={[0, Math.PI, 0]}
-        onClick={() => requestSitAt(ox + 3.5, oz + padOffset + 1.35)}
-      />
+      {(() => {
+        const x = ox - 3.5;
+        const z = oz + padOffset + 1.5;
+        return (
+          <Bench
+            position={[x, 0, z]}
+            rotation={[0, Math.PI, 0]}
+            onClick={() => requestSitAt(x, oz + padOffset + 1.35)}
+          />
+        );
+      })()}
+      {(() => {
+        const x = ox + 3.5;
+        const z = oz + padOffset + 1.5;
+        return (
+          <Bench
+            position={[x, 0, z]}
+            rotation={[0, Math.PI, 0]}
+            onClick={() => requestSitAt(x, oz + padOffset + 1.35)}
+          />
+        );
+      })()}
 
       {/* Black side benches (facing board -> +Z) */}
-      <Bench
-        position={[ox - 3.5, 0, oz - padOffset - 1.5]}
-        rotation={[0, 0, 0]}
-        onClick={() => requestSitAt(ox - 3.5, oz - padOffset - 1.35)}
-      />
-      <Bench
-        position={[ox + 3.5, 0, oz - padOffset - 1.5]}
-        rotation={[0, 0, 0]}
-        onClick={() => requestSitAt(ox + 3.5, oz - padOffset - 1.35)}
-      />
+      {(() => {
+        const x = ox - 3.5;
+        const z = oz - padOffset - 1.5;
+        return (
+          <Bench
+            position={[x, 0, z]}
+            rotation={[0, 0, 0]}
+            onClick={() => requestSitAt(x, oz - padOffset - 1.35)}
+          />
+        );
+      })()}
+      {(() => {
+        const x = ox + 3.5;
+        const z = oz - padOffset - 1.5;
+        return (
+          <Bench
+            position={[x, 0, z]}
+            rotation={[0, 0, 0]}
+            onClick={() => requestSitAt(x, oz - padOffset - 1.35)}
+          />
+        );
+      })()}
     </group>
   );
 }

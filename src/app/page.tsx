@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useState, useEffect } from "react";
 import { OAuthPopupGuard } from "@/components/oauth-popup-guard";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
+import { useRoomDiscovery } from "@/lib/roomDiscovery";
 
 const World = dynamic(() => import("@/components/world"), { ssr: false });
 
@@ -18,9 +19,84 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [gender, setGender] = useState<"male" | "female">("male");
   const [inputValue, setInputValue] = useState("");
-  const [selectedRoom] = useState<string>("main-room");
+  const [selectedRoom, setSelectedRoom] = useState<string>("main-room");
+  const [selectedMode, setSelectedMode] = useState<"normal" | "4p">(
+    "normal"
+  );
   const [lobbyType, setLobbyType] = useState<"park" | "scifi">("park");
   const [worldReady, setWorldReady] = useState(false);
+
+  const { allRooms } = useRoomDiscovery();
+
+  const MAX_PLAYERS_PER_ROOM = 16;
+  const baseNormalRoom = "main-room";
+  const base4pRoom = "main-room-4p";
+
+  const baseForMode = selectedMode === "4p" ? base4pRoom : baseNormalRoom;
+
+  const roomIdForChannel = (base: string, ch: number) => {
+    if (ch <= 1) return base;
+    return `${base}-ch${ch - 1}`;
+  };
+
+  const channelForRoomId = (base: string, roomId: string) => {
+    if (roomId === base) return 1;
+    const m = roomId.match(new RegExp(`^${base.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}-ch(\\d+)$`, "i"));
+    if (!m) return null;
+    const n = parseInt(m[1]!, 10);
+    if (!Number.isFinite(n)) return null;
+    return n + 1;
+  };
+
+  const occupiedChannels = (base: string) => {
+    // Only channels with people, but always include CH.1 so the UI isn't empty.
+    const list = (allRooms || [])
+      .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
+      .filter((r) => r.playerCount > 0)
+      .map((r) => ({
+        roomId: r.roomId,
+        playerCount: r.playerCount,
+        ch: channelForRoomId(base, r.roomId),
+      }))
+      .filter((r): r is { roomId: string; playerCount: number; ch: number } =>
+        typeof r.ch === "number"
+      )
+      .sort((a, b) => a.ch - b.ch);
+
+    if (!list.some((r) => r.ch === 1)) {
+      list.unshift({ roomId: base, playerCount: 0, ch: 1 });
+    }
+
+    return list;
+  };
+
+  const autoPickRoom = (base: string) => {
+    const known = (allRooms || [])
+      .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
+      .sort((a, b) => b.playerCount - a.playerCount);
+
+    const available = known.filter((r) => r.playerCount < MAX_PLAYERS_PER_ROOM);
+    if (available[0]) return available[0].roomId;
+
+    const channels = known
+      .map((r) => channelForRoomId(base, r.roomId))
+      .filter((n): n is number => typeof n === "number");
+    const maxCh = channels.length ? Math.max(...channels) : 1;
+    return roomIdForChannel(base, maxCh + 1);
+  };
+
+  // Keep selectedRoom consistent with selectedMode when on the join screen.
+  useEffect(() => {
+    if (joined) return;
+    // If user already selected something for this base, keep it.
+    const current = selectedRoom;
+    const isForBase =
+      current === baseForMode || current.startsWith(`${baseForMode}-ch`);
+    if (!isForBase) {
+      setSelectedRoom(autoPickRoom(baseForMode));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseForMode, joined]);
 
   useEffect(() => {
     const stored = localStorage.getItem("pawnsquare-user");
@@ -139,6 +215,157 @@ export default function Home() {
               fontSize: "14px",
             }}
           >
+            Game Mode
+          </label>
+          <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+            <button
+              onClick={() => setSelectedMode("normal")}
+              style={{
+                flex: 1,
+                padding: "12px 14px",
+                fontSize: 14,
+                fontWeight: 700,
+                border:
+                  selectedMode === "normal"
+                    ? "3px solid #667eea"
+                    : "2px solid #e0e0e0",
+                borderRadius: 12,
+                background: selectedMode === "normal" ? "#f0f4ff" : "white",
+                color: selectedMode === "normal" ? "#667eea" : "#666",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              Normal Chess
+            </button>
+            <button
+              onClick={() => setSelectedMode("4p")}
+              style={{
+                flex: 1,
+                padding: "12px 14px",
+                fontSize: 14,
+                fontWeight: 700,
+                border:
+                  selectedMode === "4p"
+                    ? "3px solid #764ba2"
+                    : "2px solid #e0e0e0",
+                borderRadius: 12,
+                background: selectedMode === "4p" ? "#f8f0ff" : "white",
+                color: selectedMode === "4p" ? "#764ba2" : "#666",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+            >
+              4P Chess
+            </button>
+          </div>
+
+          <label
+            style={{
+              display: "block",
+              marginBottom: "8px",
+              fontWeight: "600",
+              color: "#333",
+              fontSize: "14px",
+            }}
+          >
+            Channel
+          </label>
+          <div
+            style={{
+              border: "2px solid #e0e0e0",
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 20,
+              background: "white",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                marginBottom: 10,
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#333" }}>
+                Selected: {selectedRoom}
+              </div>
+              <button
+                onClick={() => setSelectedRoom(autoPickRoom(baseForMode))}
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  border: "2px solid #e0e0e0",
+                  background: "white",
+                  color: "#333",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                  fontSize: 12,
+                }}
+              >
+                Auto
+              </button>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                maxHeight: 120,
+                overflowY: "auto",
+              }}
+            >
+              {occupiedChannels(baseForMode).map((r) => {
+                const isSelected = r.roomId === selectedRoom;
+                const isFull = r.playerCount >= MAX_PLAYERS_PER_ROOM;
+                return (
+                  <button
+                    key={r.roomId}
+                    onClick={() => setSelectedRoom(r.roomId)}
+                    disabled={isFull}
+                    style={{
+                      height: 34,
+                      padding: "0 10px",
+                      borderRadius: 10,
+                      border: isSelected
+                        ? "2px solid #667eea"
+                        : "1px solid #e0e0e0",
+                      background: isSelected ? "#f0f4ff" : "white",
+                      color: isFull ? "#999" : "#333",
+                      cursor: isFull ? "not-allowed" : "pointer",
+                      fontSize: 12,
+                      fontWeight: 800,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                    title={`${r.playerCount}/${MAX_PLAYERS_PER_ROOM}`}
+                  >
+                    <span>{`CH.${r.ch}`}</span>
+                    <span style={{ opacity: 0.7, fontWeight: 700 }}>
+                      {`${r.playerCount}/${MAX_PLAYERS_PER_ROOM}`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: 10, color: "#777", fontSize: 12 }}>
+              Rooms are capped at {MAX_PLAYERS_PER_ROOM} players. If a channel is
+              full, use Auto or pick another channel.
+            </div>
+          </div>
+
+          <label
+            style={{
+              display: "block",
+              marginBottom: "8px",
+              fontWeight: "600",
+              color: "#333",
+              fontSize: "14px",
+            }}
+          >
             Username
           </label>
           <input
@@ -241,7 +468,7 @@ export default function Home() {
                 "0 4px 12px rgba(102, 126, 234, 0.4)";
             }}
           >
-            Join World
+            {selectedMode === "4p" ? "Join 4P World" : "Join World"}
           </button>
         </div>
       </div>

@@ -48,6 +48,8 @@ export default class RoomServer implements Party.Server {
     d: "chess",
   };
 
+  static readonly MAX_PLAYERS = 16;
+
   constructor(readonly room: Party.Room) {}
 
   onConnect(conn: Party.Connection) {
@@ -74,6 +76,19 @@ export default class RoomServer implements Party.Server {
       const msg = JSON.parse(message) as Message;
 
       if (msg.type === "hello") {
+        // Check if room is full
+        if (this.players.size >= RoomServer.MAX_PLAYERS) {
+          conn.send(
+            JSON.stringify({
+              type: "error",
+              message: "room-full",
+              reason: "This room has reached maximum capacity (16 players)",
+            })
+          );
+          conn.close();
+          return;
+        }
+
         // New player joined
         const player: Player = {
           id: sender.id,

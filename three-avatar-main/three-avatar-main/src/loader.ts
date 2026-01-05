@@ -104,35 +104,62 @@ async function createGLTFLoader(
   renderer: THREE.WebGLRenderer,
   options?: DecordersOptions
 ) {
-  const loader = new GLTFLoader();
+  const rendererKey =
+    (renderer as any)?.uuid ?? String((renderer as any)?.id ?? "default");
 
-  const dracoLoader = new DRACOLoader();
-  dracoLoader.setDecoderPath(options?.dracoDecoderPath || DRACO_DECODER_PATH);
-  loader.setDRACOLoader(dracoLoader);
+  const dracoKey = options?.dracoDecoderPath || DRACO_DECODER_PATH;
+  const basisKey = options?.basisTranscoderPath || BASIS_TRANSCODER_PATH;
+  const meshoptKey = options?.meshoptDecoderPath || MESHOPT_DECODER_PATH;
+  const cacheKey = `${rendererKey}|${dracoKey}|${basisKey}|${meshoptKey}`;
 
-  const ktx2Loader = new KTX2Loader();
-  ktx2Loader
-    .setTranscoderPath(options?.basisTranscoderPath || BASIS_TRANSCODER_PATH)
-    .detectSupport(renderer);
-  loader.setKTX2Loader(ktx2Loader);
+  if (!(globalThis as any).__threeAvatarGltfLoaderCache) {
+    (globalThis as any).__threeAvatarGltfLoaderCache = new Map();
+  }
+  const cache: Map<string, Promise<GLTFLoader>> = (globalThis as any)
+    .__threeAvatarGltfLoaderCache;
 
-  const meshoptDecoder = await fetchScript(
-    options?.meshoptDecoderPath || MESHOPT_DECODER_PATH
-  )
-    .then(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (window as any).MeshoptDecoder.ready;
-    })
-    .then(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (window as any).MeshoptDecoder;
+  const existing = cache.get(cacheKey);
+  if (existing) return existing;
+
+  const p = (async () => {
+    const loader = new GLTFLoader();
+
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath(dracoKey);
+    loader.setDRACOLoader(dracoLoader);
+
+    const ktx2Loader = new KTX2Loader();
+    ktx2Loader.setTranscoderPath(basisKey).detectSupport(renderer);
+    loader.setKTX2Loader(ktx2Loader);
+
+    if (!(globalThis as any).__threeAvatarMeshoptPromise) {
+      (globalThis as any).__threeAvatarMeshoptPromise = fetchScript(meshoptKey)
+        .then(() => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (window as any).MeshoptDecoder.ready;
+        })
+        .then(() => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (window as any).MeshoptDecoder;
+        });
+    }
+
+    const meshoptDecoder = await (globalThis as any)
+      .__threeAvatarMeshoptPromise;
+    loader.setMeshoptDecoder(meshoptDecoder);
+
+    loader.register((parser: GLTFParser) => {
+      return new THREE_VRM.VRMLoaderPlugin(parser);
     });
-  loader.setMeshoptDecoder(meshoptDecoder);
+    return loader;
+  })();
 
-  loader.register((parser: GLTFParser) => {
-    return new THREE_VRM.VRMLoaderPlugin(parser);
+  cache.set(cacheKey, p);
+  p.catch(() => {
+    if (cache.get(cacheKey) === p) cache.delete(cacheKey);
   });
-  return loader;
+
+  return p;
 }
 
 /**

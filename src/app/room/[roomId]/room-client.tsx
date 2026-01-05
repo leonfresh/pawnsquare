@@ -12,6 +12,32 @@ export default function RoomClient({ roomId }: { roomId: string }) {
   const router = useRouter();
   const [lobbyType, setLobbyType] = useState<"park" | "scifi">("park");
   const [worldReady, setWorldReady] = useState(false);
+  const [initialName] = useState<string | undefined>(() => {
+    try {
+      if (typeof window === "undefined") return undefined;
+      const savedSession =
+        window.sessionStorage.getItem("pawnsquare:name") ?? "";
+      const cleanedSession = savedSession.trim().slice(0, 24);
+      if (cleanedSession) return cleanedSession;
+
+      const rawUser = window.localStorage.getItem("pawnsquare-user");
+      if (!rawUser) return undefined;
+      const parsed = JSON.parse(rawUser);
+      const cleanedLocal = (parsed?.username ?? parsed?.name ?? "")
+        .toString()
+        .trim()
+        .slice(0, 24);
+      if (!cleanedLocal) return undefined;
+      try {
+        window.sessionStorage.setItem("pawnsquare:name", cleanedLocal);
+      } catch {
+        // ignore
+      }
+      return cleanedLocal;
+    } catch {
+      return undefined;
+    }
+  });
 
   // If this window is the OAuth popup, never mount the 3D world.
   if (typeof window !== "undefined" && window.name === "pawnsquare-oauth") {
@@ -58,6 +84,7 @@ export default function RoomClient({ roomId }: { roomId: string }) {
       {worldReady ? (
         <World
           roomId={roomId}
+          initialName={initialName}
           lobbyType={lobbyType}
           onLobbyChange={setLobbyType}
           onExit={() => router.push("/")}

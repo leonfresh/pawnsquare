@@ -5,6 +5,15 @@ import PartySocket from "partysocket";
 import { colorFromId } from "@/lib/hashColor";
 import type { BoardMode } from "@/lib/boardModes";
 
+/**
+ * Board mode unification note:
+ *
+ * `BoardMode` is imported/re-exported from `src/lib/boardModes.ts` so the PartyKit
+ * room state and the UI/boards share the same single source of truth.
+ *
+ * When adding a new mode, prefer updating the registry (`BOARD_MODE_DEFS`) rather
+ * than expanding unions here.
+ */
 export type { BoardMode } from "@/lib/boardModes";
 
 export type Vec3 = [number, number, number];
@@ -77,6 +86,16 @@ export function usePartyRoom(
   const selfGenderRef = useRef<"male" | "female">("male");
   const selfAvatarUrlRef = useRef<string | undefined>(undefined);
   const paused = opts?.paused ?? false;
+
+  // Batch chat updates so spam doesn't trigger a render per message.
+  const pendingChatRef = useRef<ChatMessage[]>([]);
+  const chatFlushRafRef = useRef<number | null>(null);
+
+  // Batch movement updates to reduce render churn at scale.
+  const pendingMovesRef = useRef<Map<string, { position: Vec3; rotY: number }>>(
+    new Map()
+  );
+  const movesFlushRafRef = useRef<number | null>(null);
 
   const initialNameStable = useMemo(
     () => (opts?.initialName ?? "").trim().slice(0, 24),
@@ -153,6 +172,12 @@ export function usePartyRoom(
           }
           setPlayers(playersWithTimestamp);
           if (Array.isArray(msg.chat)) {
+            // Reset any buffered chat, then apply the authoritative sync.
+            pendingChatRef.current = [];
+            if (chatFlushRafRef.current !== null) {
+              cancelAnimationFrame(chatFlushRafRef.current);
+              chatFlushRafRef.current = null;
+            }
             setChat(msg.chat.slice(-60));
           }
           if (msg.boardModes && typeof msg.boardModes === "object") {
@@ -165,19 +190,55 @@ export function usePartyRoom(
             [msg.player.id]: { ...msg.player, lastSeen: Date.now() },
           }));
         } else if (msg.type === "player-moved") {
-          setPlayers((prev) => {
-            const player = prev[msg.id];
-            if (!player) return prev;
-            return {
-              ...prev,
-              [msg.id]: {
-                ...player,
-                position: msg.position,
-                rotY: msg.rotY,
-                lastSeen: Date.now(),
-              },
-            };
+          pendingMovesRef.current.set(msg.id, {
+            position: msg.position,
+            rotY: msg.rotY,
           });
+
+          if (movesFlushRafRef.current === null) {
+            movesFlushRafRef.current = requestAnimationFrame(() => {
+              movesFlushRafRef.current = null;
+              const pending = pendingMovesRef.current;
+              if (!pending.size) return;
+              pendingMovesRef.current = new Map();
+
+              const now = Date.now();
+              setPlayers((prev) => {
+                let changed = false;
+                const next: Record<string, Player> = { ...prev };
+
+                for (const [id, upd] of pending.entries()) {
+                  const player = prev[id];
+                  if (!player) continue;
+
+                  const samePos =
+                    player.position[0] === upd.position[0] &&
+                    player.position[1] === upd.position[1] &&
+                    player.position[2] === upd.position[2];
+                  const sameRot = player.rotY === upd.rotY;
+
+                  if (samePos && sameRot) {
+                    // Still bump lastSeen so stale players can be detected.
+                    if (player.lastSeen !== now) {
+                      next[id] = { ...player, lastSeen: now };
+                      changed = true;
+                    }
+                    continue;
+                  }
+
+                  next[id] = {
+                    ...player,
+                    position: upd.position,
+                    rotY: upd.rotY,
+                    lastSeen: now,
+                  };
+                  changed = true;
+                }
+
+                return changed ? next : prev;
+              });
+            });
+          }
         } else if (msg.type === "player-left") {
           console.log("[PartyKit] Player left:", msg.id);
           setPlayers((prev) => {
@@ -186,11 +247,22 @@ export function usePartyRoom(
             return next;
           });
         } else if (msg.type === "chat") {
-          setChat((prev) => {
-            const next = [...prev, msg.message];
-            if (next.length > 60) next.splice(0, next.length - 60);
-            return next;
-          });
+          pendingChatRef.current.push(msg.message);
+
+          if (chatFlushRafRef.current === null) {
+            chatFlushRafRef.current = requestAnimationFrame(() => {
+              chatFlushRafRef.current = null;
+              const buffered = pendingChatRef.current;
+              if (!buffered.length) return;
+              pendingChatRef.current = [];
+
+              setChat((prev) => {
+                const next = prev.concat(buffered);
+                if (next.length > 60) next.splice(0, next.length - 60);
+                return next;
+              });
+            });
+          }
         } else if (msg.type === "board:modes") {
           setBoardModes(msg.boardModes);
         }
@@ -232,6 +304,18 @@ export function usePartyRoom(
     socket.addEventListener("error", onError);
 
     return () => {
+      pendingChatRef.current = [];
+      if (chatFlushRafRef.current !== null) {
+        cancelAnimationFrame(chatFlushRafRef.current);
+        chatFlushRafRef.current = null;
+      }
+
+      pendingMovesRef.current = new Map();
+      if (movesFlushRafRef.current !== null) {
+        cancelAnimationFrame(movesFlushRafRef.current);
+        movesFlushRafRef.current = null;
+      }
+
       // Invalidate this connection.
       if (connectSeqRef.current === seq) {
         connectSeqRef.current += 1;

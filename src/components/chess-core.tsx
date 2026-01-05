@@ -59,7 +59,9 @@ export type ChessNetState = {
   activeSide?: Side;
 };
 
-export type ChessMessage = { type: "state"; state: ChessNetState };
+export type ChessMessage =
+  | { type: "state"; state: ChessNetState }
+  | { type: "seats"; seats: ChessNetState["seats"]; seq: number };
 
 export type ChessSendMessage =
   | { type: "join"; side: Side; playerId?: string; name?: string }
@@ -1207,6 +1209,18 @@ export function useChessGame({
     chessConnectedRef.current = chessConnected;
   }, [chessConnected]);
 
+  // Pre-connect as soon as the board is mounted.
+  // This shifts the initial socket handshake/state parsing off the "join" click,
+  // which otherwise can feel like a hitch.
+  useEffect(() => {
+    if (!enabled) return;
+    if (!chessConnectedRef.current) {
+      chessConnectedRef.current = true;
+      setChessConnected(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
+
   const initialFen = useMemo(() => new Chess().fen(), []);
   const defaultClock = useMemo<ClockState>(() => {
     const baseMs = 5 * 60 * 1000;
@@ -1470,6 +1484,35 @@ export function useChessGame({
       if (!activeModeRef.current) return;
       try {
         const msg = JSON.parse(event.data) as ChessMessage;
+
+        if (msg.type === "seats") {
+          setNetState((prev) => {
+            if (msg.seq <= prev.seq) return prev;
+
+            const prevW = prev.seats.w;
+            const prevB = prev.seats.b;
+            const nextW = msg.seats.w;
+            const nextB = msg.seats.b;
+            const sameW =
+              (prevW === null && nextW === null) ||
+              (prevW !== null &&
+                nextW !== null &&
+                prevW.connId === nextW.connId &&
+                prevW.playerId === nextW.playerId &&
+                prevW.name === nextW.name);
+            const sameB =
+              (prevB === null && nextB === null) ||
+              (prevB !== null &&
+                nextB !== null &&
+                prevB.connId === nextB.connId &&
+                prevB.playerId === nextB.playerId &&
+                prevB.name === nextB.name);
+            if (sameW && sameB) return prev;
+
+            return { ...prev, seats: msg.seats, seq: msg.seq };
+          });
+          return;
+        }
 
         if (msg.type === "state") {
           setNetState((prev) => {

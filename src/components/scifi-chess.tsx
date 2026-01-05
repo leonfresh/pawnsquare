@@ -20,6 +20,19 @@ import { useCheckersGame } from "./checkers-core";
 import { useChessSounds } from "./chess-sounds";
 import { parseFenMoveNumber } from "@/lib/gooseChess";
 
+/**
+ * Sci-Fi board implementation notes (unified game logic)
+ *
+ * This file should stay mostly a "skin" (materials/models/visuals).
+ * Gameplay/networking should be selected via the shared mode registry:
+ * - `engineForMode(mode)` decides which shared hook powers the board.
+ * - `chessVariantForMode(mode)` selects the chess variant (standard/goose).
+ *
+ * Adding a new mode should generally NOT require touching this file unless:
+ * - the mode introduces a brand new engine/hook, or
+ * - you want sci-fi-specific visuals for that mode.
+ */
+
 const SQUARE_TOP_Y = 0.04;
 
 function HolographicPlacementText({

@@ -64,6 +64,12 @@ type GooseChessMessage =
   | { type: "reset" }
   | { type: "state"; state: GooseChessState };
 
+type SeatsMessage = {
+  type: "seats";
+  seats: GooseChessState["seats"];
+  seq: number;
+};
+
 const DEFAULT_TIME_SECONDS = 5 * 60;
 const MIN_TIME_SECONDS = 30;
 const MAX_TIME_SECONDS = 60 * 60;
@@ -229,6 +235,16 @@ export default class GooseChessServer implements Party.Server {
     this.room.broadcast(JSON.stringify({ type: "state", state: this.state }));
   }
 
+  broadcastSeats() {
+    this.room.broadcast(
+      JSON.stringify({
+        type: "seats",
+        seats: this.state.seats,
+        seq: this.state.seq,
+      } satisfies SeatsMessage)
+    );
+  }
+
   evaluateResultIfNeeded(chess: Chess) {
     if (this.state.result) return;
     if (this.state.phase !== "piece") return;
@@ -280,14 +296,14 @@ export default class GooseChessServer implements Party.Server {
           typeof msg.name === "string" && msg.name ? msg.name : "Player";
         this.state.seats[seat] = { connId: sender.id, playerId, name };
         this.state.seq++;
-        this.broadcastState();
+        this.broadcastSeats();
       } else if (msg.type === "leave") {
         const seat = msg.side;
         if (this.state.seats[seat]?.connId !== sender.id) return;
 
         this.state.seats[seat] = null;
         this.state.seq++;
-        this.broadcastState();
+        this.broadcastSeats();
       } else if (msg.type === "setTime") {
         const isSeated =
           this.state.seats.w?.connId === sender.id ||

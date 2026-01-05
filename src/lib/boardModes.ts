@@ -1,7 +1,28 @@
-// Single source of truth for:
-// - which modes exist
-// - how the UI should label them
-// - which underlying engine/hook powers them
+/**
+ * PawnSquare Board Modes (Single Source of Truth)
+ *
+ * Goal: adding a new mode should NOT require editing both “park” and “scifi” worlds.
+ *
+ * This file is the canonical registry for:
+ * - which modes exist (`key`)
+ * - how the UI labels them (`label`, `icon`)
+ * - which gameplay engine powers them (`engine`)
+ * - any engine-specific variant config (e.g. `chessVariant`)
+ *
+ * How modes flow through the app:
+ * - UI (World modal) renders mode buttons from `BOARD_MODE_DEFS`.
+ * - Networking (Party room) stores `BoardMode` values as strings.
+ * - 3D boards (park/scifi) route by `engineForMode(mode)`:
+ *   - `engine === "chess"` -> `useChessGame({ variant: chessVariantForMode(mode) })`
+ *   - `engine === "checkers"` -> `useCheckersGame()`
+ *
+ * Adding a new mode:
+ * 1) Add an entry to `BOARD_MODE_DEFS`.
+ * 2) If it’s another chess-like variant, set `engine: "chess"` and a new `chessVariant`.
+ * 3) If it’s a new engine, add a new engine type + hook and update the boards’ routing.
+ *
+ * Keep `BoardMode` derived from `BOARD_MODE_DEFS` so we never maintain a separate union.
+ */
 export const BOARD_MODE_DEFS = [
   {
     key: "chess",

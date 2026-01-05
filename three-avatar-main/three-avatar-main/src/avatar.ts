@@ -546,10 +546,11 @@ renderer.setAnimationLoop(() => {
         this._mixer.getRoot(),
         track.name
       );
-      (pb as unknown as { setValue: (buffer: ArrayLike<number>, offset: number) => void }).setValue(
-        track.values,
-        0
-      );
+      (
+        pb as unknown as {
+          setValue: (buffer: ArrayLike<number>, offset: number) => void;
+        }
+      ).setValue(track.values, 0);
     }
   }
   /**

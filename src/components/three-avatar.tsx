@@ -11,6 +11,230 @@ import {
   type AvatarAnimationDataSource,
 } from "@/lib/threeAvatar";
 
+const avatarDataCache = new Map<string, Promise<Uint8Array>>();
+
+// Cache for shared geometries, materials, and textures by avatar URL
+const geometryCache = new Map<string, Map<string, THREE.BufferGeometry>>();
+const materialCache = new Map<string, Map<string, THREE.Material>>();
+const textureCache = new Map<string, Map<string, THREE.Texture>>();
+
+function getCachedAvatarData(url: string): Promise<Uint8Array> {
+  const key = url;
+  const existing = avatarDataCache.get(key);
+  if (existing) return existing;
+
+  const p = (async () => {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to fetch avatar: ${resp.status} ${resp.statusText}`
+      );
+    }
+    return new Uint8Array(await resp.arrayBuffer());
+  })();
+
+  avatarDataCache.set(key, p);
+  p.catch(() => {
+    // Don't keep failed entries around.
+    if (avatarDataCache.get(key) === p) avatarDataCache.delete(key);
+  });
+
+  return p;
+}
+
+type EnqueuedTask<T> = {
+  run: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (err: unknown) => void;
+};
+
+const avatarLoadQueue: Array<EnqueuedTask<Avatar>> = [];
+let avatarLoadActive = 0;
+const AVATAR_LOAD_CONCURRENCY = 1;
+
+function pumpAvatarQueue() {
+  while (avatarLoadActive < AVATAR_LOAD_CONCURRENCY && avatarLoadQueue.length) {
+    const task = avatarLoadQueue.shift()!;
+    avatarLoadActive += 1;
+    task
+      .run()
+      .then(task.resolve)
+      .catch(task.reject)
+      .finally(() => {
+        avatarLoadActive -= 1;
+        pumpAvatarQueue();
+      });
+  }
+}
+
+function enqueueAvatarLoad(run: () => Promise<Avatar>): Promise<Avatar> {
+  return new Promise((resolve, reject) => {
+    avatarLoadQueue.push({ run, resolve, reject });
+    pumpAvatarQueue();
+  });
+}
+
+function optimizeTextures(avatarUrl: string, obj: THREE.Object3D) {
+  const MAX_TEXTURE_SIZE = 512;
+
+  let texCache = textureCache.get(avatarUrl);
+  if (!texCache) {
+    texCache = new Map();
+    textureCache.set(avatarUrl, texCache);
+  }
+
+  obj.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material
+      : [mesh.material];
+
+    for (const mat of materials) {
+      if (!mat || typeof mat !== "object") continue;
+      const anyMat = mat as any;
+
+      // Process common texture slots
+      const slots = [
+        "map",
+        "normalMap",
+        "roughnessMap",
+        "metalnessMap",
+        "emissiveMap",
+        "aoMap",
+      ];
+
+      for (const slot of slots) {
+        const tex = anyMat[slot] as THREE.Texture | undefined;
+        if (!tex || !tex.isTexture) continue;
+
+        // Create texture key based on image source
+        const img = tex.image as
+          | HTMLImageElement
+          | HTMLCanvasElement
+          | undefined;
+        if (!img) continue;
+
+        const imgSrc =
+          (img as HTMLImageElement).src ||
+          (img as HTMLCanvasElement).toDataURL?.()?.substring(0, 100) ||
+          tex.uuid;
+        const texKey = `${slot}_${imgSrc}`;
+
+        // Check if we already have this texture cached
+        const cachedTex = texCache!.get(texKey);
+        if (cachedTex) {
+          // Reuse cached texture
+          tex.dispose();
+          anyMat[slot] = cachedTex;
+          continue;
+        }
+
+        // Disable mipmaps to save memory
+        tex.generateMipmaps = false;
+        tex.minFilter = THREE.LinearFilter;
+
+        const w = img.width || 0;
+        const h = img.height || 0;
+
+        if (w > MAX_TEXTURE_SIZE || h > MAX_TEXTURE_SIZE) {
+          // Downsample large textures
+          const scale = Math.min(MAX_TEXTURE_SIZE / w, MAX_TEXTURE_SIZE / h);
+          const newW = Math.floor(w * scale);
+          const newH = Math.floor(h * scale);
+
+          const canvas = document.createElement("canvas");
+          canvas.width = newW;
+          canvas.height = newH;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.drawImage(img as any, 0, 0, newW, newH);
+            tex.image = canvas;
+            tex.needsUpdate = true;
+          }
+        }
+
+        // Cache this texture for future instances
+        texCache!.set(texKey, tex);
+      }
+    }
+  });
+}
+
+// Share geometries and materials across avatar instances with the same URL
+function shareGeometryAndMaterials(avatarUrl: string, obj: THREE.Object3D) {
+  let geoCache = geometryCache.get(avatarUrl);
+  let matCache = materialCache.get(avatarUrl);
+
+  if (!geoCache) {
+    geoCache = new Map();
+    geometryCache.set(avatarUrl, geoCache);
+  }
+  if (!matCache) {
+    matCache = new Map();
+    materialCache.set(avatarUrl, matCache);
+  }
+
+  obj.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+
+    // Skip skinned meshes - they need unique geometries for bone weights
+    if (mesh.isSkinnedMesh) return;
+
+    // Share geometry for non-skinned meshes
+    if (mesh.geometry) {
+      const geoKey = mesh.geometry.uuid;
+      const cached = geoCache!.get(geoKey);
+      if (cached) {
+        // Dispose old geometry and use cached one
+        mesh.geometry.dispose();
+        mesh.geometry = cached;
+      } else {
+        geoCache!.set(geoKey, mesh.geometry);
+      }
+    }
+
+    // Share materials (but not for skinned meshes which might have unique material properties)
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material
+      : [mesh.material];
+
+    const newMaterials: THREE.Material[] = [];
+    for (const mat of materials) {
+      if (!mat) {
+        newMaterials.push(mat);
+        continue;
+      }
+
+      // Create a more robust key based on material properties
+      const anyMat = mat as any;
+      const colorHex = anyMat.color?.getHex() ?? "none";
+      const emissiveHex = anyMat.emissive?.getHex() ?? "none";
+      const roughness = anyMat.roughness ?? "none";
+      const metalness = anyMat.metalness ?? "none";
+      const matKey = `${mat.type}_${colorHex}_${emissiveHex}_${roughness}_${metalness}`;
+
+      const cached = matCache!.get(matKey);
+      if (cached && cached.type === mat.type) {
+        // Dispose old material and use cached one
+        mat.dispose();
+        newMaterials.push(cached);
+      } else {
+        matCache!.set(matKey, mat);
+        newMaterials.push(mat);
+      }
+    }
+
+    if (Array.isArray(mesh.material)) {
+      mesh.material = newMaterials as THREE.Material[];
+    } else {
+      mesh.material = newMaterials[0];
+    }
+  });
+}
+
 type BoneKey =
   | "hips"
   | "spine"
@@ -293,25 +517,27 @@ export function ThreeAvatar({
       await ensureAnimationsLoaded();
 
       const avatarUrl = url ?? DEFAULT_AVATAR_URL;
-      const resp = await fetch(avatarUrl);
-      if (!resp.ok) {
-        throw new Error(
-          `Failed to fetch avatar: ${resp.status} ${resp.statusText}`
-        );
-      }
-      const avatarData = new Uint8Array(await resp.arrayBuffer());
 
       let nextAvatar: Avatar;
       try {
-        nextAvatar = await createAvatar(
-          avatarData,
-          gl as unknown as THREE.WebGLRenderer,
-          false,
-          {
-            isInvisibleFirstPerson: false,
+        nextAvatar = await enqueueAvatarLoad(async () => {
+          if (cancelled) {
+            throw new Error("Avatar load cancelled");
           }
-        );
+          // Load avatar data and create instance
+          const avatarData = await getCachedAvatarData(avatarUrl);
+          return await createAvatar(
+            avatarData,
+            gl as unknown as THREE.WebGLRenderer,
+            true, // Enable frustum culling for performance
+            {
+              isInvisibleFirstPerson: false,
+            }
+          );
+        });
       } catch (err) {
+        if (cancelled) return;
+
         const message = err instanceof Error ? err.message : String(err);
 
         // If a file ends with .vrm but the loader path is behaving like a generic GLB,
@@ -348,6 +574,18 @@ export function ThreeAvatar({
       }
 
       nextAvatar.object3D.rotation.y = MODEL_YAW_OFFSET;
+
+      // Optimize textures and share geometry/materials (order matters - textures first)
+      optimizeTextures(avatarUrl, nextAvatar.object3D);
+      shareGeometryAndMaterials(avatarUrl, nextAvatar.object3D);
+
+      // Disable shadows on avatars for performance (huge FPS gain with many avatars)
+      nextAvatar.object3D.traverse((node) => {
+        if ((node as any).isMesh) {
+          node.castShadow = false;
+          node.receiveShadow = false;
+        }
+      });
 
       // Ground the avatar so its feet touch y=0 in local space.
       // Different avatar exports have different origins; this normalizes them.
@@ -433,9 +671,38 @@ export function ThreeAvatar({
   });
   const nextFidgetTimeRef = useRef(0);
 
+  // Throttle animation updates based on distance from camera
+  const updateThrottleRef = useRef(0);
+  const shouldUpdateThisFrame = (camera: THREE.Camera) => {
+    if (!avatarRef.current) return false;
+
+    const pos = avatarRef.current.object3D.position;
+    const camPos = camera.position;
+    const dx = pos.x - camPos.x;
+    const dz = pos.z - camPos.z;
+    const distSq = dx * dx + dz * dz;
+
+    // Close avatars (< 15 units): update every frame
+    if (distSq < 225) return true;
+
+    // Medium distance (15-30 units): update every 2 frames
+    if (distSq < 900) {
+      updateThrottleRef.current = (updateThrottleRef.current + 1) % 2;
+      return updateThrottleRef.current === 0;
+    }
+
+    // Far avatars (> 30 units): update every 4 frames
+    updateThrottleRef.current = (updateThrottleRef.current + 1) % 4;
+    return updateThrottleRef.current === 0;
+  };
+
   useFrame((state, dt) => {
     const a = avatarRef.current;
     if (!a) return;
+
+    // Throttle updates for distant avatars
+    if (!shouldUpdateThisFrame(state.camera)) return;
+
     a.tick(dt);
 
     // Small idle wiggle to help drive VRM spring bones (hair/cloth) in previews.
@@ -522,7 +789,8 @@ export function ThreeAvatar({
       // Detect Miu via VRM meta and apply a minimal axis remap for the bones we pose.
       const meta: any = (vrm as any)?.meta;
       const metaTitle = meta?.title || meta?.name || meta?.author || "";
-      const isMiu = typeof metaTitle === "string" && metaTitle.toLowerCase() === "miu";
+      const isMiu =
+        typeof metaTitle === "string" && metaTitle.toLowerCase() === "miu";
 
       const targetQ = tmpTargetQuatRef.current;
 
@@ -547,8 +815,7 @@ export function ThreeAvatar({
               leftUpperArm: { x: 1, y: 1, z: -1 },
               rightUpperArm: { x: 1, y: 1, z: -1 },
             } as const
-          )[boneName] ||
-          ({ x: 1, y: 1, z: 1 } as const);
+          )[boneName] || ({ x: 1, y: 1, z: 1 } as const);
 
         targetQ.setFromEuler(
           new THREE.Euler(x * sign.x, y * sign.y, z * sign.z)

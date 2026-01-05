@@ -47,6 +47,12 @@ type CheckersMessage =
   | { type: "reset" }
   | { type: "state"; state: CheckersState };
 
+type SeatsMessage = {
+  type: "seats";
+  seats: CheckersState["seats"];
+  seq: number;
+};
+
 const DEFAULT_TIME_SECONDS = 5 * 60;
 const MIN_TIME_SECONDS = 30;
 const MAX_TIME_SECONDS = 60 * 60;
@@ -383,7 +389,11 @@ export default class CheckersServer implements Party.Server {
         this.state.seats[seat] = { connId: sender.id, playerId, name };
         this.state.seq++;
         this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
+          JSON.stringify({
+            type: "seats",
+            seats: this.state.seats,
+            seq: this.state.seq,
+          } satisfies SeatsMessage)
         );
       } else if (msg.type === "leave") {
         const seat = msg.side;
@@ -391,7 +401,11 @@ export default class CheckersServer implements Party.Server {
         this.state.seats[seat] = null;
         this.state.seq++;
         this.room.broadcast(
-          JSON.stringify({ type: "state", state: this.state })
+          JSON.stringify({
+            type: "seats",
+            seats: this.state.seats,
+            seq: this.state.seq,
+          } satisfies SeatsMessage)
         );
       } else if (msg.type === "setTime") {
         const canConfigureAsGuest =
