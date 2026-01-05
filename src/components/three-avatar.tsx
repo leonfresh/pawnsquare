@@ -181,7 +181,7 @@ function shareGeometryAndMaterials(avatarUrl: string, obj: THREE.Object3D) {
     if (!mesh.isMesh) return;
 
     // Skip skinned meshes - they need unique geometries for bone weights
-    if (mesh.isSkinnedMesh) return;
+    if (mesh instanceof THREE.SkinnedMesh) return;
 
     // Share geometry for non-skinned meshes
     if (mesh.geometry) {
