@@ -309,8 +309,9 @@ export function usePartyVoice(opts: {
     }
   }, [attachAndPlayRemoteStream]);
 
-  const transceiverCanSend = (dir: RTCRtpTransceiverDirection | null | undefined) =>
-    dir === "sendrecv" || dir === "sendonly";
+  const transceiverCanSend = (
+    dir: RTCRtpTransceiverDirection | null | undefined
+  ) => dir === "sendrecv" || dir === "sendonly";
 
   // Some browsers will not fire `ontrack` when an audio transceiver is negotiated
   // with no sender track and later `replaceTrack()` is used. In that case, we
