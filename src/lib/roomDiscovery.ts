@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { joinRoom } from "trystero/torrent";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PartySocket from "partysocket";
 
-const APP_ID = "pawnsquare-v2";
+const PARTYKIT_HOST = process.env.NEXT_PUBLIC_PARTYKIT_HOST || "127.0.0.1:1999";
 const DISCOVERY_ROOM = "room-discovery";
 const MAX_PLAYERS = 16;
 
@@ -13,9 +13,15 @@ type RoomInfo = {
   lastSeen: number;
 };
 
-// Trystero/torrent (WebTorrent) can do periodic work (tracker retries, etc.)
-// that shows up as long main-thread tasks in dev. Allow callers to disable
-// discovery when the UI doesn't need it (e.g., during gameplay).
+type DiscoverSyncMsg = {
+  type: "discover:sync";
+  rooms: Record<string, { playerCount: number; lastSeen: number }>;
+};
+
+type DiscoverMsg = DiscoverSyncMsg;
+
+// PartyKit-backed discovery. Allow callers to disable discovery when the UI
+// doesn't need it (e.g., during gameplay).
 //
 // Back-compat: default is enabled.
 export function useRoomDiscovery(): {
@@ -35,178 +41,201 @@ export function useRoomDiscovery(opts?: { enabled?: boolean }): {
 export function useRoomDiscovery(opts?: { enabled?: boolean }) {
   const enabled = opts?.enabled ?? true;
   const [rooms, setRooms] = useState<Record<string, RoomInfo>>({});
-  const [myRoom, setMyRoom] = useState<string | null>(null);
-  const [myPlayerCount, setMyPlayerCount] = useState<number>(1);
 
-  // Keep fast-changing values out of React state to avoid re-rendering the
-  // entire 3D world on every discovery heartbeat.
   const myRoomRef = useRef<string | null>(null);
   const myPlayerCountRef = useRef<number>(1);
-  const peerLastSeenRef = useRef<Map<string, number>>(new Map());
-  const peerStableInfoRef = useRef<
-    Map<string, { roomId: string; playerCount: number }>
-  >(new Map());
+  const lastSentRef = useRef<{ roomId: string; playerCount: number } | null>(
+    null
+  );
 
-  const setMyRoomAndCount = (roomId: string, playerCount: number) => {
-    myRoomRef.current = roomId;
-    myPlayerCountRef.current = playerCount;
+  const socketRef = useRef<PartySocket | null>(null);
+  const connectSeqRef = useRef(0);
 
-    // Only update React state if values actually changed.
-    setMyRoom((prev) => (prev === roomId ? prev : roomId));
-    setMyPlayerCount((prev) => (prev === playerCount ? prev : playerCount));
-  };
+  const setMyRoomAndCount = useCallback(
+    (roomId: string, playerCount: number) => {
+      myRoomRef.current = roomId;
+      myPlayerCountRef.current = playerCount;
+
+      const socket = socketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        const next = { roomId, playerCount };
+        const prev = lastSentRef.current;
+        if (
+          !prev ||
+          prev.roomId !== next.roomId ||
+          prev.playerCount !== next.playerCount
+        ) {
+          lastSentRef.current = next;
+          try {
+            socket.send(JSON.stringify({ type: "discover:update", ...next }));
+          } catch {
+            // ignore
+          }
+        }
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!enabled) {
-      // Stop discovery work entirely when disabled.
+      const prev = socketRef.current;
+      if (prev) {
+        try {
+          prev.close();
+        } catch {
+          // ignore
+        }
+        socketRef.current = null;
+      }
+      setRooms({});
       return;
     }
-    const room = joinRoom({ appId: APP_ID }, DISCOVERY_ROOM);
 
-    const [sendRoomInfo, onRoomInfo] = room.makeAction<{
-      roomId: string;
-      playerCount: number;
-    }>("roomInfo");
+    connectSeqRef.current += 1;
+    const seq = connectSeqRef.current;
 
-    onRoomInfo((data: unknown, peerId: string) => {
-      const info = data as { roomId: string; playerCount: number };
-      if (!info || !info.roomId) return;
-
-      const now = Date.now();
-      peerLastSeenRef.current.set(peerId, now);
-
-      const prevStable = peerStableInfoRef.current.get(peerId);
-      const nextStable = {
-        roomId: info.roomId,
-        playerCount: info.playerCount,
-      };
-
-      // Heartbeats arrive frequently (every ~3s per peer). If nothing changed,
-      // don't update React state (avoids periodic world-wide re-render hitches).
-      if (
-        prevStable &&
-        prevStable.roomId === nextStable.roomId &&
-        prevStable.playerCount === nextStable.playerCount
-      ) {
-        return;
+    const prev = socketRef.current;
+    if (prev) {
+      try {
+        prev.close();
+      } catch {
+        // ignore
       }
+      socketRef.current = null;
+    }
 
-      peerStableInfoRef.current.set(peerId, nextStable);
-      setRooms((prev) => ({
-        ...prev,
-        [peerId]: {
-          roomId: nextStable.roomId,
-          playerCount: nextStable.playerCount,
-          lastSeen: now,
-        },
-      }));
+    const socket = new PartySocket({
+      host: PARTYKIT_HOST,
+      room: DISCOVERY_ROOM,
     });
+    socketRef.current = socket;
 
-    room.onPeerLeave((peerId: string) => {
-      peerLastSeenRef.current.delete(peerId);
-      peerStableInfoRef.current.delete(peerId);
-      setRooms((prev) => {
-        const next = { ...prev };
-        delete next[peerId];
-        return next;
-      });
-    });
-
-    // Broadcast our room info every 3 seconds
-    const interval = setInterval(() => {
+    const onOpen = () => {
+      if (connectSeqRef.current !== seq) return;
       const roomId = myRoomRef.current;
-      if (roomId) {
-        sendRoomInfo({
-          roomId,
-          playerCount: myPlayerCountRef.current,
-        });
+      if (!roomId) return;
+      const playerCount = myPlayerCountRef.current;
+      const next = { roomId, playerCount };
+      lastSentRef.current = next;
+      try {
+        socket.send(JSON.stringify({ type: "discover:update", ...next }));
+      } catch {
+        // ignore
       }
-    }, 3000);
+    };
 
-    // Clean up stale entries
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const toDelete: string[] = [];
-      for (const [peerId, lastSeen] of peerLastSeenRef.current.entries()) {
-        if (now - lastSeen > 10000) {
-          toDelete.push(peerId);
-        }
-      }
+    const onMessage = (event: MessageEvent) => {
+      if (connectSeqRef.current !== seq) return;
+      try {
+        const msg = JSON.parse(event.data) as DiscoverMsg;
+        if (msg.type !== "discover:sync") return;
 
-      if (toDelete.length === 0) return;
-      for (const peerId of toDelete) {
-        peerLastSeenRef.current.delete(peerId);
-        peerStableInfoRef.current.delete(peerId);
-      }
-      setRooms((prev) => {
-        const next = { ...prev };
-        for (const peerId of toDelete) {
-          delete next[peerId];
+        const now = Date.now();
+        const next: Record<string, RoomInfo> = {};
+        for (const [roomId, info] of Object.entries(msg.rooms || {})) {
+          const playerCount = Math.max(0, info.playerCount || 0);
+          const lastSeen = Number.isFinite(info.lastSeen) ? info.lastSeen : now;
+          next[roomId] = { roomId, playerCount, lastSeen };
         }
-        return next;
-      });
-    }, 5000);
+        setRooms(next);
+      } catch {
+        // ignore
+      }
+    };
+
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("message", onMessage);
+
+    // Lightweight heartbeat: does not touch React state.
+    const heartbeat = window.setInterval(() => {
+      if (connectSeqRef.current !== seq) return;
+      const s = socketRef.current;
+      if (!s || s.readyState !== WebSocket.OPEN) return;
+      const roomId = myRoomRef.current;
+      if (!roomId) return;
+      const playerCount = myPlayerCountRef.current;
+      const next = { roomId, playerCount };
+      lastSentRef.current = next;
+      try {
+        s.send(JSON.stringify({ type: "discover:update", ...next }));
+      } catch {
+        // ignore
+      }
+    }, 8000);
 
     return () => {
-      clearInterval(interval);
-      clearInterval(cleanupInterval);
-      room.leave();
+      window.clearInterval(heartbeat);
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("message", onMessage);
+      try {
+        socket.close();
+      } catch {
+        // ignore
+      }
+      if (socketRef.current === socket) socketRef.current = null;
     };
   }, [enabled]);
 
   // Each peer reports its observed playerCount for a room. Multiple peers will
   // report the same room; using `max` avoids double-counting.
-  const roomCounts = Object.values(rooms).reduce((acc, info) => {
-    acc[info.roomId] = Math.max(acc[info.roomId] || 0, info.playerCount || 0);
+  const roomCounts = useMemo(() => {
+    const acc: Record<string, number> = {};
+    for (const info of Object.values(rooms)) {
+      acc[info.roomId] = Math.max(acc[info.roomId] || 0, info.playerCount || 0);
+    }
+    const myRoom = myRoomRef.current;
+    if (myRoom) {
+      acc[myRoom] = Math.max(acc[myRoom] || 0, myPlayerCountRef.current || 0);
+    }
     return acc;
-  }, {} as Record<string, number>);
+  }, [rooms]);
 
-  // Also include *our* current room so the UI shows at least one channel even
-  // when we're the first/only person there (discovery is peer-reported).
-  if (myRoom) {
-    roomCounts[myRoom] = Math.max(roomCounts[myRoom] || 0, myPlayerCount || 0);
-  }
+  const availableRooms = useMemo(() => {
+    return Object.entries(roomCounts)
+      .map(([roomId, count]) => ({ roomId, playerCount: count }))
+      .filter((r) => r.playerCount < MAX_PLAYERS)
+      .sort((a, b) => b.playerCount - a.playerCount);
+  }, [roomCounts]);
 
-  const availableRooms = Object.entries(roomCounts)
-    .map(([roomId, count]) => ({ roomId, playerCount: count }))
-    .filter((r) => r.playerCount < MAX_PLAYERS)
-    .sort((a, b) => b.playerCount - a.playerCount);
+  const bestRoom = useMemo(() => {
+    let best = availableRooms[0]?.roomId;
+    if (best) return best;
 
-  // Find the best available room, or create a new channel if all are full
-  let bestRoom = availableRooms[0]?.roomId;
-  if (!bestRoom) {
-    // All rooms are full, find the next available channel number
-    const allChannels = Object.values(rooms).map((r) => {
-      const match = r.roomId.match(/^(.+?)-ch(\d+)$/);
+    const baseRoom = myRoomRef.current?.replace(/-ch\d+$/, "") || "main-room";
+
+    const allChannels = Object.keys(roomCounts).map((roomId) => {
+      const match = roomId.match(/^(.+?)-ch(\d+)$/);
       return match
-        ? { base: match[1], channel: parseInt(match[2]) }
-        : { base: r.roomId, channel: 0 };
+        ? { base: match[1]!, channel: parseInt(match[2]!, 10) }
+        : { base: roomId, channel: 0 };
     });
 
-    const baseRoom = myRoom?.replace(/-ch\d+$/, "") || "main-room";
     const usedChannels = allChannels
       .filter((c) => c.base === baseRoom)
-      .map((c) => c.channel);
+      .map((c) => c.channel)
+      .filter((n) => Number.isFinite(n));
 
     const nextChannel = Math.max(0, ...usedChannels) + 1;
-    bestRoom = nextChannel === 0 ? baseRoom : `${baseRoom}-ch${nextChannel}`;
-  }
+    return nextChannel === 0 ? baseRoom : `${baseRoom}-ch${nextChannel}`;
+  }, [availableRooms, roomCounts]);
 
   // Group rooms by base name for UI display
-  const allRoomsList = Object.entries(roomCounts)
-    .map(([roomId, count]) => ({ roomId, playerCount: count }))
-    .sort((a, b) => {
-      // Sort by base room name, then by channel number
-      const aBase = a.roomId.replace(/-ch\d+$/, "");
-      const bBase = b.roomId.replace(/-ch\d+$/, "");
-      if (aBase !== bBase) return aBase.localeCompare(bBase);
+  const allRoomsList = useMemo(() => {
+    return Object.entries(roomCounts)
+      .map(([roomId, count]) => ({ roomId, playerCount: count }))
+      .sort((a, b) => {
+        const aBase = a.roomId.replace(/-ch\d+$/, "");
+        const bBase = b.roomId.replace(/-ch\d+$/, "");
+        if (aBase !== bBase) return aBase.localeCompare(bBase);
 
-      const aMatch = a.roomId.match(/-ch(\d+)$/);
-      const bMatch = b.roomId.match(/-ch(\d+)$/);
-      const aCh = aMatch ? parseInt(aMatch[1]) : 0;
-      const bCh = bMatch ? parseInt(bMatch[1]) : 0;
-      return aCh - bCh;
-    });
+        const aMatch = a.roomId.match(/-ch(\d+)$/);
+        const bMatch = b.roomId.match(/-ch(\d+)$/);
+        const aCh = aMatch ? parseInt(aMatch[1]!, 10) : 0;
+        const bCh = bMatch ? parseInt(bMatch[1]!, 10) : 0;
+        return aCh - bCh;
+      });
+  }, [roomCounts]);
 
   return {
     rooms: availableRooms,
