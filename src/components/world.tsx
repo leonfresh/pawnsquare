@@ -4472,6 +4472,8 @@ export default function World({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "v" && e.key !== "V") return;
+      // Prevent OS key-repeat from toggling rapidly while the key is held.
+      if (e.repeat) return;
       // Don't toggle if typing in chat or other input.
       const ae = document.activeElement as HTMLElement | null;
       if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
