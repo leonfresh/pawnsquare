@@ -23,6 +23,8 @@ type PeerConnection = {
   hasRemoteAudio?: boolean;
   iceRestarting?: boolean;
   lastIceRestartAt?: number;
+  renegotiating?: boolean;
+  lastRenegotiateAt?: number;
   pendingIce?: RTCIceCandidateInit[];
 };
 
@@ -307,6 +309,9 @@ export function usePartyVoice(opts: {
     }
   }, [attachAndPlayRemoteStream]);
 
+  const transceiverCanSend = (dir: RTCRtpTransceiverDirection | null | undefined) =>
+    dir === "sendrecv" || dir === "sendonly";
+
   // Some browsers will not fire `ontrack` when an audio transceiver is negotiated
   // with no sender track and later `replaceTrack()` is used. In that case, we
   // need to proactively attach the existing receiver track.
@@ -352,6 +357,80 @@ export function usePartyVoice(opts: {
       await attachAndPlayRemoteStream(peerId, stream);
     },
     [attachAndPlayRemoteStream, recomputeCounts]
+  );
+
+  // If a peer connection was negotiated while muted, some browsers will settle on
+  // recvonly/inactive for the audio m-line. Later replaceTrack() alone won't start
+  // sending until we renegotiate. This makes mic enable symmetric.
+  const maybeRenegotiateToSendAudio = useCallback(
+    async (peerId: string, reason: string) => {
+      const conn = peersRef.current.get(peerId);
+      if (!conn) return;
+
+      const transceiver = conn.audioTransceiver;
+      if (!transceiver) return;
+
+      // If the currently negotiated direction already allows sending, we're good.
+      if (transceiverCanSend(transceiver.currentDirection)) return;
+
+      const socketNow = socketRef.current;
+      if (!socketNow || socketNow.readyState !== WebSocket.OPEN) return;
+
+      if (conn.pc.signalingState !== "stable") return;
+
+      const now = Date.now();
+      const last = conn.lastRenegotiateAt ?? 0;
+      if (conn.renegotiating) return;
+      // Avoid renegotiation storms.
+      if (now - last < 4000) return;
+
+      conn.renegotiating = true;
+      conn.lastRenegotiateAt = now;
+
+      try {
+        // Ensure we are offering sendrecv.
+        transceiver.direction = "sendrecv";
+
+        const offer = await conn.pc.createOffer();
+        await conn.pc.setLocalDescription(offer);
+
+        pushEvent({
+          kind: "offer-out",
+          peerId,
+          message: `renegotiate-send:${reason}`,
+        });
+
+        socketNow.send(
+          JSON.stringify({
+            type: "voice:offer",
+            to: peerId,
+            offer,
+            deviceId: deviceIdRef.current,
+          })
+        );
+
+        console.log(
+          "[party-voice] → Sent renegotiate offer to",
+          peerId,
+          "(reason:",
+          reason,
+          "currentDirection:",
+          transceiver.currentDirection,
+          ")"
+        );
+      } catch (e) {
+        console.error("[party-voice] Renegotiation failed for", peerId, e);
+        pushEvent({
+          kind: "error",
+          peerId,
+          message: "renegotiate failed",
+        });
+      } finally {
+        const latest = peersRef.current.get(peerId);
+        if (latest) latest.renegotiating = false;
+      }
+    },
+    [pushEvent, socketRef]
   );
 
   const ensureMic = useCallback(async () => {
@@ -527,8 +606,15 @@ export function usePartyVoice(opts: {
     if (track) {
       track.enabled = !nextMuted;
       console.log("[party-voice] Track enabled:", !nextMuted);
+
+      // If we just enabled mic, ensure the negotiated direction allows sending.
+      if (!nextMuted) {
+        for (const [peerId] of peersRef.current.entries()) {
+          void maybeRenegotiateToSendAudio(peerId, "mic-enabled");
+        }
+      }
     }
-  }, [ensureAudio, ensureMic, micMuted]);
+  }, [ensureAudio, ensureMic, micMuted, maybeRenegotiateToSendAudio]);
 
   const createPeerConnection = useCallback(
     (peerId: string): PeerConnection => {
