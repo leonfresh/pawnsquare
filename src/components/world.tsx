@@ -3884,7 +3884,9 @@ const InWorldTv = memo(function InWorldTv({
 
     const light = "#f0d9b5";
     const dark = "#b58863";
-    const orient = sync.boardOrientation;
+    // TV orientation: always show the side-to-move at the bottom.
+    // (When it's black's move, flip so black is at the bottom.)
+    const orient: "white" | "black" = sync.turn === "b" ? "black" : "white";
 
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
@@ -4060,7 +4062,7 @@ const InWorldTv = memo(function InWorldTv({
 
       const square = uvToSquareInTvBoard(
         uv,
-        sync.boardOrientation,
+        sync.turn === "b" ? "black" : "white",
         canvas.width,
         canvas.height
       );

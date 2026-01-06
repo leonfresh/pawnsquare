@@ -1242,7 +1242,7 @@ export function useChessGame({
     clock: defaultClock,
     result: null,
     lastMove: null,
-    gooseSquare: variant === "goose" ? ("d4" as Square) : undefined,
+    gooseSquare: variant === "goose" ? ("d5" as Square) : undefined,
     phase: variant === "goose" ? "piece" : undefined,
     activeSide: variant === "goose" ? "w" : undefined,
   });
@@ -1255,7 +1255,7 @@ export function useChessGame({
       clock: defaultClock,
       result: null,
       lastMove: null,
-      gooseSquare: variant === "goose" ? ("d4" as Square) : undefined,
+      gooseSquare: variant === "goose" ? ("d5" as Square) : undefined,
       phase: variant === "goose" ? "piece" : undefined,
       activeSide: variant === "goose" ? "w" : undefined,
     });
@@ -1305,7 +1305,7 @@ export function useChessGame({
   const chess = useMemo(() => new Chess(netState.fen), [netState.fen]);
 
   const gooseSquare: Square | null =
-    variant === "goose" ? netState.gooseSquare ?? ("d4" as Square) : null;
+    variant === "goose" ? netState.gooseSquare ?? ("d5" as Square) : null;
   const goosePhase: "piece" | "goose" | null =
     variant === "goose" ? netState.phase ?? "piece" : null;
   const activeSide: Side =

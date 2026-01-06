@@ -131,7 +131,7 @@ export default class GooseChessServer implements Party.Server {
       clock: initialClock(baseMs),
       result: null,
       lastMove: null,
-      gooseSquare: "d4",
+      gooseSquare: "d5",
       phase: "piece",
       activeSide: "w",
     };
@@ -226,7 +226,7 @@ export default class GooseChessServer implements Party.Server {
     this.state.clock = initialClock(baseMs, incrementMs);
     this.state.result = null;
     this.state.lastMove = null;
-    this.state.gooseSquare = "d4";
+    this.state.gooseSquare = "d5";
     this.state.phase = "piece";
     this.state.activeSide = "w";
   }
