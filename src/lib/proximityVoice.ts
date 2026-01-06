@@ -1,17 +1,7 @@
-// @ts-nocheck
-
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-
-// Deprecated: the app no longer uses Trystero/torrent for voice.
-// This stub keeps the file typecheckable after removing the dependency.
-// If this hook is used, it will fail fast with a clear message.
-function joinRoom(..._args: any[]): any {
-  throw new Error(
-    "useProximityVoice is deprecated. Use PartyKit voice (src/lib/partyVoice.ts) instead."
-  );
-}
+import { joinRoom } from "trystero/torrent";
 
 type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 

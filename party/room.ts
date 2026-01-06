@@ -45,13 +45,7 @@ type Message =
   | { type: "voice:answer"; to: string; answer: RTCSessionDescriptionInit }
   | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
   | { type: "voice:hangup"; to: string; reason?: string }
-  | { type: "voice:request-connections"; deviceId?: string; peers?: string[] }
-  | { type: "discover:update"; roomId: string; playerCount: number };
-
-type DiscoverSyncMessage = {
-  type: "discover:sync";
-  rooms: Record<string, { playerCount: number; lastSeen: number }>;
-};
+  | { type: "voice:request-connections"; deviceId?: string; peers?: string[] };
 
 type LeaderboardMessage = { type: "leaderboard"; entries: LeaderboardEntry[] };
 
@@ -71,58 +65,9 @@ export default class RoomServer implements Party.Server {
   > = new Map();
   leaderboardTimer: ReturnType<typeof setInterval> | null = null;
 
-  // Discovery room state (only used when room id === 'room-discovery').
-  discoveryReporters: Map<
-    string,
-    { roomId: string; playerCount: number; lastSeen: number }
-  > = new Map();
-  discoveryBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
-
   static readonly MAX_PLAYERS = 16;
 
   constructor(readonly room: Party.Room) {}
-
-  private isDiscoveryRoom() {
-    // PartyKit room id is stable for the server instance.
-    return this.room.id === "room-discovery";
-  }
-
-  private computeDiscoverySnapshot(): DiscoverSyncMessage {
-    const agg = new Map<string, { playerCount: number; lastSeen: number }>();
-    for (const rep of this.discoveryReporters.values()) {
-      const roomId = (rep.roomId ?? "").toString().trim().slice(0, 64);
-      if (!roomId) continue;
-      const playerCount = Math.max(
-        0,
-        Math.min(RoomServer.MAX_PLAYERS, rep.playerCount || 0)
-      );
-      const lastSeen = rep.lastSeen || Date.now();
-
-      const prev = agg.get(roomId);
-      if (!prev) {
-        agg.set(roomId, { playerCount, lastSeen });
-      } else {
-        // max avoids double counting across multiple reporters for the same room.
-        prev.playerCount = Math.max(prev.playerCount, playerCount);
-        prev.lastSeen = Math.max(prev.lastSeen, lastSeen);
-      }
-    }
-
-    const rooms: Record<string, { playerCount: number; lastSeen: number }> = {};
-    for (const [roomId, info] of agg.entries()) {
-      rooms[roomId] = info;
-    }
-    return { type: "discover:sync", rooms };
-  }
-
-  private scheduleDiscoveryBroadcast() {
-    if (this.discoveryBroadcastTimer) return;
-    this.discoveryBroadcastTimer = setTimeout(() => {
-      this.discoveryBroadcastTimer = null;
-      const msg = this.computeDiscoverySnapshot();
-      this.room.broadcast(JSON.stringify(msg));
-    }, 150);
-  }
 
   computeLeaderboard(nowMs: number): LeaderboardEntry[] {
     const entries: LeaderboardEntry[] = [];
@@ -161,10 +106,6 @@ export default class RoomServer implements Party.Server {
   }
 
   onConnect(conn: Party.Connection) {
-    if (this.isDiscoveryRoom()) {
-      conn.send(JSON.stringify(this.computeDiscoverySnapshot()));
-      return;
-    }
     console.log(`[PartyKit] Player connected: ${conn.id}`);
 
     // Track playtime while connected.
@@ -215,25 +156,6 @@ export default class RoomServer implements Party.Server {
   onMessage(message: string, sender: Party.Connection) {
     try {
       const msg = JSON.parse(message) as Message;
-
-      if (this.isDiscoveryRoom()) {
-        if (msg.type === "discover:update") {
-          const roomId = (msg.roomId ?? "").toString().trim().slice(0, 64);
-          const playerCount = Math.max(
-            0,
-            Math.min(RoomServer.MAX_PLAYERS, Number(msg.playerCount) || 0)
-          );
-          if (!roomId) return;
-
-          this.discoveryReporters.set(sender.id, {
-            roomId,
-            playerCount,
-            lastSeen: Date.now(),
-          });
-          this.scheduleDiscoveryBroadcast();
-        }
-        return;
-      }
 
       if (msg.type === "hello") {
         // Check if room is full
@@ -404,11 +326,6 @@ export default class RoomServer implements Party.Server {
   }
 
   onClose(conn: Party.Connection) {
-    if (this.isDiscoveryRoom()) {
-      this.discoveryReporters.delete(conn.id);
-      this.scheduleDiscoveryBroadcast();
-      return;
-    }
     console.log(`[PartyKit] Player disconnected: ${conn.id}`);
 
     const st = this.stats.get(conn.id);
