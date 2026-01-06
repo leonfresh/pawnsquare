@@ -5,21 +5,42 @@ import { type ThreeElements, useFrame } from "@react-three/fiber";
 import { useCallback, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { NeonText3D } from "./neon-text-3d";
+import type { LeaderboardEntry } from "@/lib/partyRoom";
 
 // Note: Keep this lobby lightweight. Avoid heavy geometry/props to reduce
 // WebGL context loss risk on weaker GPUs.
 
-function HoloTape({ position, color = "#00ffaa", label = "DATA_LOG_01" }: { position: [number, number, number], color?: string, label?: string }) {
+function HoloTape({
+  position,
+  color = "#00ffaa",
+  label = "DATA_LOG_01",
+}: {
+  position: [number, number, number];
+  color?: string;
+  label?: string;
+}) {
   return (
     <group position={position}>
       <Float speed={2} rotationIntensity={0.2} floatIntensity={0.2}>
         <mesh rotation={[0, 0, 0]}>
           <planeGeometry args={[1.8, 1]} />
-          <meshBasicMaterial color={color} transparent opacity={0.15} side={THREE.DoubleSide} depthWrite={false} />
+          <meshBasicMaterial
+            color={color}
+            transparent
+            opacity={0.15}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
         </mesh>
         <mesh rotation={[0, 0, 0]}>
           <planeGeometry args={[1.8, 1]} />
-          <meshBasicMaterial color={color} wireframe transparent opacity={0.3} side={THREE.DoubleSide} />
+          <meshBasicMaterial
+            color={color}
+            wireframe
+            transparent
+            opacity={0.3}
+            side={THREE.DoubleSide}
+          />
         </mesh>
         <Text
           position={[-0.8, 0.3, 0.01]}
@@ -57,10 +78,10 @@ function Blimp({ position, range = 40, speed = 0.1, text, color }: any) {
       groupRef.current.position.x = Math.sin(t) * range;
       groupRef.current.position.z = Math.cos(t) * (range * 0.6);
       groupRef.current.position.y = position[1] + Math.sin(t * 2) * 2;
-      
+
       const dx = Math.cos(t) * range;
       const dz = -Math.sin(t) * (range * 0.6);
-      groupRef.current.rotation.y = Math.atan2(dx, dz); 
+      groupRef.current.rotation.y = Math.atan2(dx, dz);
     }
   });
 
@@ -87,7 +108,13 @@ function Blimp({ position, range = 40, speed = 0.1, text, color }: any) {
         >
           {text}
         </Text>
-        <pointLight position={[0, 0, 0.55]} color={color} intensity={8} distance={10} decay={2} />
+        <pointLight
+          position={[0, 0, 0.55]}
+          color={color}
+          intensity={8}
+          distance={10}
+          decay={2}
+        />
       </group>
       <group position={[-2.25, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
         <Text
@@ -103,67 +130,78 @@ function Blimp({ position, range = 40, speed = 0.1, text, color }: any) {
         >
           {text}
         </Text>
-        <pointLight position={[0, 0, 0.55]} color={color} intensity={8} distance={10} decay={2} />
+        <pointLight
+          position={[0, 0, 0.55]}
+          color={color}
+          intensity={8}
+          distance={10}
+          decay={2}
+        />
       </group>
-      
+
       {/* Cabin */}
       <mesh position={[0, -2.5, 0]}>
         <boxGeometry args={[1.5, 1, 3]} />
         <meshStandardMaterial color="#111" />
       </mesh>
       <mesh position={[0, -2.5, 1.51]}>
-         <planeGeometry args={[1.2, 0.6]} />
-         <meshBasicMaterial color="#ffffaa" toneMapped={false} />
+        <planeGeometry args={[1.2, 0.6]} />
+        <meshBasicMaterial color="#ffffaa" toneMapped={false} />
       </mesh>
 
       {/* Fins */}
       <group position={[0, 0, -5]}>
-         <mesh position={[0, 1.5, 0]}>
-            <boxGeometry args={[0.2, 3, 2]} />
-            <meshStandardMaterial color="#333" />
-         </mesh>
-         <mesh position={[0, -1.5, 0]}>
-            <boxGeometry args={[0.2, 3, 2]} />
-            <meshStandardMaterial color="#333" />
-         </mesh>
-         <mesh position={[1.5, 0, 0]} rotation={[0, 0, Math.PI/2]}>
-            <boxGeometry args={[0.2, 3, 2]} />
-            <meshStandardMaterial color="#333" />
-         </mesh>
-         <mesh position={[-1.5, 0, 0]} rotation={[0, 0, Math.PI/2]}>
-            <boxGeometry args={[0.2, 3, 2]} />
-            <meshStandardMaterial color="#333" />
-         </mesh>
+        <mesh position={[0, 1.5, 0]}>
+          <boxGeometry args={[0.2, 3, 2]} />
+          <meshStandardMaterial color="#333" />
+        </mesh>
+        <mesh position={[0, -1.5, 0]}>
+          <boxGeometry args={[0.2, 3, 2]} />
+          <meshStandardMaterial color="#333" />
+        </mesh>
+        <mesh position={[1.5, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <boxGeometry args={[0.2, 3, 2]} />
+          <meshStandardMaterial color="#333" />
+        </mesh>
+        <mesh position={[-1.5, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <boxGeometry args={[0.2, 3, 2]} />
+          <meshStandardMaterial color="#333" />
+        </mesh>
       </group>
 
       {/* Screen / Ad on side (Left) */}
-      <group position={[1.8, 0, 0]} rotation={[0, Math.PI/2, 0]}>
-         <mesh position={[0, 0, -0.1]}>
-            <planeGeometry args={[6, 2.5]} />
-            <meshStandardMaterial color="#000" />
-         </mesh>
-         <mesh position={[0, 0, 0.05]}>
-            <planeGeometry args={[5, 1.5]} />
-            <meshBasicMaterial color={color} transparent opacity={0.9} />
-         </mesh>
+      <group position={[1.8, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+        <mesh position={[0, 0, -0.1]}>
+          <planeGeometry args={[6, 2.5]} />
+          <meshStandardMaterial color="#000" />
+        </mesh>
+        <mesh position={[0, 0, 0.05]}>
+          <planeGeometry args={[5, 1.5]} />
+          <meshBasicMaterial color={color} transparent opacity={0.9} />
+        </mesh>
       </group>
-      
+
       {/* Screen / Ad on side (Right) */}
-      <group position={[-1.8, 0, 0]} rotation={[0, -Math.PI/2, 0]}>
-         <mesh position={[0, 0, -0.1]}>
-            <planeGeometry args={[6, 2.5]} />
-            <meshStandardMaterial color="#000" />
-         </mesh>
-         <mesh position={[0, 0, 0.05]}>
-            <planeGeometry args={[5, 1.5]} />
-            <meshBasicMaterial color={color} transparent opacity={0.9} />
-         </mesh>
+      <group position={[-1.8, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
+        <mesh position={[0, 0, -0.1]}>
+          <planeGeometry args={[6, 2.5]} />
+          <meshStandardMaterial color="#000" />
+        </mesh>
+        <mesh position={[0, 0, 0.05]}>
+          <planeGeometry args={[5, 1.5]} />
+          <meshBasicMaterial color={color} transparent opacity={0.9} />
+        </mesh>
       </group>
-      
+
       {/* Engine Glow */}
-      <pointLight position={[0, 0, -6]} color="#00ffff" intensity={2} distance={10} />
+      <pointLight
+        position={[0, 0, -6]}
+        color="#00ffff"
+        intensity={2}
+        distance={10}
+      />
     </group>
-  )
+  );
 }
 
 function FlyingCar({
@@ -369,9 +407,9 @@ function HoloAdPanel({
         uSecondary: { value: new THREE.Color(secondary) },
         uMode: { value: (seed % 8) as number },
         uVariant: { value: ((seed * 0.013) % 1) as number },
-        uFlipX: { value: ((seed * 0.37) % 1) > 0.5 ? 1 : 0 },
-        uFlipY: { value: ((seed * 0.19) % 1) > 0.5 ? 1 : 0 },
-        uRot: { value: ((seed * 0.29) % 1) > 0.72 ? 1 : 0 },
+        uFlipX: { value: (seed * 0.37) % 1 > 0.5 ? 1 : 0 },
+        uFlipY: { value: (seed * 0.19) % 1 > 0.5 ? 1 : 0 },
+        uRot: { value: (seed * 0.29) % 1 > 0.72 ? 1 : 0 },
       },
       vertexShader: `
         varying vec2 vUv;
@@ -829,34 +867,37 @@ function SciFiFloor() {
 
       {/* Matte "Carpet" Zones - adds variance */}
       <group position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-         {/* Central Hub Carpet */}
-         <mesh receiveShadow>
-           <circleGeometry args={[13, 64]} />
-           <SciFiFloorMaterial
-             variant="carpet"
-             color="#151525"
-             roughness={0.95}
-             metalness={0.05}
-           />
-         </mesh>
-         
-         {/* Outer Walkway Ring */}
-         <mesh receiveShadow>
-           <ringGeometry args={[24, 36, 64]} />
-           <SciFiFloorMaterial
-             variant="carpet"
-             color="#101018"
-             roughness={0.98}
-             metalness={0.02}
-           />
-         </mesh>
+        {/* Central Hub Carpet */}
+        <mesh receiveShadow>
+          <circleGeometry args={[13, 64]} />
+          <SciFiFloorMaterial
+            variant="carpet"
+            color="#151525"
+            roughness={0.95}
+            metalness={0.05}
+          />
+        </mesh>
+
+        {/* Outer Walkway Ring */}
+        <mesh receiveShadow>
+          <ringGeometry args={[24, 36, 64]} />
+          <SciFiFloorMaterial
+            variant="carpet"
+            color="#101018"
+            roughness={0.98}
+            metalness={0.02}
+          />
+        </mesh>
       </group>
-      
+
       {/* Glowing rings */}
       {Array.from({ length: 3 }).map((_, i) => (
         <mesh key={i} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}>
           <ringGeometry args={[15 + i * 5, 15.1 + i * 5, 64]} />
-          <meshBasicMaterial color={i % 2 === 0 ? "#00ffff" : "#ff00ff"} toneMapped={false} />
+          <meshBasicMaterial
+            color={i % 2 === 0 ? "#00ffff" : "#ff00ff"}
+            toneMapped={false}
+          />
         </mesh>
       ))}
     </group>
@@ -881,7 +922,10 @@ function SciFiFloorMaterial({
       `
     );
 
-    const defines = variant === "carpet" ? "#define SCIFI_CARPET 1\n" : "#define SCIFI_CARPET 0\n";
+    const defines =
+      variant === "carpet"
+        ? "#define SCIFI_CARPET 1\n"
+        : "#define SCIFI_CARPET 0\n";
 
     shader.fragmentShader = `
       ${defines}
@@ -1004,7 +1048,126 @@ function SciFiFloorMaterial({
   );
 }
 
+function SciFiWallMaterial(props: ThreeElements["meshStandardMaterial"]) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
 
+  const onBeforeCompile = (shader: any) => {
+    shader.vertexShader = `
+      varying vec3 vWorldPos;
+      varying vec3 vWorldN;
+      ${shader.vertexShader}
+    `.replace(
+      "#include <worldpos_vertex>",
+      `
+        #include <worldpos_vertex>
+        vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vWorldN = normalize(mat3(modelMatrix) * normal);
+        `
+    );
+
+    shader.fragmentShader = `
+      varying vec3 vWorldPos;
+      varying vec3 vWorldN;
+
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+      float noise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i + vec2(0.0, 0.0));
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+      float fbm2(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise2(p); p *= 2.02;
+        f += 0.2500 * noise2(p); p *= 2.03;
+        f += 0.1250 * noise2(p); p *= 2.01;
+        f += 0.0625 * noise2(p);
+        return f;
+      }
+
+      float panelSeams(vec2 p, vec2 cell) {
+        vec2 g = p / cell;
+        vec2 f = abs(fract(g) - 0.5);
+        float line = min(f.x, f.y);
+        return 1.0 - smoothstep(0.485, 0.5, line);
+      }
+
+      vec2 wallCoords(vec3 wp, vec3 wn) {
+        // Axis-projected coords so seams read correctly on vertical faces.
+        vec3 an = abs(wn);
+        if (an.z > an.x && an.z > an.y) return wp.xy; // front/back faces
+        if (an.x > an.y) return wp.zy; // left/right faces
+        return wp.xz; // top/bottom (fallback)
+      }
+
+      ${shader.fragmentShader}
+    `
+      .replace(
+        "#include <color_fragment>",
+        `
+        #include <color_fragment>
+
+        vec2 p = wallCoords(vWorldPos, vWorldN);
+        float g0 = panelSeams(p, vec2(1.8, 1.8));
+        float g1 = panelSeams(p + vec2(0.35, 0.55), vec2(4.8, 4.8));
+        float seams = clamp(g0 * 0.9 + g1 * 0.35, 0.0, 1.0);
+
+        float grime = fbm2(p * 0.45) * 0.75 + fbm2(p * 2.1) * 0.25;
+        float wear = smoothstep(0.25, 0.85, grime);
+
+        diffuseColor.rgb *= mix(0.86, 1.03, wear);
+        diffuseColor.rgb += vec3(0.0, 0.004, 0.010);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.12, seams * 0.10);
+        `
+      )
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `
+        #include <roughnessmap_fragment>
+        vec2 pR = wallCoords(vWorldPos, vWorldN);
+        float rN = fbm2(pR * 0.55);
+        roughnessFactor = clamp(roughnessFactor * mix(0.88, 1.20, rN), 0.02, 1.0);
+        `
+      )
+      .replace(
+        "#include <metalnessmap_fragment>",
+        `
+        #include <metalnessmap_fragment>
+        vec2 pM = wallCoords(vWorldPos, vWorldN);
+        float mN = fbm2(pM * 0.25);
+        metalnessFactor = clamp(metalnessFactor * mix(0.85, 1.15, mN), 0.0, 1.0);
+        `
+      )
+      .replace(
+        "#include <emissivemap_fragment>",
+        `
+        #include <emissivemap_fragment>
+
+        vec2 pE = wallCoords(vWorldPos, vWorldN);
+        float s0 = panelSeams(pE, vec2(1.8, 1.8));
+        float s1 = panelSeams(pE + vec2(0.35, 0.55), vec2(4.8, 4.8));
+        float s = clamp(s0 * 0.9 + s1 * 0.35, 0.0, 1.0);
+        float flicker = 0.65 + 0.35 * noise2(pE * 0.35);
+        vec3 seamCol = mix(vec3(0.0, 0.75, 1.0), vec3(1.0, 0.0, 0.9), noise2(pE * 0.12));
+        totalEmissiveRadiance += seamCol * (0.09 * s * flicker);
+        `
+      );
+  };
+
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      {...props}
+    />
+  );
+}
 
 export function SciFiLamp({ lampPos }: { lampPos: [number, number, number] }) {
   return (
@@ -1017,10 +1180,21 @@ export function SciFiLamp({ lampPos }: { lampPos: [number, number, number] }) {
       {/* Glowing Pole */}
       <mesh position={[0, 2, 0]}>
         <cylinderGeometry args={[0.04, 0.04, 4, 8]} />
-        <meshStandardMaterial color="#ff00ff" emissive="#ff00ff" emissiveIntensity={2} toneMapped={false} />
+        <meshStandardMaterial
+          color="#ff00ff"
+          emissive="#ff00ff"
+          emissiveIntensity={2}
+          toneMapped={false}
+        />
       </mesh>
       {/* Top Light */}
-      <pointLight position={[0, 3.5, 0]} intensity={2} color="#ff00ff" distance={15} decay={2} />
+      <pointLight
+        position={[0, 3.5, 0]}
+        intensity={2}
+        color="#ff00ff"
+        distance={15}
+        decay={2}
+      />
       <mesh position={[0, 4, 0]}>
         <octahedronGeometry args={[0.2, 0]} />
         <meshBasicMaterial color="#ffccff" wireframe toneMapped={false} />
@@ -1035,7 +1209,7 @@ export function SciFiLamp({ lampPos }: { lampPos: [number, number, number] }) {
 
 function SciFiPlanters() {
   const groupRef = useRef<THREE.Group>(null);
-  
+
   useFrame(({ clock }) => {
     if (groupRef.current) {
       const t = clock.getElapsedTime();
@@ -1062,38 +1236,72 @@ function SciFiPlanters() {
             {/* Planter pedestal */}
             <mesh position={[0, 0.16, 0]}>
               <cylinderGeometry args={[1.15, 1.2, 0.32, 10]} />
-              <meshStandardMaterial color="#0a0a14" roughness={0.35} metalness={0.8} />
+              <meshStandardMaterial
+                color="#0a0a14"
+                roughness={0.35}
+                metalness={0.8}
+              />
             </mesh>
 
             {/* (Removed) decorative benches not spawned by the chessboards */}
 
             {/* Holographic data stream in center */}
-             <group name="holo" position={[0, 1.62, 0]}>
-               <mesh>
-                 <cylinderGeometry args={[0.8, 0.8, 2, 6, 4, true]} />
-                 <meshBasicMaterial color="#00ffaa" wireframe transparent opacity={0.15} toneMapped={false} side={THREE.DoubleSide} />
-               </mesh>
-               <mesh scale={[0.8, 0.8, 0.8]}>
-                 <octahedronGeometry args={[0.6, 0]} />
-                 <meshBasicMaterial color="#00ffaa" wireframe transparent opacity={0.4} toneMapped={false} />
-               </mesh>
-             </group>
-             {/* Inner glow for holo */}
-             <pointLight position={[0, 1.05, 0]} color="#00ffaa" intensity={1.5} distance={6} decay={2} />
-             
-             {/* Floating HoloTape */}
-             <HoloTape position={[0, 2.62, 0]} color="#00ffaa" label={`TERMINAL_0${i+1}`} />
+            <group name="holo" position={[0, 1.62, 0]}>
+              <mesh>
+                <cylinderGeometry args={[0.8, 0.8, 2, 6, 4, true]} />
+                <meshBasicMaterial
+                  color="#00ffaa"
+                  wireframe
+                  transparent
+                  opacity={0.15}
+                  toneMapped={false}
+                  side={THREE.DoubleSide}
+                />
+              </mesh>
+              <mesh scale={[0.8, 0.8, 0.8]}>
+                <octahedronGeometry args={[0.6, 0]} />
+                <meshBasicMaterial
+                  color="#00ffaa"
+                  wireframe
+                  transparent
+                  opacity={0.4}
+                  toneMapped={false}
+                />
+              </mesh>
+            </group>
+            {/* Inner glow for holo */}
+            <pointLight
+              position={[0, 1.05, 0]}
+              color="#00ffaa"
+              intensity={1.5}
+              distance={6}
+              decay={2}
+            />
+
+            {/* Floating HoloTape */}
+            <HoloTape
+              position={[0, 2.62, 0]}
+              color="#00ffaa"
+              label={`TERMINAL_0${i + 1}`}
+            />
           </group>
         );
       })}
     </group>
-  )
+  );
 }
 
-function GiantTV({ position, rotation }: { position: [number, number, number], rotation: [number, number, number] }) {
+function GiantTV({
+  position,
+  rotation,
+}: {
+  position: [number, number, number];
+  rotation: [number, number, number];
+}) {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
   useFrame(({ clock }) => {
-    if (materialRef.current) materialRef.current.uniforms.time.value = clock.getElapsedTime();
+    if (materialRef.current)
+      materialRef.current.uniforms.time.value = clock.getElapsedTime();
   });
 
   return (
@@ -1142,7 +1350,7 @@ function GiantTV({ position, rotation }: { position: [number, number, number], r
         />
       </mesh>
     </group>
-  )
+  );
 }
 
 function SciFiDecorations() {
@@ -1161,48 +1369,73 @@ function SciFiDecorations() {
     }
   });
 
-   return (
-     <group ref={groupRef}>
-       {Array.from({ length: 10 }).map((_, i) => {
+  return (
+    <group ref={groupRef}>
+      {Array.from({ length: 10 }).map((_, i) => {
         const angle = (i / 10) * Math.PI * 2;
         const radius = 28;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
         return (
-          <group key={i} position={[x, 0, z]} rotation={[0, -angle + Math.PI/2, 0]}>
+          <group
+            key={i}
+            position={[x, 0, z]}
+            rotation={[0, -angle + Math.PI / 2, 0]}
+          >
             {/* Data Pillar */}
             <mesh position={[0, 4, 0]}>
               <boxGeometry args={[0.8, 8, 0.8]} />
-              <meshStandardMaterial color="#050510" roughness={0.1} metalness={0.9} />
+              <meshStandardMaterial
+                color="#050510"
+                roughness={0.1}
+                metalness={0.9}
+              />
             </mesh>
             {/* Glowing seams */}
             <mesh position={[0, 4, 0]}>
-               <boxGeometry args={[0.82, 8, 0.82]} />
-               <meshBasicMaterial color="#ff00ff" wireframe transparent opacity={0.1} />
+              <boxGeometry args={[0.82, 8, 0.82]} />
+              <meshBasicMaterial
+                color="#ff00ff"
+                wireframe
+                transparent
+                opacity={0.1}
+              />
             </mesh>
-            
+
             {/* Floating rings around pillar */}
-             <mesh name="ring1" position={[0, 6, 0]} rotation={[Math.PI/2, 0.2, 0]}>
-               <torusGeometry args={[1.5, 0.05, 8, 4]} />
-               <meshBasicMaterial color="#00ffff" toneMapped={false} />
-             </mesh>
-             <mesh name="ring2" position={[0, 3, 0]} rotation={[Math.PI/2, -0.2, 0]}>
-               <torusGeometry args={[1.8, 0.05, 8, 4]} />
-               <meshBasicMaterial color="#ff00ff" toneMapped={false} />
-             </mesh>
+            <mesh
+              name="ring1"
+              position={[0, 6, 0]}
+              rotation={[Math.PI / 2, 0.2, 0]}
+            >
+              <torusGeometry args={[1.5, 0.05, 8, 4]} />
+              <meshBasicMaterial color="#00ffff" toneMapped={false} />
+            </mesh>
+            <mesh
+              name="ring2"
+              position={[0, 3, 0]}
+              rotation={[Math.PI / 2, -0.2, 0]}
+            >
+              <torusGeometry args={[1.8, 0.05, 8, 4]} />
+              <meshBasicMaterial color="#ff00ff" toneMapped={false} />
+            </mesh>
 
-             {/* HoloTape attached to pillar */}
-             <HoloTape position={[0, 5, 1.5]} color={i % 2 === 0 ? "#ff00ff" : "#00ffff"} label={`SERVER_NODE_${i}`} />
+            {/* HoloTape attached to pillar */}
+            <HoloTape
+              position={[0, 5, 1.5]}
+              color={i % 2 === 0 ? "#ff00ff" : "#00ffff"}
+              label={`SERVER_NODE_${i}`}
+            />
 
-             {/* Giant TV on every other pillar */}
-             {i % 2 === 0 && (
-               <GiantTV position={[0, 3, -1.2]} rotation={[0, Math.PI, 0]} />
-             )}
+            {/* Giant TV on every other pillar */}
+            {i % 2 === 0 && (
+              <GiantTV position={[0, 3, -1.2]} rotation={[0, Math.PI, 0]} />
+            )}
           </group>
         );
       })}
-     </group>
-   )
+    </group>
+  );
 }
 
 function ArenaCrowds() {
@@ -1240,15 +1473,49 @@ function ArenaCrowds() {
         return (
           <group key={`arc${arcIndex}`}>
             {/* Platform top */}
-            <mesh position={[0, platformTopY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-              <ringGeometry args={[platformInner, platformOuter, 110, 1, startAngle, arcSpan]} />
-              <meshStandardMaterial color="#1a1a2a" roughness={0.75} metalness={0.35} side={THREE.DoubleSide} />
+            <mesh
+              position={[0, platformTopY, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              receiveShadow
+            >
+              <ringGeometry
+                args={[
+                  platformInner,
+                  platformOuter,
+                  110,
+                  1,
+                  startAngle,
+                  arcSpan,
+                ]}
+              />
+              <meshStandardMaterial
+                color="#1a1a2a"
+                roughness={0.75}
+                metalness={0.35}
+                side={THREE.DoubleSide}
+              />
             </mesh>
 
             {/* Platform thickness/skirt */}
             <mesh position={[0, platformTopY - platformThickness * 0.5, 0]}>
-              <cylinderGeometry args={[platformOuter, platformOuter, platformThickness, 110, 1, true, startAngle, arcSpan]} />
-              <meshStandardMaterial color="#101022" roughness={0.85} metalness={0.35} side={THREE.DoubleSide} />
+              <cylinderGeometry
+                args={[
+                  platformOuter,
+                  platformOuter,
+                  platformThickness,
+                  110,
+                  1,
+                  true,
+                  startAngle,
+                  arcSpan,
+                ]}
+              />
+              <meshStandardMaterial
+                color="#101022"
+                roughness={0.85}
+                metalness={0.35}
+                side={THREE.DoubleSide}
+              />
             </mesh>
 
             {/* Random spectators on top of platform */}
@@ -1273,16 +1540,32 @@ function ArenaCrowds() {
               // small jitter so it doesn't look like a perfect arc grid
               const tangJitter = (rand(seed + 7) - 0.5) * 0.45;
               const radialJitter = (rand(seed + 8) - 0.5) * 0.25;
-              const xj = x + Math.cos(a + Math.PI / 2) * tangJitter + Math.cos(a) * radialJitter;
-              const zj = z + Math.sin(a + Math.PI / 2) * tangJitter + Math.sin(a) * radialJitter;
+              const xj =
+                x +
+                Math.cos(a + Math.PI / 2) * tangJitter +
+                Math.cos(a) * radialJitter;
+              const zj =
+                z +
+                Math.sin(a + Math.PI / 2) * tangJitter +
+                Math.sin(a) * radialJitter;
 
               return (
-                <group key={`p${arcIndex}_${personIndex}`} position={[xj, crowdBaseY, zj]} rotation={[0, yaw, 0]}>
+                <group
+                  key={`p${arcIndex}_${personIndex}`}
+                  position={[xj, crowdBaseY, zj]}
+                  rotation={[0, yaw, 0]}
+                >
                   {/* Torso */}
                   <mesh position={[0, bodyH / 2, 0]} castShadow>
                     <boxGeometry args={[bodyW, bodyH, 0.35]} />
                     <meshStandardMaterial
-                      color={seed % 3 === 0 ? "#2a4a6a" : seed % 3 === 1 ? "#4a2a6a" : "#2a6a4a"}
+                      color={
+                        seed % 3 === 0
+                          ? "#2a4a6a"
+                          : seed % 3 === 1
+                          ? "#4a2a6a"
+                          : "#2a6a4a"
+                      }
                       emissive={seed % 2 === 0 ? "#001133" : "#110033"}
                       emissiveIntensity={0.35}
                       roughness={0.8}
@@ -1292,18 +1575,32 @@ function ArenaCrowds() {
                   <mesh position={[0, bodyH + headSize * 0.6, 0]} castShadow>
                     <sphereGeometry args={[headSize, 8, 8]} />
                     <meshStandardMaterial
-                      color={seed % 3 === 0 ? "#3a5a7a" : seed % 3 === 1 ? "#5a3a7a" : "#3a7a5a"}
+                      color={
+                        seed % 3 === 0
+                          ? "#3a5a7a"
+                          : seed % 3 === 1
+                          ? "#5a3a7a"
+                          : "#3a7a5a"
+                      }
                       emissive={seed % 2 === 0 ? "#002255" : "#220055"}
                       emissiveIntensity={0.45}
                       roughness={0.7}
                     />
                   </mesh>
                   {/* Arms */}
-                  <mesh position={[-bodyW / 2 - armW / 2, shoulderY, 0]} rotation={[0, 0, pose > 0.5 ? 0.35 : -0.25]} castShadow>
+                  <mesh
+                    position={[-bodyW / 2 - armW / 2, shoulderY, 0]}
+                    rotation={[0, 0, pose > 0.5 ? 0.35 : -0.25]}
+                    castShadow
+                  >
                     <boxGeometry args={[armW, 0.5, 0.15]} />
                     <meshStandardMaterial color="#1a2a4a" roughness={0.9} />
                   </mesh>
-                  <mesh position={[bodyW / 2 + armW / 2, shoulderY, 0]} rotation={[0, 0, pose > 0.5 ? -0.35 : 0.25]} castShadow>
+                  <mesh
+                    position={[bodyW / 2 + armW / 2, shoulderY, 0]}
+                    rotation={[0, 0, pose > 0.5 ? -0.35 : 0.25]}
+                    castShadow
+                  >
                     <boxGeometry args={[armW, 0.5, 0.15]} />
                     <meshStandardMaterial color="#1a2a4a" roughness={0.9} />
                   </mesh>
@@ -1341,15 +1638,21 @@ function HoloJellyfish({ position }: { position: [number, number, number] }) {
       {/* Bell */}
       <mesh position={[0, 0, 0]}>
         <sphereGeometry args={[2, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshBasicMaterial color="#00ffaa" wireframe transparent opacity={0.3} side={THREE.DoubleSide} />
+        <meshBasicMaterial
+          color="#00ffaa"
+          wireframe
+          transparent
+          opacity={0.3}
+          side={THREE.DoubleSide}
+        />
       </mesh>
       {/* Tentacles */}
       {Array.from({ length: 8 }).map((_, i) => (
         <group key={i} rotation={[0, (i / 8) * Math.PI * 2, 0]}>
-            <mesh position={[1.5, -2, 0]}>
-                <cylinderGeometry args={[0.05, 0.02, 4, 4]} />
-                <meshBasicMaterial color="#00ffaa" transparent opacity={0.4} />
-            </mesh>
+          <mesh position={[1.5, -2, 0]}>
+            <cylinderGeometry args={[0.05, 0.02, 4, 4]} />
+            <meshBasicMaterial color="#00ffaa" transparent opacity={0.4} />
+          </mesh>
         </group>
       ))}
     </group>
@@ -1402,21 +1705,28 @@ function NeonTextModel({
 
   const materialsRef = useRef<THREE.ShaderMaterial[]>([]);
 
-  const makeNeonFlickerMaterial = useCallback((baseColor: string, seed: number, minX: number, maxX: number, chars: number) => {
-    const c = new THREE.Color(baseColor);
-    const mat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      uniforms: {
-        uColor: { value: new THREE.Vector3(c.r, c.g, c.b) },
-        uTime: { value: 0 },
-        uSeed: { value: seed },
-        uMinX: { value: minX },
-        uMaxX: { value: maxX },
-        uChars: { value: Math.max(1, chars) },
-      },
-      vertexShader: `
+  const makeNeonFlickerMaterial = useCallback(
+    (
+      baseColor: string,
+      seed: number,
+      minX: number,
+      maxX: number,
+      chars: number
+    ) => {
+      const c = new THREE.Color(baseColor);
+      const mat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: {
+          uColor: { value: new THREE.Vector3(c.r, c.g, c.b) },
+          uTime: { value: 0 },
+          uSeed: { value: seed },
+          uMinX: { value: minX },
+          uMaxX: { value: maxX },
+          uChars: { value: Math.max(1, chars) },
+        },
+        vertexShader: `
         varying vec3 vLocal;
         varying vec3 vWorld;
         void main() {
@@ -1426,7 +1736,7 @@ function NeonTextModel({
           gl_Position = projectionMatrix * viewMatrix * world;
         }
       `,
-      fragmentShader: `
+        fragmentShader: `
         precision highp float;
         uniform vec3 uColor;
         uniform float uTime;
@@ -1508,12 +1818,14 @@ function NeonTextModel({
           gl_FragColor = vec4(col * alpha, alpha);
         }
       `,
-    });
+      });
 
-    mat.toneMapped = false;
-    return mat;
-  }, []);
-  
+      mat.toneMapped = false;
+      return mat;
+    },
+    []
+  );
+
   const clonedScene = useMemo(() => {
     // Dispose previous materials on re-clone.
     for (const m of materialsRef.current) m.dispose();
@@ -1523,8 +1835,7 @@ function NeonTextModel({
     let meshIndex = 0;
     const baseSeed =
       (signSeed ??
-        hashStringToUnitFloat(`${fontFolder ?? ""}|${text}`) * 997.0) +
-      17.31;
+        hashStringToUnitFloat(`${fontFolder ?? ""}|${text}`) * 997.0) + 17.31;
     const chars = visibleCharCount(text);
 
     clone.traverse((node) => {
@@ -1554,7 +1865,7 @@ function NeonTextModel({
       m.uniforms.uTime.value = t;
     }
   });
-  
+
   return <primitive object={clonedScene} scale={scale} />;
 }
 
@@ -1595,7 +1906,8 @@ function NeonTextModel({
 
 function CyberpunkBuildings() {
   const buildings = useMemo(() => {
-    const localY = (h: number, fromBottom01: number) => -h / 2 + fromBottom01 * h;
+    const localY = (h: number, fromBottom01: number) =>
+      -h / 2 + fromBottom01 * h;
     return [
       // Distant mega towers
       {
@@ -1604,8 +1916,24 @@ function CyberpunkBuildings() {
         color: "#130022",
         accent: "#ff00ff",
         signs: [
-          { face: "front", x: 0, y: localY(50, 0.86), text: "NEXUS", font: "Orbitron-ExtraBold", color: "#ff00ff", size: [8, 3] as [number, number] },
-          { face: "front", x: 0, y: localY(50, 0.74), text: "CYBER", font: "Orbitron-ExtraBold", color: "#ff0066", size: [5, 1.8] as [number, number] },
+          {
+            face: "front",
+            x: 0,
+            y: localY(50, 0.86),
+            text: "NEXUS",
+            font: "Orbitron-ExtraBold",
+            color: "#ff00ff",
+            size: [8, 3] as [number, number],
+          },
+          {
+            face: "front",
+            x: 0,
+            y: localY(50, 0.74),
+            text: "CYBER",
+            font: "Orbitron-ExtraBold",
+            color: "#ff0066",
+            size: [5, 1.8] as [number, number],
+          },
         ],
       },
       {
@@ -1614,8 +1942,26 @@ function CyberpunkBuildings() {
         color: "#001428",
         accent: "#00ffaa",
         signs: [
-          { face: "front", x: 0, y: localY(60, 0.86), text: "SHIMATA", font: "Orbitron-Bold", color: "#00ff66", size: [10, 4] as [number, number] },
-          { face: "front", x: -4.8, y: localY(60, 0.76), text: "DATA", font: "Orbitron-Bold", color: "#ffff00", size: [2.6, 6.8] as [number, number], rotZ: Math.PI / 2, scaleMul: 1.25 },
+          {
+            face: "front",
+            x: 0,
+            y: localY(60, 0.86),
+            text: "SHIMATA",
+            font: "Orbitron-Bold",
+            color: "#00ff66",
+            size: [10, 4] as [number, number],
+          },
+          {
+            face: "front",
+            x: -4.8,
+            y: localY(60, 0.76),
+            text: "DATA",
+            font: "Orbitron-Bold",
+            color: "#ffff00",
+            size: [2.6, 6.8] as [number, number],
+            rotZ: Math.PI / 2,
+            scaleMul: 1.25,
+          },
         ],
       },
       {
@@ -1624,7 +1970,15 @@ function CyberpunkBuildings() {
         color: "#1a1400",
         accent: "#ff3300",
         signs: [
-          { face: "front", x: 0, y: localY(40, 0.84), text: "SECTOR 7", font: "Michroma-Regular", color: "#ff3300", size: [7, 3] as [number, number] },
+          {
+            face: "front",
+            x: 0,
+            y: localY(40, 0.84),
+            text: "SECTOR 7",
+            font: "Michroma-Regular",
+            color: "#ff3300",
+            size: [7, 3] as [number, number],
+          },
         ],
       },
       {
@@ -1634,9 +1988,37 @@ function CyberpunkBuildings() {
         accent: "#00ffff",
         signs: [
           // Screenshot-style stack: GRID left, CYBER/NEON/SYNTH centered-right.
-          { face: "front", x: 1.46, y: localY(70, 0.88), text: "CYBER", font: "Syncopate-Bold", color: "#00ffff", size: [7.6, 3.4] as [number, number], scaleMul: 0.72 },
-          { face: "front", x: 1.46, y: localY(70, 0.79), text: "NEON", font: "Syncopate-Bold", color: "#ff00ff", size: [7.0, 3.0] as [number, number], scaleMul: 0.72 },
-          { face: "front", x: 1.46, y: localY(70, 0.71), text: "SYNTH", font: "Syncopate-Bold", color: "#ff0000", size: [5.4, 2.0] as [number, number], rotZ: 0.02, scaleMul: 0.76 },
+          {
+            face: "front",
+            x: 1.46,
+            y: localY(70, 0.88),
+            text: "CYBER",
+            font: "Syncopate-Bold",
+            color: "#00ffff",
+            size: [7.6, 3.4] as [number, number],
+            scaleMul: 0.72,
+          },
+          {
+            face: "front",
+            x: 1.46,
+            y: localY(70, 0.79),
+            text: "NEON",
+            font: "Syncopate-Bold",
+            color: "#ff00ff",
+            size: [7.0, 3.0] as [number, number],
+            scaleMul: 0.72,
+          },
+          {
+            face: "front",
+            x: 1.46,
+            y: localY(70, 0.71),
+            text: "SYNTH",
+            font: "Syncopate-Bold",
+            color: "#ff0000",
+            size: [5.4, 2.0] as [number, number],
+            rotZ: 0.02,
+            scaleMul: 0.76,
+          },
         ],
       },
       {
@@ -1645,8 +2027,26 @@ function CyberpunkBuildings() {
         color: "#001616",
         accent: "#0099ff",
         signs: [
-          { face: "front", x: 0, y: localY(56, 0.86), text: "TECH", font: "Neonderthaw-Regular", color: "#0099ff", size: [14, 4] as [number, number] },
-          { face: "front", x: 0, y: localY(56, 0.75), text: "PARALLEL", font: "Neonderthaw-Regular", color: "#ff9900", size: [12, 3] as [number, number], rotZ: -0.08, scaleMul: 1.15 },
+          {
+            face: "front",
+            x: 0,
+            y: localY(56, 0.86),
+            text: "TECH",
+            font: "Neonderthaw-Regular",
+            color: "#0099ff",
+            size: [14, 4] as [number, number],
+          },
+          {
+            face: "front",
+            x: 0,
+            y: localY(56, 0.75),
+            text: "PARALLEL",
+            font: "Neonderthaw-Regular",
+            color: "#ff9900",
+            size: [12, 3] as [number, number],
+            rotZ: -0.08,
+            scaleMul: 1.15,
+          },
         ],
       },
       {
@@ -1655,7 +2055,16 @@ function CyberpunkBuildings() {
         color: "#160000",
         accent: "#ff0066",
         signs: [
-          { face: "front", x: 0, y: localY(44, 0.86), text: "PAWNSQUARE", font: "Audiowide-Regular", color: "#ff0066", size: [8.5, 3.2] as [number, number], scaleMul: 1.05 },
+          {
+            face: "front",
+            x: 0,
+            y: localY(44, 0.86),
+            text: "PAWNSQUARE",
+            font: "Audiowide-Regular",
+            color: "#ff0066",
+            size: [8.5, 3.2] as [number, number],
+            scaleMul: 1.05,
+          },
         ],
       },
       {
@@ -1664,7 +2073,15 @@ function CyberpunkBuildings() {
         color: "#000a14",
         accent: "#66ff00",
         signs: [
-          { face: "front", x: 0, y: localY(52, 0.86), text: "GRID", font: "Orbitron-SemiBold", color: "#66ff00", size: [4.5, 1.75] as [number, number] },
+          {
+            face: "front",
+            x: 0,
+            y: localY(52, 0.86),
+            text: "GRID",
+            font: "Orbitron-SemiBold",
+            color: "#66ff00",
+            size: [4.5, 1.75] as [number, number],
+          },
         ],
       },
       // Smaller mid-distance buildings
@@ -1674,7 +2091,15 @@ function CyberpunkBuildings() {
         color: "#0a0a16",
         accent: "#ff00ff",
         signs: [
-          { face: "front", x: 0, y: localY(24, 0.86), text: "NEON", font: "BebasNeue-Regular", color: "#ff00ff", size: [5, 2] as [number, number] },
+          {
+            face: "front",
+            x: 0,
+            y: localY(24, 0.86),
+            text: "NEON",
+            font: "BebasNeue-Regular",
+            color: "#ff00ff",
+            size: [5, 2] as [number, number],
+          },
         ],
       },
       {
@@ -1683,7 +2108,15 @@ function CyberpunkBuildings() {
         color: "#160a0a",
         accent: "#00ffff",
         signs: [
-          { face: "front", x: 0, y: localY(30, 0.86), text: "NEXUS", font: "BebasNeue-Regular", color: "#00ffff", size: [6, 2.5] as [number, number] },
+          {
+            face: "front",
+            x: 0,
+            y: localY(30, 0.86),
+            text: "NEXUS",
+            font: "BebasNeue-Regular",
+            color: "#00ffff",
+            size: [6, 2.5] as [number, number],
+          },
         ],
       },
       {
@@ -1692,7 +2125,16 @@ function CyberpunkBuildings() {
         color: "#0a160a",
         accent: "#ffff00",
         signs: [
-          { face: "front", x: 0, y: localY(36, 0.86), text: "PAWNSQUARE", font: "BebasNeue-Regular", color: "#ffff00", size: [7.5, 3.1] as [number, number], scaleMul: 1.05 },
+          {
+            face: "front",
+            x: 0,
+            y: localY(36, 0.86),
+            text: "PAWNSQUARE",
+            font: "BebasNeue-Regular",
+            color: "#ffff00",
+            size: [7.5, 3.1] as [number, number],
+            scaleMul: 1.05,
+          },
         ],
       },
     ];
@@ -1731,13 +2173,25 @@ function CyberpunkBuildings() {
     const pad = 0.14;
     switch (face) {
       case "front":
-        return { pos: [0, 0, d / 2 + pad] as [number, number, number], rotY: 0 };
+        return {
+          pos: [0, 0, d / 2 + pad] as [number, number, number],
+          rotY: 0,
+        };
       case "back":
-        return { pos: [0, 0, -d / 2 - pad] as [number, number, number], rotY: Math.PI };
+        return {
+          pos: [0, 0, -d / 2 - pad] as [number, number, number],
+          rotY: Math.PI,
+        };
       case "left":
-        return { pos: [-w / 2 - pad, 0, 0] as [number, number, number], rotY: -Math.PI / 2 };
+        return {
+          pos: [-w / 2 - pad, 0, 0] as [number, number, number],
+          rotY: -Math.PI / 2,
+        };
       case "right":
-        return { pos: [w / 2 + pad, 0, 0] as [number, number, number], rotY: Math.PI / 2 };
+        return {
+          pos: [w / 2 + pad, 0, 0] as [number, number, number],
+          rotY: Math.PI / 2,
+        };
     }
   };
 
@@ -1763,335 +2217,425 @@ function CyberpunkBuildings() {
         );
 
         return (
-        <group key={i} position={building.pos} rotation={[0, yaw, 0]}>
-          {/* Building tower (varied silhouettes) */}
-          {variant === 0 && (
-            <>
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[bw, bh, bd]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[bw * 0.15, bh * 0.18, bd * 0.12]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.62, bh * 0.38, bd * 0.62]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[0, bh / 2 - 1.8, 0]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.58, 3.6, bd * 0.58]} />
-                {shellMat}
-              </mesh>
-            </>
-          )}
-          {variant === 1 && (
-            <>
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[bw, bh, bd]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[0, -bh * 0.05, bd * 0.34]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.82, bh * 0.35, bd * 0.28]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[0, bh / 2 + 1.8, 0]}>
-                <cylinderGeometry args={[0.12, 0.18, 3.6, 8]} />
+          <group key={i} position={building.pos} rotation={[0, yaw, 0]}>
+            {/* Building tower (varied silhouettes) */}
+            {variant === 0 && (
+              <>
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[bw, bh, bd]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[bw * 0.15, bh * 0.18, bd * 0.12]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.62, bh * 0.38, bd * 0.62]} />
+                  {shellMat}
+                </mesh>
+                <mesh position={[0, bh / 2 - 1.8, 0]} castShadow receiveShadow>
+                  <boxGeometry args={[bw * 0.58, 3.6, bd * 0.58]} />
+                  {shellMat}
+                </mesh>
+              </>
+            )}
+            {variant === 1 && (
+              <>
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[bw, bh, bd]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[0, -bh * 0.05, bd * 0.34]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.82, bh * 0.35, bd * 0.28]} />
+                  {shellMat}
+                </mesh>
+                <mesh position={[0, bh / 2 + 1.8, 0]}>
+                  <cylinderGeometry args={[0.12, 0.18, 3.6, 8]} />
+                  <meshBasicMaterial
+                    color={building.accent}
+                    transparent
+                    opacity={0.75}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    toneMapped={false}
+                  />
+                </mesh>
+              </>
+            )}
+            {variant === 2 && (
+              <>
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[bw, bh * 0.7, bd]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[bw * -0.08, bh * 0.1, 0]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.78, bh * 0.38, bd * 0.78]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[bw * 0.05, bh * 0.32, bd * -0.06]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.56, bh * 0.28, bd * 0.56]} />
+                  {shellMat}
+                </mesh>
+              </>
+            )}
+            {variant === 3 && (
+              <>
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[bw, bh, bd]} />
+                  {shellMat}
+                </mesh>
+                <mesh position={[bw / 2 + 0.35, 0, 0]} castShadow receiveShadow>
+                  <boxGeometry args={[0.7, bh * 0.8, bd * 0.22]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[-bw / 2 - 0.35, 0, 0]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[0.7, bh * 0.75, bd * 0.18]} />
+                  {shellMat}
+                </mesh>
+                <mesh position={[0, bh / 2 - 2.0, 0]} castShadow receiveShadow>
+                  <boxGeometry args={[bw * 0.7, 4, bd * 0.7]} />
+                  {shellMat}
+                </mesh>
+              </>
+            )}
+
+            {variant === 4 && (
+              <>
+                {/* Jagged stepped tower */}
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[bw, bh, bd]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[bw * 0.18, bh * 0.08, bd * -0.12]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.62, bh * 0.38, bd * 0.62]} />
+                  {shellMat}
+                </mesh>
+                <mesh
+                  position={[bw * -0.12, bh * 0.24, bd * 0.18]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.46, bh * 0.26, bd * 0.46]} />
+                  {shellMat}
+                </mesh>
+                {/* Slanted cap */}
+                <mesh
+                  position={[0, bh / 2 - 2.2, 0]}
+                  rotation={[0, 0, 0.18]}
+                  castShadow
+                  receiveShadow
+                >
+                  <boxGeometry args={[bw * 0.7, 3.0, bd * 0.7]} />
+                  {shellMat}
+                </mesh>
+              </>
+            )}
+
+            {variant === 5 && (
+              <>
+                {/* Jagged fin tower */}
+                <mesh castShadow receiveShadow>
+                  <boxGeometry args={[bw, bh, bd]} />
+                  {shellMat}
+                </mesh>
+                <mesh position={[0, bh * 0.18, 0]} castShadow receiveShadow>
+                  <boxGeometry args={[bw * 0.7, bh * 0.4, bd * 0.7]} />
+                  {shellMat}
+                </mesh>
+                {(
+                  [
+                    { x: bw / 2 + 0.18, z: 0, h: bh * 0.85 },
+                    { x: -bw / 2 - 0.18, z: bd * 0.1, h: bh * 0.7 },
+                    { x: bw * 0.15, z: bd / 2 + 0.18, h: bh * 0.65 },
+                  ] as Array<{ x: number; z: number; h: number }>
+                ).map((f, idx) => (
+                  <mesh
+                    key={`fin_${idx}`}
+                    position={[f.x, 0, f.z]}
+                    castShadow
+                    receiveShadow
+                  >
+                    <boxGeometry args={[0.22, f.h, 0.32]} />
+                    {shellMat}
+                  </mesh>
+                ))}
+              </>
+            )}
+
+            {/* Neon edge trims (fake neon) */}
+            {(
+              [
+                [bw / 2 + 0.06, 0, bd / 2 + 0.06],
+                [-bw / 2 - 0.06, 0, bd / 2 + 0.06],
+                [bw / 2 + 0.06, 0, -bd / 2 - 0.06],
+                [-bw / 2 - 0.06, 0, -bd / 2 - 0.06],
+              ] as Array<[number, number, number]>
+            ).map((p, idx) => (
+              <mesh key={`trim_${idx}`} position={p}>
+                <boxGeometry args={[0.08, bh * 0.95, 0.08]} />
                 <meshBasicMaterial
                   color={building.accent}
                   transparent
-                  opacity={0.75}
+                  opacity={0.55}
                   blending={THREE.AdditiveBlending}
                   depthWrite={false}
                   toneMapped={false}
                 />
               </mesh>
-            </>
-          )}
-          {variant === 2 && (
-            <>
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[bw, bh * 0.7, bd]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[bw * -0.08, bh * 0.1, 0]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.78, bh * 0.38, bd * 0.78]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[bw * 0.05, bh * 0.32, bd * -0.06]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.56, bh * 0.28, bd * 0.56]} />
-                {shellMat}
-              </mesh>
-            </>
-          )}
-          {variant === 3 && (
-            <>
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[bw, bh, bd]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[bw / 2 + 0.35, 0, 0]} castShadow receiveShadow>
-                <boxGeometry args={[0.7, bh * 0.8, bd * 0.22]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[-bw / 2 - 0.35, 0, 0]} castShadow receiveShadow>
-                <boxGeometry args={[0.7, bh * 0.75, bd * 0.18]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[0, bh / 2 - 2.0, 0]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.7, 4, bd * 0.7]} />
-                {shellMat}
-              </mesh>
-            </>
-          )}
+            ))}
 
-          {variant === 4 && (
-            <>
-              {/* Jagged stepped tower */}
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[bw, bh, bd]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[bw * 0.18, bh * 0.08, bd * -0.12]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.62, bh * 0.38, bd * 0.62]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[bw * -0.12, bh * 0.24, bd * 0.18]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.46, bh * 0.26, bd * 0.46]} />
-                {shellMat}
-              </mesh>
-              {/* Slanted cap */}
-              <mesh position={[0, bh / 2 - 2.2, 0]} rotation={[0, 0, 0.18]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.7, 3.0, bd * 0.7]} />
-                {shellMat}
-              </mesh>
-            </>
-          )}
+            {(() => {
+              // Facade-takeover holo ads.
+              // Every building becomes a full "media skin"; tiny dot-windows stay underneath for sparkle.
+              const r0 = rand01(i * 917 + 3);
+              const r1 = rand01(i * 917 + 11);
+              const r2 = rand01(i * 917 + 29);
 
-          {variant === 5 && (
-            <>
-              {/* Jagged fin tower */}
-              <mesh castShadow receiveShadow>
-                <boxGeometry args={[bw, bh, bd]} />
-                {shellMat}
-              </mesh>
-              <mesh position={[0, bh * 0.18, 0]} castShadow receiveShadow>
-                <boxGeometry args={[bw * 0.7, bh * 0.4, bd * 0.7]} />
-                {shellMat}
-              </mesh>
-              {(
-                [
-                  { x: bw / 2 + 0.18, z: 0, h: bh * 0.85 },
-                  { x: -bw / 2 - 0.18, z: bd * 0.1, h: bh * 0.7 },
-                  { x: bw * 0.15, z: bd / 2 + 0.18, h: bh * 0.65 },
-                ] as Array<{ x: number; z: number; h: number }>
-              ).map((f, idx) => (
-                <mesh key={`fin_${idx}`} position={[f.x, 0, f.z]} castShadow receiveShadow>
-                  <boxGeometry args={[0.22, f.h, 0.32]} />
-                  {shellMat}
-                </mesh>
-              ))}
-            </>
-          )}
+              const hasFacadeAd = true;
+              const addSide = r0 > 0.52;
 
-          {/* Neon edge trims (fake neon) */}
-          {(
-            [
-              [bw / 2 + 0.06, 0, bd / 2 + 0.06],
-              [-bw / 2 - 0.06, 0, bd / 2 + 0.06],
-              [bw / 2 + 0.06, 0, -bd / 2 - 0.06],
-              [-bw / 2 - 0.06, 0, -bd / 2 - 0.06],
-            ] as Array<[number, number, number]>
-          ).map((p, idx) => (
-            <mesh key={`trim_${idx}`} position={p}>
-              <boxGeometry args={[0.08, bh * 0.95, 0.08]} />
-              <meshBasicMaterial
-                color={building.accent}
-                transparent
-                opacity={0.55}
-                blending={THREE.AdditiveBlending}
-                depthWrite={false}
-                toneMapped={false}
-              />
-            </mesh>
-          ))}
-          
-          {(() => {
-            // Facade-takeover holo ads.
-            // Every building becomes a full "media skin"; tiny dot-windows stay underneath for sparkle.
-            const r0 = rand01(i * 917 + 3);
-            const r1 = rand01(i * 917 + 11);
-            const r2 = rand01(i * 917 + 29);
+              const pPick = rand01(i * 1009 + 101);
+              const sPick = rand01(i * 1009 + 131);
+              const primary =
+                pPick > 0.78
+                  ? building.accent
+                  : pPick > 0.56
+                  ? "#00ffff"
+                  : pPick > 0.33
+                  ? "#ff00ff"
+                  : "#66ff00";
+              const secondary =
+                sPick > 0.7 ? "#0099ff" : sPick > 0.46 ? "#ffaa00" : "#ff0066";
 
-            const hasFacadeAd = true;
-            const addSide = r0 > 0.52;
+              const bigSeed = i * 1337 + 17;
+              const sideSeed = i * 1337 + 114;
 
-            const pPick = rand01(i * 1009 + 101);
-            const sPick = rand01(i * 1009 + 131);
-            const primary = pPick > 0.78 ? building.accent : pPick > 0.56 ? "#00ffff" : pPick > 0.33 ? "#ff00ff" : "#66ff00";
-            const secondary = sPick > 0.70 ? "#0099ff" : sPick > 0.46 ? "#ffaa00" : "#ff0066";
+              const frontFace = faceTransform("front", bw, bd);
+              const sideFace = faceTransform(
+                r1 > 0.5 ? "right" : "left",
+                bw,
+                bd
+              );
 
-            const bigSeed = i * 1337 + 17;
-            const sideSeed = i * 1337 + 114;
+              // Overscan the facade slightly so there are no blank edge strips.
+              // (We float the panel off the surface, so a bit of oversize looks good.)
+              const fw = Math.max(2.5, bw * 1.04);
+              const fh = Math.max(6, bh * 1.04);
 
-            const frontFace = faceTransform("front", bw, bd);
-            const sideFace = faceTransform(r1 > 0.5 ? "right" : "left", bw, bd);
+              // Side panel: overscan but keep narrower than front.
+              const sw = Math.max(2.2, (r2 > 0.55 ? bd : bw) * 0.86);
+              const sh = Math.max(5.5, bh * 0.98);
 
-            // Overscan the facade slightly so there are no blank edge strips.
-            // (We float the panel off the surface, so a bit of oversize looks good.)
-            const fw = Math.max(2.5, bw * 1.04);
-            const fh = Math.max(6, bh * 1.04);
+              return (
+                <>
+                  {/* Tiny facade dots underneath (keeps building texture even with full ads) */}
+                  <group position={[0, 0, bd / 2 + 0.021]}>
+                    <WindowPanel
+                      width={Math.max(2.5, bw * 0.92)}
+                      height={Math.max(6, bh * 0.92)}
+                      seed={i * 97 + 13}
+                      accent={building.accent}
+                    />
+                  </group>
 
-            // Side panel: overscan but keep narrower than front.
-            const sw = Math.max(2.2, (r2 > 0.55 ? bd : bw) * 0.86);
-            const sh = Math.max(5.5, bh * 0.98);
-
-            return (
-              <>
-                {/* Tiny facade dots underneath (keeps building texture even with full ads) */}
-                <group position={[0, 0, bd / 2 + 0.021]}>
-                  <WindowPanel
-                    width={Math.max(2.5, bw * 0.92)}
-                    height={Math.max(6, bh * 0.92)}
-                    seed={i * 97 + 13}
-                    accent={building.accent}
-                  />
-                </group>
-
-                {hasFacadeAd && (
-                  <>
-                    <group position={[0, 0, 0]}>
-                      <group position={frontFace.pos} rotation={[0, frontFace.rotY, 0]}>
-                        <mesh position={[0, 0, -0.06]}>
-                          <planeGeometry args={[fw * 1.03, fh * 1.03]} />
-                          <meshBasicMaterial color="#000000" transparent opacity={0.42} />
-                        </mesh>
-                        <group position={[0, 0, 0.02]}>
-                          <HoloAdPanel width={fw} height={fh} seed={bigSeed} primary={primary} secondary={secondary} />
-                        </group>
-                      </group>
-                    </group>
-
-                    {addSide && (
+                  {hasFacadeAd && (
+                    <>
                       <group position={[0, 0, 0]}>
-                        <group position={sideFace.pos} rotation={[0, sideFace.rotY, 0]}>
+                        <group
+                          position={frontFace.pos}
+                          rotation={[0, frontFace.rotY, 0]}
+                        >
                           <mesh position={[0, 0, -0.06]}>
-                            <planeGeometry args={[sw * 1.03, sh * 1.03]} />
-                            <meshBasicMaterial color="#000000" transparent opacity={0.36} />
+                            <planeGeometry args={[fw * 1.03, fh * 1.03]} />
+                            <meshBasicMaterial
+                              color="#000000"
+                              transparent
+                              opacity={0.42}
+                            />
                           </mesh>
                           <group position={[0, 0, 0.02]}>
-                            <HoloAdPanel width={sw} height={sh} seed={sideSeed} primary={secondary} secondary={primary} />
+                            <HoloAdPanel
+                              width={fw}
+                              height={fh}
+                              seed={bigSeed}
+                              primary={primary}
+                              secondary={secondary}
+                            />
                           </group>
                         </group>
                       </group>
-                    )}
-                  </>
-                )}
-              </>
-            );
-          })()}
-          
-          {/* Neon signs */}
-          {building.signs.map((sign: any, si: number) => {
-            const face = faceTransform(sign.face, bw, bd);
-            const scaleFactor = sign.text ? signTextScaleFactor(sign.text, sign.font) : 1;
-            const scaleMul = (sign.scaleMul ?? 1) as number;
 
-            const normalized = typeof sign.text === "string" ? sign.text.trim().replace(/\s+/g, " ") : "";
-            const compactLen = normalized.replace(/[^a-z0-9]/gi, "").length;
-            const isWidePanel =
-              Array.isArray(sign.size) &&
-              typeof sign.size[0] === "number" &&
-              typeof sign.size[1] === "number" &&
-              sign.size[0] >= sign.size[1] * 1.35;
-            const autoRotate =
-              !!normalized &&
-              sign.rotZ == null &&
-              sign.autoRotate !== false &&
-              compactLen >= 9 &&
-              isWidePanel;
+                      {addSide && (
+                        <group position={[0, 0, 0]}>
+                          <group
+                            position={sideFace.pos}
+                            rotation={[0, sideFace.rotY, 0]}
+                          >
+                            <mesh position={[0, 0, -0.06]}>
+                              <planeGeometry args={[sw * 1.03, sh * 1.03]} />
+                              <meshBasicMaterial
+                                color="#000000"
+                                transparent
+                                opacity={0.36}
+                              />
+                            </mesh>
+                            <group position={[0, 0, 0.02]}>
+                              <HoloAdPanel
+                                width={sw}
+                                height={sh}
+                                seed={sideSeed}
+                                primary={secondary}
+                                secondary={primary}
+                              />
+                            </group>
+                          </group>
+                        </group>
+                      )}
+                    </>
+                  )}
+                </>
+              );
+            })()}
 
-            const rotZ = (sign.rotZ ?? (autoRotate ? Math.PI / 2 : 0)) as number;
-            const rotNorm = ((rotZ % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-            const rot90 =
-              Math.abs(rotNorm - Math.PI / 2) < 0.01 ||
-              Math.abs(rotNorm - (3 * Math.PI) / 2) < 0.01;
-            const panelSize = (rot90
-              ? ([sign.size[1], sign.size[0]] as [number, number])
-              : (sign.size as [number, number]));
+            {/* Neon signs */}
+            {building.signs.map((sign: any, si: number) => {
+              const face = faceTransform(sign.face, bw, bd);
+              const scaleFactor = sign.text
+                ? signTextScaleFactor(sign.text, sign.font)
+                : 1;
+              const scaleMul = (sign.scaleMul ?? 1) as number;
 
-            const effectiveScaleMul = scaleMul * (autoRotate ? 1.12 : 1);
+              const normalized =
+                typeof sign.text === "string"
+                  ? sign.text.trim().replace(/\s+/g, " ")
+                  : "";
+              const compactLen = normalized.replace(/[^a-z0-9]/gi, "").length;
+              const isWidePanel =
+                Array.isArray(sign.size) &&
+                typeof sign.size[0] === "number" &&
+                typeof sign.size[1] === "number" &&
+                sign.size[0] >= sign.size[1] * 1.35;
+              const autoRotate =
+                !!normalized &&
+                sign.rotZ == null &&
+                sign.autoRotate !== false &&
+                compactLen >= 9 &&
+                isWidePanel;
 
-            // Keep signs from spilling past the building silhouette (most noticeable on the front face).
-            const margin = 0.35;
-            const maxX = Math.max(0, bw / 2 - panelSize[0] / 2 - margin);
-            const desiredXBase = (sign.x ?? 0) as number;
-            const desiredX = rot90 && Math.abs(desiredXBase) < 1e-6 ? -maxX : desiredXBase;
-            const clampedX = Math.max(-maxX, Math.min(maxX, desiredX));
+              const rotZ = (sign.rotZ ??
+                (autoRotate ? Math.PI / 2 : 0)) as number;
+              const rotNorm =
+                ((rotZ % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+              const rot90 =
+                Math.abs(rotNorm - Math.PI / 2) < 0.01 ||
+                Math.abs(rotNorm - (3 * Math.PI) / 2) < 0.01;
+              const panelSize = rot90
+                ? ([sign.size[1], sign.size[0]] as [number, number])
+                : (sign.size as [number, number]);
 
-            const signSeed =
-              (i + 1) * 1000 +
-              (si + 1) * 97 +
-              hashStringToUnitFloat(`${sign.font ?? ""}|${sign.text ?? ""}`) * 911;
+              const effectiveScaleMul = scaleMul * (autoRotate ? 1.12 : 1);
 
-            return (
-              <group
-                key={si}
-                position={[clampedX, sign.y ?? 0, 0]}
-              >
-                <group position={face.pos} rotation={[0, face.rotY, 0]}>
-                  <group rotation={[0, 0, rotZ]}>
-              {/* Background panel */}
-              <mesh position={[0, 0, -0.08]}>
-                <planeGeometry args={panelSize} />
-                <meshBasicMaterial 
-                  color="#000000" 
-                  transparent 
-                  opacity={0.7}
-                />
-              </mesh>
-              {/* 3D Neon Text Model */}
-              {sign.text && (
-                <group position={[0, 0, 0.02]}>
-                  <NeonTextModel
-                    text={sign.text}
-                    color={sign.color}
-                    fontFolder={sign.font}
-                    scale={panelSize[1] * 0.2 * 10 * scaleFactor * effectiveScaleMul}
-                    signSeed={signSeed}
-                  />
-                </group>
-              )}
-              {/* Extra glow effect */}
+              // Keep signs from spilling past the building silhouette (most noticeable on the front face).
+              const margin = 0.35;
+              const maxX = Math.max(0, bw / 2 - panelSize[0] / 2 - margin);
+              const desiredXBase = (sign.x ?? 0) as number;
+              const desiredX =
+                rot90 && Math.abs(desiredXBase) < 1e-6 ? -maxX : desiredXBase;
+              const clampedX = Math.max(-maxX, Math.min(maxX, desiredX));
+
+              const signSeed =
+                (i + 1) * 1000 +
+                (si + 1) * 97 +
+                hashStringToUnitFloat(`${sign.font ?? ""}|${sign.text ?? ""}`) *
+                  911;
+
+              return (
+                <group key={si} position={[clampedX, sign.y ?? 0, 0]}>
+                  <group position={face.pos} rotation={[0, face.rotY, 0]}>
+                    <group rotation={[0, 0, rotZ]}>
+                      {/* Background panel */}
+                      <mesh position={[0, 0, -0.08]}>
+                        <planeGeometry args={panelSize} />
+                        <meshBasicMaterial
+                          color="#000000"
+                          transparent
+                          opacity={0.7}
+                        />
+                      </mesh>
+                      {/* 3D Neon Text Model */}
+                      {sign.text && (
+                        <group position={[0, 0, 0.02]}>
+                          <NeonTextModel
+                            text={sign.text}
+                            color={sign.color}
+                            fontFolder={sign.font}
+                            scale={
+                              panelSize[1] *
+                              0.2 *
+                              10 *
+                              scaleFactor *
+                              effectiveScaleMul
+                            }
+                            signSeed={signSeed}
+                          />
+                        </group>
+                      )}
+                      {/* Extra glow effect */}
+                    </group>
                   </group>
                 </group>
-              </group>
-            );
-          })}
+              );
+            })}
 
-          {/* Extra cyberpunk linework on the front face (cheap, adds density) */}
-          {(
-            [
-              { y: -bh / 2 + bh * 0.16, w: bw * 0.95, h: 0.12, c: building.accent },
-              { y: -bh / 2 + bh * 0.28, w: bw * 0.85, h: 0.10, c: "#00ffff" },
-              { y: -bh / 2 + bh * 0.40, w: bw * 0.75, h: 0.10, c: "#ff00ff" },
-            ] as Array<{ y: number; w: number; h: number; c: string }>
-          ).map((s, idx) => (
-            <group
-              key={`line_${idx}`}
-              position={[0, s.y, bd / 2 + 0.06]}
-            >
-              <mesh>
-                <boxGeometry args={[s.w, s.h, 0.06]} />
-                <meshBasicMaterial
-                  color={s.c}
-                  transparent
-                  opacity={0.35}
-                  blending={THREE.AdditiveBlending}
-                  depthWrite={false}
-                  toneMapped={false}
-                />
-              </mesh>
-            </group>
-          ))}
-        </group>
-      );
+            {/* Extra cyberpunk linework on the front face (cheap, adds density) */}
+            {(
+              [
+                {
+                  y: -bh / 2 + bh * 0.16,
+                  w: bw * 0.95,
+                  h: 0.12,
+                  c: building.accent,
+                },
+                { y: -bh / 2 + bh * 0.28, w: bw * 0.85, h: 0.1, c: "#00ffff" },
+                { y: -bh / 2 + bh * 0.4, w: bw * 0.75, h: 0.1, c: "#ff00ff" },
+              ] as Array<{ y: number; w: number; h: number; c: string }>
+            ).map((s, idx) => (
+              <group key={`line_${idx}`} position={[0, s.y, bd / 2 + 0.06]}>
+                <mesh>
+                  <boxGeometry args={[s.w, s.h, 0.06]} />
+                  <meshBasicMaterial
+                    color={s.c}
+                    transparent
+                    opacity={0.35}
+                    blending={THREE.AdditiveBlending}
+                    depthWrite={false}
+                    toneMapped={false}
+                  />
+                </mesh>
+              </group>
+            ))}
+          </group>
+        );
       })}
 
       {/* Sky-bridges between tall towers (world-space; not nested in a building transform) */}
@@ -2099,7 +2643,15 @@ function CyberpunkBuildings() {
         [
           { a: 0, b: 4, drop: 11, w: 4.0, h: 1.7, c: "#050010", n: "#00ffff" },
           { a: 1, b: 4, drop: 15, w: 3.6, h: 1.5, c: "#120006", n: "#ff00ff" },
-        ] as Array<{ a: number; b: number; drop: number; w: number; h: number; c: string; n: string }>
+        ] as Array<{
+          a: number;
+          b: number;
+          drop: number;
+          w: number;
+          h: number;
+          c: string;
+          n: string;
+        }>
       ).map((br, bi) => {
         const A = buildings[br.a];
         const B = buildings[br.b];
@@ -2133,10 +2685,18 @@ function CyberpunkBuildings() {
         const pz = (az + bz) / 2;
 
         return (
-          <group key={`bridge_${bi}`} position={[px, y, pz]} rotation={[0, yaw, 0]}>
+          <group
+            key={`bridge_${bi}`}
+            position={[px, y, pz]}
+            rotation={[0, yaw, 0]}
+          >
             <mesh castShadow receiveShadow>
               <boxGeometry args={[br.w, br.h, len]} />
-              <meshStandardMaterial color={br.c} roughness={0.85} metalness={0.35} />
+              <meshStandardMaterial
+                color={br.c}
+                roughness={0.85}
+                metalness={0.35}
+              />
             </mesh>
             {/* Neon rails */}
             <mesh position={[br.w / 2 + 0.08, br.h / 2 + 0.08, 0]}>
@@ -2168,18 +2728,37 @@ function CyberpunkBuildings() {
   );
 }
 
-export function SciFiLobby() {
+export function SciFiLobby({
+  leaderboard,
+  showLeaderboardWall = true,
+}: {
+  leaderboard?: LeaderboardEntry[];
+  showLeaderboardWall?: boolean;
+}) {
   return (
     <>
       {/* Cyberpunk lighting: Darker ambient, strong colored rims */}
       <ambientLight intensity={0.4} color="#2a0a4a" />
       <hemisphereLight intensity={0.6} color="#4a00ff" groundColor="#000000" />
-      
+
       {/* Strong overhead spotlights */}
-      <directionalLight intensity={1.5} position={[0, 25, 0]} color="#aaccff" castShadow />
-      <directionalLight intensity={2.0} position={[15, 10, 10]} color="#00ffff" />
-      <directionalLight intensity={2.0} position={[-15, 10, -10]} color="#ff00ff" />
-      
+      <directionalLight
+        intensity={1.5}
+        position={[0, 25, 0]}
+        color="#aaccff"
+        castShadow
+      />
+      <directionalLight
+        intensity={2.0}
+        position={[15, 10, 10]}
+        color="#00ffff"
+      />
+      <directionalLight
+        intensity={2.0}
+        position={[-15, 10, -10]}
+        color="#ff00ff"
+      />
+
       {/* Arena spot lights */}
       <spotLight
         position={[0, 18, 0]}
@@ -2190,9 +2769,17 @@ export function SciFiLobby() {
         distance={40}
         castShadow
       />
-      
+
       <SciFiSky />
-      <Stars radius={100} depth={50} count={1600} factor={4} saturation={0} fade speed={1} />
+      <Stars
+        radius={100}
+        depth={50}
+        count={1600}
+        factor={4}
+        saturation={0}
+        fade
+        speed={1}
+      />
       <SciFiFloor />
       {/* ArenaCrowds removed */}
       <SciFiPlanters />
@@ -2203,20 +2790,53 @@ export function SciFiLobby() {
         <Billboard follow>
           <mesh position={[0, 0, -0.05]}>
             <planeGeometry args={[10, 3.2]} />
-            <meshBasicMaterial color="#000000" transparent opacity={0.55} depthWrite={false} />
+            <meshBasicMaterial
+              color="#000000"
+              transparent
+              opacity={0.55}
+              depthWrite={false}
+            />
           </mesh>
-          <Text fontSize={1.2} color="#ffff00" anchorX="center" anchorY="middle" outlineWidth={0.08} outlineColor="#ffff00" outlineOpacity={0.7}>
+          <Text
+            fontSize={1.2}
+            color="#ffff00"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.08}
+            outlineColor="#ffff00"
+            outlineOpacity={0.7}
+          >
             BETA
           </Text>
-          <Text position={[0, -1.05, 0]} fontSize={0.42} color="#ffffff" anchorX="center" anchorY="middle" maxWidth={9} lineHeight={1.1}>
+          <Text
+            position={[0, -1.05, 0]}
+            fontSize={0.42}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+            maxWidth={9}
+            lineHeight={1.1}
+          >
             UNDER CONSTRUCTION
           </Text>
         </Billboard>
       </group>
-      
+
       {/* Blimps with Ads */}
-      <Blimp position={[0, 18, -40]} text="CYBER" color="#00ffff" range={60} speed={0.04} />
-      <Blimp position={[0, 22, 35]} text="SHIMATA" color="#ff00ff" range={65} speed={0.03} />
+      <Blimp
+        position={[0, 18, -40]}
+        text="CYBER"
+        color="#00ffff"
+        range={60}
+        speed={0.04}
+      />
+      <Blimp
+        position={[0, 22, 35]}
+        text="SHIMATA"
+        color="#ff00ff"
+        range={65}
+        speed={0.03}
+      />
 
       {/* Cyberpunk Mega Buildings (LOD) */}
       <CyberpunkBuildings />
@@ -2224,19 +2844,199 @@ export function SciFiLobby() {
       {/* Distant flying cars (light streaks) */}
       {(
         [
-          { a: [-92, 0, -40] as [number, number, number], b: [78, 0, 58] as [number, number, number], y: 40, c: "#00ffff", s: 0.05, seed: 0.12 },
-          { a: [85, 0, -10] as [number, number, number], b: [-70, 0, 70] as [number, number, number], y: 36, c: "#ff00ff", s: 0.06, seed: 0.33 },
-          { a: [-88, 0, -75] as [number, number, number], b: [65, 0, -55] as [number, number, number], y: 44, c: "#66ff00", s: 0.045, seed: 0.58 },
-          { a: [95, 0, 20] as [number, number, number], b: [-60, 0, -70] as [number, number, number], y: 42, c: "#ffaa00", s: 0.04, seed: 0.81 },
-        ] as Array<{ a: [number, number, number]; b: [number, number, number]; y: number; c: string; s: number; seed: number }>
+          {
+            a: [-92, 0, -40] as [number, number, number],
+            b: [78, 0, 58] as [number, number, number],
+            y: 40,
+            c: "#00ffff",
+            s: 0.05,
+            seed: 0.12,
+          },
+          {
+            a: [85, 0, -10] as [number, number, number],
+            b: [-70, 0, 70] as [number, number, number],
+            y: 36,
+            c: "#ff00ff",
+            s: 0.06,
+            seed: 0.33,
+          },
+          {
+            a: [-88, 0, -75] as [number, number, number],
+            b: [65, 0, -55] as [number, number, number],
+            y: 44,
+            c: "#66ff00",
+            s: 0.045,
+            seed: 0.58,
+          },
+          {
+            a: [95, 0, 20] as [number, number, number],
+            b: [-60, 0, -70] as [number, number, number],
+            y: 42,
+            c: "#ffaa00",
+            s: 0.04,
+            seed: 0.81,
+          },
+        ] as Array<{
+          a: [number, number, number];
+          b: [number, number, number];
+          y: number;
+          c: string;
+          s: number;
+          seed: number;
+        }>
       ).map((r, idx) => (
-        <FlyingCar key={`car_${idx}`} a={r.a} b={r.b} y={r.y} color={r.c} speed={r.s} seed={r.seed} />
+        <FlyingCar
+          key={`car_${idx}`}
+          a={r.a}
+          b={r.b}
+          y={r.y}
+          color={r.c}
+          speed={r.s}
+          seed={r.seed}
+        />
       ))}
 
       {/* Holographic Jellyfish */}
       <HoloJellyfish position={[20, 15, -20]} />
       <HoloJellyfish position={[-20, 20, 20]} />
-      
+
+      {/* Wall enclosures (north/south) for future credits/leaderboard */}
+      <group position={[0, 0, 14]}>
+        <mesh position={[0, 0.6, 3]} castShadow receiveShadow>
+          <boxGeometry args={[36, 1.2, 1]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+
+        {/* Leaderboard display mounted to the north back wall */}
+        {showLeaderboardWall ? (
+          <group position={[0, 0, 2.2]} rotation={[0, Math.PI, 0]}>
+            <mesh position={[0, 2.8, 0]} castShadow receiveShadow>
+              <boxGeometry args={[4.8, 5.6, 0.25]} />
+              <SciFiWallMaterial
+                color="#0b0b12"
+                roughness={0.55}
+                metalness={0.75}
+              />
+            </mesh>
+
+            <Text
+              position={[0, 5.25, 0.16]}
+              fontSize={0.52}
+              font="/fonts/Orbitron-ExtraBold.ttf"
+              color="#ffffff"
+              anchorX="center"
+              anchorY="middle"
+            >
+              LEADERBOARD
+            </Text>
+
+            {(leaderboard ?? []).slice(0, 10).map((e, idx) => {
+              const minutes = Math.max(1, Math.round(e.playMs / 60000));
+              const line = `${idx + 1}. ${e.name}  ${
+                e.moves
+              }m  ${minutes}min  ${(e.score ?? 0).toFixed(2)}`;
+              return (
+                <Text
+                  key={e.id}
+                  position={[-2.25, 4.65 - idx * 0.38, 0.16]}
+                  fontSize={0.26}
+                  font="/fonts/Orbitron-Regular.ttf"
+                  color="#ffffff"
+                  anchorX="left"
+                  anchorY="middle"
+                  maxWidth={4.4}
+                >
+                  {line}
+                </Text>
+              );
+            })}
+          </group>
+        ) : null}
+
+        {/* TV wall panels (north): 2 screens */}
+        <mesh position={[-6, 2.8, 2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+        <mesh position={[6, 2.8, 2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+        <mesh position={[-17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+        <mesh position={[17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+      </group>
+
+      <group position={[0, 0, -14]}>
+        <mesh position={[0, 0.6, -3]} castShadow receiveShadow>
+          <boxGeometry args={[36, 1.2, 1]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+
+        {/* TV wall panels (south): 2 screens */}
+        <mesh position={[-6, 2.8, -2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+        <mesh position={[6, 2.8, -2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+        <mesh position={[-17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+        <mesh position={[17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <SciFiWallMaterial
+            color="#0b0b12"
+            roughness={0.55}
+            metalness={0.75}
+          />
+        </mesh>
+      </group>
+
       <fog attach="fog" args={["#050010", 20, 90]} />
     </>
   );

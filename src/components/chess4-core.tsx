@@ -66,6 +66,7 @@ export type UseChess4GameOptions = {
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  onActivityMove?: () => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
   leaveAllExceptBoardKey?: string | null;
@@ -139,6 +140,7 @@ export function useChess4Game({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
   leaveAllExceptBoardKey,
@@ -399,6 +401,20 @@ export function useChess4Game({
     setLegalTargets([]);
   }, [netState.seq]);
 
+  const pendingMoveRef = useRef(false);
+  const pendingMoveSentSeqRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!pendingMoveRef.current) return;
+    const sentSeq = pendingMoveSentSeqRef.current;
+    if (sentSeq === null) return;
+    if (netState.seq <= sentSeq) return;
+
+    pendingMoveRef.current = false;
+    pendingMoveSentSeqRef.current = null;
+    onActivityMove?.();
+  }, [netState.seq, onActivityMove]);
+
   const requestJoin = (seat: TeamSeat) => {
     const info = netState.seats[seat];
     if (info && info.connId !== chessSelfId) return;
@@ -418,6 +434,8 @@ export function useChess4Game({
     promotion?: "q" | "r" | "b" | "n"
   ) => {
     if (!canMoveNow) return;
+    pendingMoveRef.current = true;
+    pendingMoveSentSeqRef.current = netState.seq;
     send({ type: "move", from, to, promotion });
   };
 

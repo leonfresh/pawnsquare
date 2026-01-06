@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Billboard, Plane, Text, Line } from "@react-three/drei";
+import { Billboard, Plane, Text, Line, RoundedBox } from "@react-three/drei";
 import {
   Suspense,
   useCallback,
@@ -9,13 +9,14 @@ import {
   useMemo,
   useRef,
   useState,
+  memo,
 } from "react";
-import { Chessboard, type Arrow } from "react-chessboard";
 import * as THREE from "three";
 import {
   usePartyRoom as useP2PRoom,
   type BoardMode,
   type ChatMessage,
+  type LeaderboardEntry,
   type Player,
   type Vec3,
 } from "@/lib/partyRoom";
@@ -68,6 +69,10 @@ function makeRadialGlowTexture(size = 64) {
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+function stripGuestSuffix(name: string) {
+  return name.replace(/\s*\(guest\)\s*$/i, "").trim();
 }
 
 function distSq(a: Vec3, b: Vec3) {
@@ -2186,7 +2191,7 @@ function SelfAvatar({
   );
 }
 
-function SpeechBubble({ text }: { text: string }) {
+const SpeechBubble = memo(({ text }: { text: string }) => {
   const t = (text ?? "").toString();
   // Estimate lines more generously and allow more lines
   const approxLines = Math.max(1, Math.min(10, Math.ceil(t.length / 26)));
@@ -2270,15 +2275,16 @@ function SpeechBubble({ text }: { text: string }) {
           anchorY="middle"
           maxWidth={Math.max(0.6, width - 0.25)}
           textAlign="center"
+          renderOrder={100}
         >
           {t}
         </Text>
       </group>
     </Billboard>
   );
-}
+});
 
-function RemoteAvatar({
+const RemoteAvatar = memo(function RemoteAvatar({
   id,
   name,
   color,
@@ -2310,6 +2316,8 @@ function RemoteAvatar({
   const [movingSpeed, setMovingSpeed] = useState(0);
   const speedUiAccumulatorRef = useRef(0);
   const lastSpeedUiRef = useRef(0);
+  const [distance, setDistance] = useState(0);
+  const distanceCheckRef = useRef(0);
 
   useFrame((_state, dt) => {
     const g = groupRef.current;
@@ -2358,24 +2366,39 @@ function RemoteAvatar({
         setMovingSpeed(nextSpeed);
       }
     }
+
+    // Check distance every 0.5 seconds for LOD
+    distanceCheckRef.current += dt;
+    if (distanceCheckRef.current > 0.5) {
+      distanceCheckRef.current = 0;
+      const dist = Math.sqrt(
+        posRef.current.x * posRef.current.x +
+          posRef.current.y * posRef.current.y +
+          posRef.current.z * posRef.current.z
+      );
+      setDistance(dist);
+    }
   });
 
   return (
     <group ref={groupRef}>
-      <Billboard position={[0, 2.25, 0]}>
-        <Text
-          fontSize={0.22}
-          color={color}
-          outlineWidth={0.012}
-          outlineColor="rgba(0,0,0,0.65)"
-          anchorX="center"
-          anchorY="bottom"
-          maxWidth={3.4}
-          textAlign="center"
-        >
-          {name || id.slice(0, 4)}
-        </Text>
-      </Billboard>
+      {distance < 30 ? (
+        <Billboard position={[0, 2.25, 0]}>
+          <Text
+            fontSize={0.22}
+            color={color}
+            outlineWidth={0.012}
+            outlineColor="rgba(0,0,0,0.65)"
+            anchorX="center"
+            anchorY="bottom"
+            maxWidth={3.4}
+            textAlign="center"
+            renderOrder={100}
+          >
+            {name || id.slice(0, 4)}
+          </Text>
+        </Billboard>
+      ) : null}
 
       {bubbleText ? <SpeechBubble text={bubbleText} /> : null}
 
@@ -2387,7 +2410,7 @@ function RemoteAvatar({
       />
     </group>
   );
-}
+});
 
 function FollowCamera({
   target,
@@ -2964,6 +2987,7 @@ type BoardControlsOpen = {
   startledSquares?: string[];
   canPlaceGoose?: boolean;
   onPlaceGoose?: (sq: string) => boolean;
+  checkersBoard?: Record<string, { color: "w" | "b"; king: boolean }>;
   canInc: boolean;
   canDec: boolean;
   canIncIncrement: boolean;
@@ -2997,6 +3021,7 @@ type Board2dSync = {
   startledSquares?: string[];
   canPlaceGoose?: boolean;
   onPlaceGoose?: (sq: string) => boolean;
+  checkersBoard?: Record<string, { color: "w" | "b"; king: boolean }>;
   onMove2d: (
     from: string,
     to: string,
@@ -3264,6 +3289,911 @@ import {
 import { ChessBoardPreview } from "@/components/chess-board-preview";
 import { LoadTestPanel } from "@/components/load-test-panel";
 
+type TvWallScreen = {
+  id: string;
+  position: [number, number, number];
+  rotationY: number;
+  boardKey: string;
+  shaderVariant?: "starfield" | "triangleTunnel";
+};
+
+type FenPiece = {
+  color: "w" | "b";
+  kind: "p" | "n" | "b" | "r" | "q" | "k";
+};
+
+function parseFenToSquareMap(fen: string): Record<string, FenPiece> {
+  const out: Record<string, FenPiece> = {};
+  const boardPart = (fen || "").split(" ")[0] || "";
+  const rows = boardPart.split("/");
+  if (rows.length !== 8) return out;
+
+  for (let row = 0; row < 8; row++) {
+    const r = rows[row] || "";
+    let col = 0;
+    for (const ch of r) {
+      if (col >= 8) break;
+      const code = ch.charCodeAt(0);
+      if (code >= 48 && code <= 57) {
+        col += Number(ch);
+        continue;
+      }
+      const isWhite = ch === ch.toUpperCase();
+      const kind = ch.toLowerCase() as FenPiece["kind"];
+      if ("pnbrqk".includes(kind)) {
+        const file = String.fromCharCode(97 + col);
+        const rank = String(8 - row);
+        out[`${file}${rank}`] = { color: isWhite ? "w" : "b", kind };
+      }
+      col += 1;
+    }
+  }
+  return out;
+}
+
+function getTvBoardRectPx(W: number, H: number) {
+  // Smaller padding so the board fills the screen more.
+  const pad = 28;
+  const inner = {
+    x: pad,
+    y: pad,
+    w: W - pad * 2,
+    h: H - pad * 2,
+  };
+  const boardSize = Math.min(inner.w, inner.h) - 12;
+  const boardX = inner.x + (inner.w - boardSize) / 2;
+  // Slightly bias down to leave room for the header badge.
+  const boardY = inner.y + (inner.h - boardSize) / 2 + 8;
+  return { inner, boardX, boardY, boardSize };
+}
+
+const TV_SPACE_VERTEX = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+// Shared uniforms so all TV starfields animate in sync (and avoids cases where
+// only one instance updates time).
+const TV_SPACE_UNIFORMS: { uTime: { value: number } } = { uTime: { value: 0 } };
+
+const TV_SPACE_FRAGMENT = /* glsl */ `
+  // mediump is typically faster on mobile/low-end GPUs
+  precision mediump float;
+  varying vec2 vUv;
+  uniform float uTime;
+
+  #define TAU 6.28318530718
+  #define PI 3.14159265359
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  // Smooth HSV to RGB (iq)
+  vec3 hsv2rgb(in vec3 c) {
+    vec3 rgb = clamp(
+      abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0,
+      0.0,
+      1.0
+    );
+    rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+    return c.z * mix(vec3(1.0), rgb, c.y);
+  }
+
+  float star(vec2 uv, float flare) {
+    float d = length(uv);
+    float m = 0.03 / max(d, 0.0005);
+    float rays = max(0.0, 0.5 - abs(uv.x * uv.y * 1000.0));
+    m += rays * flare * 2.0;
+    m *= smoothstep(1.0, 0.1, d);
+    return m;
+  }
+
+  vec3 starLayer(vec2 uv) {
+    vec3 col = vec3(0.0);
+    vec2 gv = fract(uv) - 0.5;
+    vec2 id = floor(uv);
+    for (int y = -1; y <= 1; y++) {
+      for (int x = -1; x <= 1; x++) {
+        vec2 offs = vec2(float(x), float(y));
+        float n = hash21(id + offs);
+        float size = fract(n);
+        vec2 p = gv - offs - vec2(n, fract(n * 34.0)) + 0.5;
+        float s = star(p, smoothstep(0.1, 0.9, size) * 0.46);
+        // More saturated, fireworks-like star colors (cheap HSV).
+        float hue = fract(n * 13.17 + (id.x + id.y) * 0.013 + uTime * 0.02);
+        // Slightly less saturated/bright than the previous pass.
+        float sat = mix(0.55, 0.88, smoothstep(0.35, 0.95, size));
+        float val = mix(0.72, 1.05, smoothstep(0.55, 0.98, size));
+        vec3 color = hsv2rgb(vec3(hue, sat, val));
+
+        // Occasionally push a very bright, colorful "firework" sparkle.
+        float fire = smoothstep(0.90, 0.995, size);
+        color = mix(color, hsv2rgb(vec3(fract(hue + 0.33), 0.9, 1.18)), fire * 0.55);
+        // twinkle
+        s *= sin(uTime * 0.6 + n * TAU) * 0.5 + 0.5;
+        col += s * (0.70 + 0.65 * fire) * size * color;
+      }
+    }
+    return col;
+  }
+
+  void main() {
+    // Convert to shadertoy-like UV: centered, aspect-correct
+    vec2 uv = vUv;
+    vec2 p = uv - 0.5;
+    // Wide aspect (approx 6.35/3.6) for proper star shape
+    float aspect = 6.35 / 3.6;
+    p.x *= aspect;
+
+    // Subtle camera drift
+    vec2 drift = vec2(sin(uTime * 0.22), cos(uTime * 0.22)) * 0.05;
+
+    // Background base
+    float r = length(p);
+    // Slightly brighter base so the screen doesn't read as "off".
+    vec3 col = vec3(0.015, 0.014, 0.026);
+
+    // Layered starfield (parallax)
+    float t = uTime * 0.025;
+    // Main perf knob: fewer layers = fewer shader ops per pixel.
+    const float NUM_LAYERS = 5.0;
+    for (float i = 0.0; i < 1.0; i += 1.0 / NUM_LAYERS) {
+      float depth = fract(i + t);
+      float scale = mix(22.0, 0.8, depth);
+      float fade = depth * smoothstep(1.0, 0.9, depth);
+      vec2 suv = (p + drift) * scale + i * 453.2 - uTime * 0.05;
+      col += starLayer(suv) * fade * 1.05;
+    }
+
+    // Soft nebula tint so it isn't just black + stars
+    float neb = exp(-3.5 * r * r);
+    col += vec3(0.07, 0.025, 0.10) * neb;
+    col += vec3(0.016, 0.075, 0.13) * exp(-5.0 * (p.x + 0.35) * (p.x + 0.35) - 3.0 * p.y * p.y);
+
+    // Vignette
+    // Softer vignette so corners aren't crushed.
+    float vig = smoothstep(1.15, 0.12, r);
+    col *= vig;
+
+    // Mild contrast boost
+    // Slight brightness lift + saturation feel.
+    col = pow(col, vec3(0.88));
+    col *= 1.04;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+// Triangle tunnel background (optimized, TV-sized): inspired by the reference shader in
+// src/ref/triangle-tunnel but adapted for our simple vUv + uTime setup.
+const TV_TRIANGLE_TUNNEL_FRAGMENT = /* glsl */ `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform float uTime;
+
+  // 2D rotation
+  mat2 rot(float a) {
+    float c = cos(a), s = sin(a);
+    return mat2(c, -s, s, c);
+  }
+
+  // Signed distance to an equilateral triangle (iq)
+  float sdEquilateralTriangle(vec2 p) {
+    const float k = 1.7320508075688772; // sqrt(3)
+    p.x = abs(p.x) - 1.0;
+    p.y = p.y + 1.0 / k;
+    if (p.x + k * p.y > 0.0) {
+      p = vec2(p.x - k * p.y, -k * p.x - p.y) * 0.5;
+    }
+    p.x -= clamp(p.x, -2.0, 0.0);
+    return -length(p) * sign(p.y);
+  }
+
+  vec3 palette(float t) {
+    // Saturated neon-ish palette.
+    vec3 a = vec3(0.55, 0.22, 0.72);
+    vec3 b = vec3(0.70, 0.95, 0.55);
+    vec3 c = vec3(1.00, 1.00, 1.00);
+    vec3 d = vec3(0.00, 0.20, 0.55);
+    return a + b * cos(6.2831853 * (c * t + d));
+  }
+
+  void main() {
+    // Centered, aspect-correct coordinates.
+    vec2 p = vUv - 0.5;
+    float aspect = 6.35 / 3.6;
+    p.x *= aspect;
+
+    // Gentle camera drift.
+    // Slow down the tunnel motion by 50%.
+    float t = uTime * 0.5;
+    p *= rot(0.12 * t);
+    p += vec2(sin(t * 0.17), cos(t * 0.13)) * 0.04;
+
+    // Brighter base so it reads vivid behind the board.
+    vec3 col = vec3(0.016, 0.013, 0.030);
+
+    // Layered tunnel rings. Main perf knob is NUM.
+    const float NUM = 6.0;
+    float tt = t * 0.17;
+    for (float i = 0.0; i < 1.0; i += 1.0 / NUM) {
+      float z = fract(i + tt);
+      float depth = 1.0 - z;
+
+      // Scale grows with depth to create a tunnel feel.
+      float s = mix(0.85, 6.5, depth);
+      vec2 q = p * s;
+      q *= rot(t * 0.35 + i * 9.0);
+
+      // Triangle distance: thin glowing edges.
+      float d = abs(sdEquilateralTriangle(q));
+      float glow = exp(-d * 9.5);
+      // Add subtle streaking along edges.
+      float streak = 0.5 + 0.5 * sin(8.0 * (q.x + q.y) + t * 1.3 + i * 7.0);
+      glow *= mix(0.75, 1.2, streak);
+
+      vec3 c = palette(i + t * 0.03);
+      col += c * glow * (0.13 + 0.62 * depth);
+    }
+
+    // Vignette
+    float r = length(p);
+    col *= smoothstep(1.12, 0.16, r);
+    col = pow(col, vec3(0.88));
+    col *= 1.06;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+function uvToSquareInTvBoard(
+  uv: THREE.Vector2,
+  orientation: "white" | "black",
+  W: number,
+  H: number
+): string | null {
+  const u = clamp(uv.x, 0, 0.999999);
+  const v = clamp(uv.y, 0, 0.999999);
+
+  // Convert UV to pixel-space with (0,0) at top-left.
+  const x = u * W;
+  const y = (1 - v) * H;
+  const { boardX, boardY, boardSize } = getTvBoardRectPx(W, H);
+
+  if (
+    x < boardX ||
+    x >= boardX + boardSize ||
+    y < boardY ||
+    y >= boardY + boardSize
+  ) {
+    return null;
+  }
+
+  const fx = (x - boardX) / boardSize;
+  const fy = (y - boardY) / boardSize;
+  const col = clamp(Math.floor(fx * 8), 0, 7);
+  const rowFromTop = clamp(Math.floor(fy * 8), 0, 7);
+
+  let fileIndex = col;
+  let rank = 8 - rowFromTop;
+  if (orientation === "black") {
+    fileIndex = 7 - col;
+    rank = rowFromTop + 1;
+  }
+
+  const file = String.fromCharCode(97 + fileIndex);
+  return `${file}${rank}`;
+}
+
+function drawGooseIcon(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  size: number,
+  fill: string,
+  stroke: string
+) {
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = Math.max(2, Math.floor(size * 0.08));
+
+  // Body
+  ctx.beginPath();
+  ctx.ellipse(0, size * 0.12, size * 0.44, size * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Neck
+  ctx.beginPath();
+  ctx.moveTo(size * 0.18, size * 0.02);
+  ctx.bezierCurveTo(
+    size * 0.28,
+    -size * 0.22,
+    size * 0.24,
+    -size * 0.4,
+    size * 0.02,
+    -size * 0.46
+  );
+  ctx.bezierCurveTo(
+    -size * 0.08,
+    -size * 0.48,
+    -size * 0.02,
+    -size * 0.3,
+    size * 0.06,
+    -size * 0.18
+  );
+  ctx.stroke();
+
+  // Head
+  ctx.beginPath();
+  ctx.ellipse(
+    size * 0.02,
+    -size * 0.48,
+    size * 0.12,
+    size * 0.12,
+    0,
+    0,
+    Math.PI * 2
+  );
+  ctx.fill();
+  ctx.stroke();
+
+  // Beak
+  ctx.beginPath();
+  ctx.moveTo(size * 0.12, -size * 0.5);
+  ctx.lineTo(size * 0.28, -size * 0.46);
+  ctx.lineTo(size * 0.12, -size * 0.42);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Eye
+  ctx.fillStyle = stroke;
+  ctx.beginPath();
+  ctx.arc(size * 0.04, -size * 0.52, Math.max(1, size * 0.03), 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function pieceToGlyph(p: FenPiece): string {
+  const key = `${p.color}${p.kind}`;
+  switch (key) {
+    case "wk":
+      return "♔";
+    case "wq":
+      return "♕";
+    case "wr":
+      return "♖";
+    case "wb":
+      return "♗";
+    case "wn":
+      return "♘";
+    case "wp":
+      return "♙";
+    case "bk":
+      return "♚";
+    case "bq":
+      return "♛";
+    case "br":
+      return "♜";
+    case "bb":
+      return "♝";
+    case "bn":
+      return "♞";
+    case "bp":
+      return "♟";
+    default:
+      return "";
+  }
+}
+
+const InWorldTv = memo(function InWorldTv({
+  screen,
+  sync,
+  mode,
+}: {
+  screen: TvWallScreen;
+  sync: Board2dSync | null;
+  mode: BoardMode;
+}) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [imageVersion, setImageVersion] = useState(0);
+
+  const canvas = useMemo(() => {
+    const c = document.createElement("canvas");
+    // Match the physical TV screen aspect (6.1 / 3.45) so the texture is not
+    // stretched on the plane. We'll render a square board letterboxed inside.
+    c.width = 1024;
+    c.height = 580;
+    return c;
+  }, []);
+
+  const chessPieceImages = useMemo(() => {
+    const paths = {
+      wp: "/2d/wp.png",
+      wn: "/2d/wn.png",
+      wb: "/2d/wb.png",
+      wr: "/2d/wr.png",
+      wq: "/2d/wq.png",
+      wk: "/2d/wk.png",
+      bp: "/2d/bp.png",
+      bn: "/2d/bn.png",
+      bb: "/2d/bb.png",
+      br: "/2d/br.png",
+      bq: "/2d/bq.png",
+      bk: "/2d/bk.png",
+    } as const;
+
+    const out: Record<string, HTMLImageElement> = {};
+    for (const [k, src] of Object.entries(paths)) {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = src;
+      out[k] = img;
+    }
+    return out;
+  }, []);
+
+  useEffect(() => {
+    // When piece images load, bump a version to redraw.
+    let alive = true;
+    const imgs = Object.values(chessPieceImages);
+    let remaining = imgs.length;
+    const onDone = () => {
+      if (!alive) return;
+      setImageVersion((v) => v + 1);
+    };
+    for (const img of imgs) {
+      if (img.complete && img.naturalWidth > 0) {
+        remaining -= 1;
+        continue;
+      }
+      img.onload = () => {
+        remaining -= 1;
+        onDone();
+      };
+      img.onerror = () => {
+        remaining -= 1;
+        onDone();
+      };
+    }
+    if (remaining === 0) onDone();
+    return () => {
+      alive = false;
+    };
+  }, [chessPieceImages]);
+
+  const texture = useMemo(() => {
+    const t = new THREE.CanvasTexture(canvas);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.minFilter = THREE.LinearFilter;
+    t.magFilter = THREE.LinearFilter;
+    t.generateMipmaps = false;
+    t.needsUpdate = true;
+    return t;
+  }, [canvas]);
+
+  useFrame((state) => {
+    TV_SPACE_UNIFORMS.uTime.value = state.clock.elapsedTime;
+  });
+
+  const isChess4Way = screen.boardKey === "m";
+  const engine = engineForMode(mode);
+  const supported =
+    (engine === "chess" || engine === "checkers") && !isChess4Way;
+
+  const pieceMap = useMemo(
+    () =>
+      engine === "chess" && sync?.fen ? parseFenToSquareMap(sync.fen) : {},
+    [engine, sync?.fen]
+  );
+
+  useEffect(() => {
+    // Clear selection when the board position changes.
+    setSelected(null);
+  }, [sync?.fen, screen.boardKey]);
+
+  useEffect(() => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const W = canvas.width;
+    const H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Transparent canvas; the background is handled by the space shader mesh.
+    const { inner, boardX, boardY, boardSize } = getTvBoardRectPx(W, H);
+
+    // Header badge
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.lineWidth = 2;
+    const badgeW = 215;
+    const badgeH = 46;
+    const bx = inner.x + 10;
+    const by = inner.y + 10;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, badgeW, badgeH, 16);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "900 24px system-ui, sans-serif";
+    ctx.fillText(screen.boardKey.toUpperCase(), bx + 14, by + 32);
+    const status =
+      supported && sync ? (sync.canMove2d ? "Your turn" : "View") : "";
+    if (status) {
+      ctx.globalAlpha = 0.78;
+      ctx.font = "600 16px system-ui, sans-serif";
+      ctx.fillText(status, bx + 60, by + 32);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    // Goose badge in header (goose mode)
+    if (mode === "goose") {
+      drawGooseIcon(
+        ctx,
+        inner.x + inner.w - 34,
+        inner.y + 34,
+        44,
+        "rgba(255,255,255,0.92)",
+        "rgba(10,14,24,0.95)"
+      );
+    }
+
+    // Content
+    if (!supported) {
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.font = "700 34px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("2D board unavailable", W / 2, H / 2 - 18);
+      ctx.fillText("for this mode", W / 2, H / 2 + 24);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      texture.needsUpdate = true;
+      return;
+    }
+
+    if (!sync) {
+      ctx.fillStyle = "rgba(255,255,255,0.70)";
+      ctx.font = "700 40px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Loading…", W / 2, H / 2);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      texture.needsUpdate = true;
+      return;
+    }
+
+    const sq = boardSize / 8;
+
+    const light = "#f0d9b5";
+    const dark = "#b58863";
+    const orient = sync.boardOrientation;
+
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        // Determine square in algebraic for this view cell.
+        const col = orient === "white" ? c : 7 - c;
+        const rank = orient === "white" ? 8 - r : r + 1;
+        const file = String.fromCharCode(97 + col);
+        const square = `${file}${rank}`;
+
+        const isDark = (c + r) % 2 === 1;
+        ctx.fillStyle = isDark ? dark : light;
+        ctx.fillRect(boardX + c * sq, boardY + r * sq, sq, sq);
+
+        if (selected === square) {
+          ctx.fillStyle = "rgba(120, 255, 216, 0.28)";
+          ctx.fillRect(boardX + c * sq, boardY + r * sq, sq, sq);
+        }
+      }
+    }
+
+    if (engine === "chess") {
+      // Pieces (PNG sprites)
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const col = orient === "white" ? c : 7 - c;
+          const rank = orient === "white" ? 8 - r : r + 1;
+          const file = String.fromCharCode(97 + col);
+          const square = `${file}${rank}`;
+          const p = pieceMap[square];
+          if (!p) continue;
+
+          const key = `${p.color}${p.kind}`;
+          const img = chessPieceImages[key];
+          const size = sq * 0.9;
+          const x = boardX + c * sq + (sq - size) / 2;
+          const y = boardY + r * sq + (sq - size) / 2;
+
+          if (img && img.complete && img.naturalWidth > 0) {
+            // Drop shadow
+            ctx.globalAlpha = 0.35;
+            ctx.drawImage(img, x + 2, y + 3, size, size);
+            ctx.globalAlpha = 1;
+            ctx.drawImage(img, x, y, size, size);
+          } else {
+            // Fallback glyph
+            const glyph = pieceToGlyph(p);
+            if (glyph) {
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.font = `700 ${Math.floor(
+                sq * 0.72
+              )}px "Segoe UI Symbol", "Noto Sans Symbols", system-ui`;
+              ctx.fillStyle = "rgba(0,0,0,0.45)";
+              ctx.fillText(
+                glyph,
+                boardX + c * sq + sq / 2 + 2,
+                boardY + r * sq + sq / 2 + 3
+              );
+              ctx.fillStyle = p.color === "w" ? "#ffffff" : "#111111";
+              ctx.fillText(
+                glyph,
+                boardX + c * sq + sq / 2,
+                boardY + r * sq + sq / 2
+              );
+              ctx.textAlign = "left";
+              ctx.textBaseline = "alphabetic";
+            }
+          }
+        }
+      }
+
+      // Goose overlay piece (goose mode)
+      if (mode === "goose" && sync.gooseSquare) {
+        const sqId = sync.gooseSquare;
+        // Find its screen cell
+        const fileIdx = sqId.charCodeAt(0) - 97;
+        const rankNum = Number(sqId[1]);
+        const c0 = orient === "white" ? fileIdx : 7 - fileIdx;
+        const r0 = orient === "white" ? 8 - rankNum : rankNum - 1;
+        if (c0 >= 0 && c0 < 8 && r0 >= 0 && r0 < 8) {
+          drawGooseIcon(
+            ctx,
+            boardX + c0 * sq + sq / 2,
+            boardY + r0 * sq + sq / 2,
+            sq * 0.65,
+            "rgba(255,255,255,0.92)",
+            "rgba(0,0,0,0.65)"
+          );
+        }
+      }
+    } else {
+      // Checkers pieces (simple discs, with a "king" ring)
+      const board = sync.checkersBoard ?? {};
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const col = orient === "white" ? c : 7 - c;
+          const rank = orient === "white" ? 8 - r : r + 1;
+          const file = String.fromCharCode(97 + col);
+          const square = `${file}${rank}`;
+          const p = board[square];
+          if (!p) continue;
+
+          const cx = boardX + c * sq + sq / 2;
+          const cy = boardY + r * sq + sq / 2;
+          const radius = sq * 0.38;
+
+          // Shadow
+          ctx.fillStyle = "rgba(0,0,0,0.35)";
+          ctx.beginPath();
+          ctx.arc(cx + 2, cy + 3, radius, 0, Math.PI * 2);
+          ctx.fill();
+
+          const fill = p.color === "w" ? "#ffffff" : "#111111";
+          const stroke =
+            p.color === "w" ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.12)";
+          const grad = ctx.createRadialGradient(
+            cx - radius * 0.35,
+            cy - radius * 0.35,
+            radius * 0.1,
+            cx,
+            cy,
+            radius
+          );
+          grad.addColorStop(0, p.color === "w" ? "#ffffff" : "#2a2a2a");
+          grad.addColorStop(1, fill);
+          ctx.fillStyle = grad;
+          ctx.strokeStyle = stroke;
+          ctx.lineWidth = Math.max(2, sq * 0.06);
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          if (p.king) {
+            // Donut / ring (matches the reference style)
+            ctx.strokeStyle =
+              p.color === "w" ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.75)";
+            ctx.lineWidth = Math.max(2, sq * 0.09);
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius * 0.55, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle =
+              p.color === "w" ? "rgba(0,0,0,0.06)" : "rgba(255,255,255,0.05)";
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius * 0.3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+    }
+
+    texture.needsUpdate = true;
+  }, [
+    canvas,
+    texture,
+    supported,
+    sync,
+    pieceMap,
+    selected,
+    screen.boardKey,
+    engine,
+    mode,
+    chessPieceImages,
+    imageVersion,
+  ]);
+
+  const handlePointerDown = useCallback(
+    (e: any) => {
+      e.stopPropagation();
+      if (!supported || !sync) return;
+      const uv = e.uv as THREE.Vector2 | undefined;
+      if (!uv) return;
+
+      const square = uvToSquareInTvBoard(
+        uv,
+        sync.boardOrientation,
+        canvas.width,
+        canvas.height
+      );
+      if (!square) return;
+
+      const piece =
+        engine === "checkers" ? sync.checkersBoard?.[square] : pieceMap[square];
+
+      if (mode === "goose") {
+        const canPlaceGoose = !!(sync as any).canPlaceGoose;
+        const onPlaceGoose = (sync as any).onPlaceGoose as
+          | ((sq: string) => boolean)
+          | undefined;
+        if (canPlaceGoose && onPlaceGoose && !piece) {
+          const placed = onPlaceGoose(square);
+          if (placed) setSelected(null);
+          return;
+        }
+      }
+
+      if (!sync.canMove2d) return;
+
+      // Clicking your own piece selects it.
+      if (piece && (piece as any).color === sync.turn) {
+        setSelected((cur) => (cur === square ? null : square));
+        return;
+      }
+
+      // If a piece is selected, attempt a move.
+      if (selected) {
+        const moved = sync.onMove2d(selected, square);
+        setSelected(null);
+        if (moved) return;
+      }
+    },
+    [supported, sync, pieceMap, selected, engine, mode, canvas]
+  );
+
+  return (
+    <group position={screen.position} rotation={[0, screen.rotationY, 0]}>
+      {/* Modern TV housing + bezel */}
+      <RoundedBox
+        args={[6.8, 4.05, 0.26]}
+        radius={0.22}
+        smoothness={8}
+        position={[0, 0, -0.06]}
+        castShadow
+        receiveShadow
+      >
+        <meshStandardMaterial
+          color="#0b0b10"
+          roughness={0.55}
+          metalness={0.35}
+        />
+      </RoundedBox>
+
+      <RoundedBox
+        args={[6.65, 3.9, 0.12]}
+        radius={0.2}
+        smoothness={8}
+        position={[0, 0, 0.03]}
+      >
+        <meshStandardMaterial
+          color="#0a0a0f"
+          roughness={0.35}
+          metalness={0.6}
+        />
+      </RoundedBox>
+
+      {/* Screen glow plane */}
+      <mesh position={[0, 0, 0.095]} renderOrder={0}>
+        <planeGeometry args={[6.35, 3.6]} />
+        <meshStandardMaterial
+          color="#000000"
+          emissive="#0a0f18"
+          emissiveIntensity={0.9}
+          roughness={1}
+          metalness={0}
+        />
+      </mesh>
+
+      {/* Space shader background (fills the whole visible screen) */}
+      <mesh position={[0, 0, 0.101]} renderOrder={1}>
+        <planeGeometry args={[6.35, 3.6]} />
+        <shaderMaterial
+          vertexShader={TV_SPACE_VERTEX}
+          fragmentShader={
+            screen.shaderVariant === "triangleTunnel"
+              ? TV_TRIANGLE_TUNNEL_FRAGMENT
+              : TV_SPACE_FRAGMENT
+          }
+          uniforms={TV_SPACE_UNIFORMS}
+          side={THREE.DoubleSide}
+          transparent={false}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* WebGL screen surface (canvas texture) */}
+      <mesh
+        position={[0, 0, 0.106]}
+        onPointerDown={handlePointerDown}
+        renderOrder={2}
+      >
+        <planeGeometry args={[6.35, 3.6]} />
+        <meshBasicMaterial
+          map={texture}
+          toneMapped={false}
+          transparent
+          opacity={1}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* Glass layer (purely visual; does not intercept clicks) */}
+      <mesh position={[0, 0, 0.114]} raycast={() => null} renderOrder={3}>
+        <planeGeometry args={[6.4, 3.65]} />
+        <meshPhysicalMaterial
+          transparent
+          opacity={0.14}
+          roughness={0.08}
+          metalness={0}
+          clearcoat={1}
+          clearcoatRoughness={0.22}
+          color="#111118"
+          toneMapped={false}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+});
+
 export default function World({
   roomId,
   onExit,
@@ -3300,6 +4230,8 @@ export default function World({
   );
 
   const [isDuplicateSession, setIsDuplicateSession] = useState(false);
+
+  const supabaseUserRef = useRef<User | null>(null);
 
   useEffect(() => {
     const channel = new BroadcastChannel("pawnsquare-game-session");
@@ -3344,6 +4276,106 @@ export default function World({
       [initialName, initialGender, isDuplicateSession]
     )
   );
+
+  const reportActivityMove = useCallback(
+    async (_game: string, _boardKey?: string) => {
+      const u = supabaseUserRef.current;
+      if (!u) return;
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { error } = await supabase.rpc("increment_my_stats", {
+          p_moves_delta: 1,
+          p_play_ms_delta: 0,
+        });
+        if (error) {
+          console.warn("[stats] move increment failed:", error.message);
+        }
+      } catch (e) {
+        console.warn("[stats] move increment failed:", e);
+      }
+    },
+    []
+  );
+
+  const postQuestEvent = useCallback(async (payload: any) => {
+    const u = supabaseUserRef.current;
+    if (!u) return;
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+
+      await fetch("/api/quests/event", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      console.warn("[quests] event failed:", e);
+    }
+  }, []);
+
+  const questMoveBufferRef = useRef<{
+    chess: number;
+    goose: number;
+    checkers: number;
+  }>({
+    chess: 0,
+    goose: 0,
+    checkers: 0,
+  });
+
+  const reportActivityMoveWithQuests = useCallback(
+    async (game: string, boardKey?: string) => {
+      await reportActivityMove(game, boardKey);
+      const mode =
+        game === "goose" ? "goose" : game === "checkers" ? "checkers" : "chess";
+      questMoveBufferRef.current[mode] += 1;
+    },
+    [reportActivityMove]
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const t = window.setInterval(() => {
+      const buf = questMoveBufferRef.current;
+      const chessCount = buf.chess;
+      const gooseCount = buf.goose;
+      const checkersCount = buf.checkers;
+      if (chessCount + gooseCount + checkersCount === 0) return;
+      questMoveBufferRef.current = { chess: 0, goose: 0, checkers: 0 };
+
+      const base = `moves:${roomId}:${Date.now()}:${Math.random()
+        .toString(36)
+        .slice(2)}`;
+      if (chessCount > 0)
+        void postQuestEvent({
+          eventId: `${base}:chess`,
+          type: "moves",
+          mode: "chess",
+          count: chessCount,
+        });
+      if (gooseCount > 0)
+        void postQuestEvent({
+          eventId: `${base}:goose`,
+          type: "moves",
+          mode: "goose",
+          count: gooseCount,
+        });
+      if (checkersCount > 0)
+        void postQuestEvent({
+          eventId: `${base}:checkers`,
+          type: "moves",
+          mode: "checkers",
+          count: checkersCount,
+        });
+    }, 4000);
+    return () => window.clearInterval(t);
+  }, [postQuestEvent, roomId]);
 
   const peerGainMapRef = useRef<Map<string, GainNode | null>>(new Map());
 
@@ -3526,9 +4558,18 @@ export default function World({
 
   const [shopOpen, setShopOpen] = useState(false);
   const [shopTab, setShopTab] = useState<
-    "avatar" | "theme" | "chess" | "coins"
+    "avatar" | "theme" | "chess" | "quests" | "coins"
   >("avatar");
   const [shopSelectedId, setShopSelectedId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [questsOpen, setQuestsOpen] = useState(false);
+  const [showCoordinates, setShowCoordinates] = useState(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      return stored !== null ? stored === "true" : true;
+    }
+    return true;
+  });
   const [coins, setCoins] = useState<number>(500);
   const [ownedItemIds, setOwnedItemIds] = useState<string[]>([
     "default_male",
@@ -3541,12 +4582,44 @@ export default function World({
     useState<string>("board_classic");
   const [stripeBusy, setStripeBusy] = useState(false);
   const [stripeMsg, setStripeMsg] = useState<string | null>(null);
+  const [questsBusy, setQuestsBusy] = useState(false);
+  const [questsMsg, setQuestsMsg] = useState<string | null>(null);
+  const [quests, setQuests] = useState<
+    {
+      id: string;
+      title: string;
+      period: "daily" | "weekly";
+      coins: number;
+      claimed: boolean;
+      completed: boolean;
+      progress: number;
+      target: number;
+      nextResetAt: string;
+    }[]
+  >([]);
   const [authEmail, setAuthEmail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [supabaseUsername, setSupabaseUsername] = useState<string | null>(null);
+  const [usernameModalOpen, setUsernameModalOpen] = useState(false);
+  const [usernameDraft, setUsernameDraft] = useState<string>("");
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const [usernameMsg, setUsernameMsg] = useState<string | null>(null);
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(
+    null
+  );
+  const lastPlayPingAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    supabaseUserRef.current = supabaseUser;
+  }, [supabaseUser]);
+
+  const mustChooseUsername = !!supabaseUser && !supabaseUsername;
 
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -3665,11 +4738,117 @@ export default function World({
       saved === "avatar" ||
       saved === "theme" ||
       saved === "chess" ||
+      saved === "quests" ||
       saved === "coins"
     ) {
       setShopTab(saved);
     }
   }, []);
+
+  const fetchQuests = useCallback(async () => {
+    setQuestsMsg(null);
+    if (!supabaseUser) {
+      setQuests([]);
+      return;
+    }
+    try {
+      setQuestsBusy(true);
+      const supabase = getSupabaseBrowserClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        setQuestsMsg("Sign in required.");
+        return;
+      }
+      const res = await fetch("/api/quests", {
+        method: "GET",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const data = (await res.json()) as any;
+      if (!res.ok) {
+        setQuestsMsg(data?.error || "Could not load quests.");
+        return;
+      }
+      const list = Array.isArray(data?.quests) ? data.quests : [];
+      setQuests(
+        list
+          .filter((q: any) => typeof q?.id === "string")
+          .map((q: any) => ({
+            id: String(q.id),
+            title: String(q.title ?? q.id),
+            period: q.period === "weekly" ? "weekly" : "daily",
+            coins: Number(q.coins ?? 0),
+            claimed: Boolean(q.claimed),
+            completed: Boolean(q.completed),
+            progress: Number(q.progress ?? 0),
+            target: Number(q.target ?? 0),
+            nextResetAt: String(q.nextResetAt ?? ""),
+          }))
+      );
+    } catch (e) {
+      console.warn("[quests] fetch failed:", e);
+      setQuestsMsg("Could not load quests.");
+    } finally {
+      setQuestsBusy(false);
+    }
+  }, [supabaseUser]);
+
+  const claimQuest = useCallback(
+    async (questId: string) => {
+      setQuestsMsg(null);
+      if (!supabaseUser) {
+        setQuestsMsg("Sign in required.");
+        return;
+      }
+      try {
+        setQuestsBusy(true);
+        const supabase = getSupabaseBrowserClient();
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token) {
+          setQuestsMsg("Sign in required.");
+          return;
+        }
+        const res = await fetch("/api/quests/claim", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ questId }),
+        });
+        const data = (await res.json()) as any;
+        if (!res.ok) {
+          if (data?.error === "already_claimed") {
+            setQuestsMsg("Already claimed.");
+          } else {
+            setQuestsMsg(data?.error || "Could not claim quest.");
+          }
+          return;
+        }
+
+        if (typeof data?.newCoins === "number") setCoins(data.newCoins);
+        await fetchQuests();
+      } catch (e) {
+        console.warn("[quests] claim failed:", e);
+        setQuestsMsg("Could not claim quest.");
+      } finally {
+        setQuestsBusy(false);
+      }
+    },
+    [fetchQuests, supabaseUser]
+  );
+
+  useEffect(() => {
+    if (!shopOpen) return;
+    if (shopTab !== "quests") return;
+    void fetchQuests();
+  }, [shopOpen, shopTab, fetchQuests]);
+
+  useEffect(() => {
+    if (!questsOpen) return;
+    void fetchQuests();
+  }, [questsOpen, fetchQuests]);
 
   // Auto-close the login modal once we're signed in.
   useEffect(() => {
@@ -3678,6 +4857,48 @@ export default function World({
     setAuthBusy(false);
     setAuthMsg(null);
   }, [supabaseUser]);
+
+  // Fetch leaderboard entries (public) and keep them fresh.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const supabase = getSupabaseBrowserClient();
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("leaderboard_entries")
+          .select("id,name,moves,play_ms,score")
+          .order("score", { ascending: false })
+          .limit(10);
+        if (cancelled) return;
+        if (error) {
+          console.warn("[leaderboard] fetch failed:", error.message);
+          return;
+        }
+        const entries = (data ?? []).map(
+          (r: any) =>
+            ({
+              id: String(r.id),
+              name: String(r.name ?? "Anonymous"),
+              moves: Number(r.moves ?? 0),
+              playMs: Number(r.play_ms ?? 0),
+              score: Number(r.score ?? 0),
+            } satisfies LeaderboardEntry)
+        );
+        setLeaderboard(entries);
+      } catch (e) {
+        if (!cancelled) console.warn("[leaderboard] fetch failed:", e);
+      }
+    };
+
+    void refresh();
+    const id = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   // Persist current shop tab.
   useEffect(() => {
@@ -3917,6 +5138,171 @@ export default function World({
     }
   }, [supabaseUser, isDuplicateSession]);
 
+  // Load (or prompt for) username when signed in.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (isDuplicateSession) return;
+
+    if (!supabaseUser) {
+      setSupabaseUsername(null);
+      setUsernameModalOpen(false);
+      setUsernameDraft("");
+      setUsernameMsg(null);
+      setUsernameAvailable(null);
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    let cancelled = false;
+
+    const boot = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("usernames")
+          .select("username")
+          .eq("user_id", supabaseUser.id)
+          .single();
+
+        if (cancelled) return;
+        if (!error && data?.username) {
+          const u = String(data.username).trim().slice(0, 24);
+          setSupabaseUsername(u);
+          setName(u);
+          try {
+            window.sessionStorage.setItem("pawnsquare:name", u);
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
+        const initial =
+          (window.sessionStorage.getItem("pawnsquare:name") ?? "")
+            .toString()
+            .trim()
+            .slice(0, 24) || "";
+        setUsernameDraft(initial);
+        setUsernameModalOpen(true);
+      } catch (e) {
+        console.warn("[username] load failed:", e);
+
+        // Fallback: still prompt so the user can set a username.
+        const initial =
+          (window.sessionStorage.getItem("pawnsquare:name") ?? "")
+            .toString()
+            .trim()
+            .slice(0, 24) || "";
+        setUsernameDraft(initial);
+        setUsernameModalOpen(true);
+      }
+    };
+
+    void boot();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabaseUser, isDuplicateSession, setName]);
+
+  // Guest naming: append (Guest) when not signed in.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (isDuplicateSession) return;
+
+    const raw = (
+      window.sessionStorage.getItem("pawnsquare:name") ??
+      initialName ??
+      ""
+    )
+      .toString()
+      .trim();
+    const base = stripGuestSuffix(raw).slice(0, 24) || "Guest";
+
+    if (!supabaseUser) {
+      const guestName = `${base} (Guest)`;
+      setName(guestName);
+      return;
+    }
+
+    // Signed in but no username set yet: remove guest suffix if present.
+    if (!supabaseUsername) {
+      setName(base);
+    }
+  }, [
+    supabaseUser,
+    supabaseUsername,
+    isDuplicateSession,
+    initialName,
+    setName,
+  ]);
+
+  // Debounced username availability check.
+  useEffect(() => {
+    if (!usernameModalOpen) return;
+    if (!supabaseUser) return;
+
+    const cleaned = usernameDraft.trim().slice(0, 24);
+    if (cleaned.length < 3) {
+      setUsernameAvailable(null);
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    const t = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const { data, error } = await supabase.rpc("is_username_available", {
+            p_username: cleaned,
+          });
+          if (error) {
+            setUsernameAvailable(null);
+            return;
+          }
+          setUsernameAvailable(Boolean(data));
+        } catch {
+          setUsernameAvailable(null);
+        }
+      })();
+    }, 350);
+
+    return () => window.clearTimeout(t);
+  }, [usernameDraft, usernameModalOpen, supabaseUser]);
+
+  // Persist playtime while connected (signed-in only).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (isDuplicateSession) return;
+    if (!supabaseUser) return;
+    if (!connected) return;
+
+    const supabase = getSupabaseBrowserClient();
+    lastPlayPingAtRef.current = Date.now();
+
+    const flush = async () => {
+      const now = Date.now();
+      const last = lastPlayPingAtRef.current ?? now;
+      const delta = Math.max(0, now - last);
+      lastPlayPingAtRef.current = now;
+      if (delta <= 0) return;
+      try {
+        const { error } = await supabase.rpc("increment_my_stats", {
+          p_moves_delta: 0,
+          p_play_ms_delta: delta,
+        });
+        if (error) {
+          console.warn("[stats] playtime increment failed:", error.message);
+        }
+      } catch (e) {
+        console.warn("[stats] playtime increment failed:", e);
+      }
+    };
+
+    const id = window.setInterval(flush, 15000);
+    return () => {
+      window.clearInterval(id);
+      void flush();
+    };
+  }, [supabaseUser, connected, isDuplicateSession]);
+
   // Persist shop state (Supabase handles this, no localStorage fallback).
   useEffect(() => {
     // No-op
@@ -4024,34 +5410,10 @@ export default function World({
     null
   );
 
-  const [board2d, setBoard2d] = useState<Board2dSync | null>(null);
-  const [board2dArrows, setBoard2dArrows] = useState<Arrow[]>([]);
-  const [board2dSelected, setBoard2dSelected] = useState<string | null>(null);
+  const [board2dByKey, setBoard2dByKey] = useState<Record<string, Board2dSync>>(
+    {}
+  );
   const [showGooseInfo, setShowGooseInfo] = useState(false);
-
-  const computeBoard2dCenteredPos = useCallback(() => {
-    if (typeof window === "undefined") return { x: 16, y: 16 };
-
-    // Keep in sync with desktop sizing below: width=min(560px,52vw), height=min(720px,80vh)
-    const width = Math.min(560, window.innerWidth * 0.52);
-    const height = Math.min(720, window.innerHeight * 0.8);
-    return {
-      x: Math.max(8, Math.round((window.innerWidth - width) / 2)),
-      y: Math.max(8, Math.round((window.innerHeight - height) / 2)),
-    };
-  }, []);
-
-  const [board2dPos, setBoard2dPos] = useState<{ x: number; y: number }>({
-    x: 16,
-    y: 16,
-  });
-  const board2dDragRef = useRef<{
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    originX: number;
-    originY: number;
-  } | null>(null);
 
   const moveTargetRef = useRef<{
     dest: Vec3;
@@ -4069,6 +5431,19 @@ export default function World({
   );
   // Only lock during a pending join; being seated should not prevent switching boards.
   const joinLockedBoardKey = pendingJoinBoardKey;
+
+  const [activeGameEnd, setActiveGameEnd] = useState<{
+    boardKey: string;
+    mode: BoardMode;
+    resultLabel: string;
+    didWin: boolean | null;
+    hadOpponent?: boolean;
+    resultSeq?: number;
+    rematch: () => void;
+    switchSides: () => void;
+    leave: () => void;
+    ts: number;
+  } | null>(null);
 
   const [leaveAllNonce, setLeaveAllNonce] = useState(0);
   const [leaveAllExceptBoardKey, setLeaveAllExceptBoardKey] = useState<
@@ -4119,6 +5494,162 @@ export default function World({
     () => (is4pRoom ? [] : boards),
     [is4pRoom, boards]
   );
+
+  const tvWallScreens = useMemo(() => {
+    const y = 2.8;
+    // Slightly in front of the wall panels (toward the room center) so the TV doesn't z-fight.
+    // Wall groups live at z=±14, and the panel faces are at local z=±2.2.
+    const northZ = 16.05;
+    const southZ = -16.05;
+
+    const base: Omit<TvWallScreen, "boardKey">[] = [
+      {
+        id: "north-left",
+        position: [-6, y, northZ],
+        rotationY: Math.PI,
+        shaderVariant: "triangleTunnel",
+      },
+      { id: "north-right", position: [6, y, northZ], rotationY: Math.PI },
+      {
+        id: "south-left",
+        position: [-6, y, southZ],
+        rotationY: 0,
+        shaderVariant: "triangleTunnel",
+      },
+      { id: "south-right", position: [6, y, southZ], rotationY: 0 },
+    ];
+
+    if (is4pRoom) {
+      // 4P uses a different board; existing UX already disables the 2D board there.
+      return base.map((s) => ({ ...s, boardKey: "m" }));
+    }
+
+    const pickNearest = (pos: [number, number, number]) => {
+      let bestKey: string = activeBoards[0]?.key ?? "a";
+      let bestD = Number.POSITIVE_INFINITY;
+      for (const b of activeBoards) {
+        const dx = pos[0] - b.origin[0];
+        const dy = pos[1] - b.origin[1];
+        const dz = pos[2] - b.origin[2];
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestD) {
+          bestD = d;
+          bestKey = b.key as string;
+        }
+      }
+      return bestKey;
+    };
+
+    return base.map((s) => ({ ...s, boardKey: pickNearest(s.position) }));
+  }, [activeBoards, is4pRoom]);
+
+  const watched2dBoardKeys = useMemo(
+    () => new Set(tvWallScreens.map((s) => s.boardKey)),
+    [tvWallScreens]
+  );
+
+  const quickPlayTokenRef = useRef(0);
+  const quickPlayOrderRef = useRef<string[]>([]);
+  const [quickPlay, setQuickPlay] = useState<{
+    token: number;
+    targetBoardKey: string | null;
+  } | null>(null);
+  const [quickPlayStatus, setQuickPlayStatus] = useState<string | null>(null);
+
+  const startQuickPlay = useCallback(() => {
+    if (is4pRoom) {
+      setQuickPlayStatus("Quick Play is unavailable in 4P rooms");
+      return;
+    }
+
+    const candidates = activeBoards
+      .map((b) => b.key)
+      .filter((k) => (boardModes?.[k] ?? "chess") === "chess");
+    if (candidates.length === 0) {
+      setQuickPlayStatus("No chess boards are active in this room");
+      return;
+    }
+
+    const token = (quickPlayTokenRef.current += 1);
+    quickPlayOrderRef.current = candidates;
+    setQuickPlay({ token, targetBoardKey: candidates[0] });
+    setQuickPlayStatus("Finding a seat...");
+  }, [activeBoards, boardModes, is4pRoom]);
+
+  const handleQuickPlayResult = useCallback(
+    (token: number, boardKey: string, ok: boolean, reason?: string) => {
+      setQuickPlay((cur) => {
+        if (!cur || cur.token !== token) return cur;
+        if (ok) return null;
+
+        const order = quickPlayOrderRef.current;
+        const idx = order.indexOf(boardKey);
+        const nextKey = idx >= 0 ? order[idx + 1] ?? null : order[0] ?? null;
+        return nextKey ? { token, targetBoardKey: nextKey } : null;
+      });
+
+      if (ok) {
+        setQuickPlayStatus(null);
+        return;
+      }
+
+      const order = quickPlayOrderRef.current;
+      const idx = order.indexOf(boardKey);
+      const hasNext = idx >= 0 && idx + 1 < order.length;
+      if (hasNext) return;
+
+      if (reason === "full") setQuickPlayStatus("All chess boards are full");
+      else if (reason === "in-progress")
+        setQuickPlayStatus("No fresh chess games available");
+      else setQuickPlayStatus("Quick Play couldn't find a seat");
+    },
+    []
+  );
+
+  const handleGameEnd = useCallback(
+    (event: {
+      boardKey: string;
+      mode: BoardMode;
+      resultLabel: string;
+      didWin: boolean | null;
+      hadOpponent?: boolean;
+      resultSeq?: number;
+      rematch: () => void;
+      switchSides: () => void;
+      leave: () => void;
+    }) => {
+      setActiveGameEnd({ ...event, ts: Date.now() });
+
+      const mode =
+        event.mode === "goose"
+          ? "goose"
+          : event.mode === "checkers"
+          ? "checkers"
+          : "chess";
+
+      void postQuestEvent({
+        eventId: `game_end:${roomId}:${event.boardKey}:${
+          event.resultSeq ?? Date.now()
+        }`,
+        type: "game_end",
+        mode,
+        didWin: typeof event.didWin === "boolean" ? event.didWin : false,
+        hadOpponent: event.hadOpponent ?? true,
+      });
+    },
+    [postQuestEvent, roomId]
+  );
+
+  useEffect(() => {
+    if (!activeGameEnd) return;
+    if (joinedBoardKey !== activeGameEnd.boardKey) setActiveGameEnd(null);
+  }, [activeGameEnd, joinedBoardKey]);
+
+  useEffect(() => {
+    if (!quickPlayStatus) return;
+    const t = window.setTimeout(() => setQuickPlayStatus(null), 2500);
+    return () => window.clearTimeout(t);
+  }, [quickPlayStatus]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4455,22 +5986,11 @@ export default function World({
         if (event.boardKey && prev.boardKey !== event.boardKey) return prev;
         return null;
       });
-
-      setBoard2d((prev) => {
-        if (!prev) return null;
-        if (event.boardKey && prev.boardKey !== event.boardKey) return prev;
-        return null;
-      });
       return;
     }
 
     if (event.type === "sync2d") {
-      setBoard2d((prev) => {
-        if (!prev) return prev;
-        if (prev.boardKey !== event.boardKey) return prev;
-        // Always take the latest move callback (it closes over the latest netState in the board).
-        return { ...event };
-      });
+      setBoard2dByKey((prev) => ({ ...prev, [event.boardKey]: event }));
 
       setBoardControls((prev) => {
         if (!prev) return prev;
@@ -4482,13 +6002,35 @@ export default function World({
           turn: event.turn,
           boardOrientation: event.boardOrientation,
           canMove2d: event.canMove2d,
+          checkersBoard: event.checkersBoard ?? prev.checkersBoard,
           onMove2d: event.onMove2d,
         };
       });
       return;
     }
 
+    // event.type === "open"
     setBoardControls(event);
+    setBoard2dByKey((prev) => ({
+      ...prev,
+      [event.boardKey]: {
+        type: "sync2d",
+        boardKey: event.boardKey,
+        lobby: event.lobby,
+        fen: event.fen,
+        mySide: event.mySide,
+        turn: event.turn,
+        boardOrientation: event.boardOrientation,
+        canMove2d: event.canMove2d,
+        gooseSquare: event.gooseSquare,
+        goosePhase: event.goosePhase,
+        startledSquares: event.startledSquares,
+        canPlaceGoose: event.canPlaceGoose,
+        onPlaceGoose: event.onPlaceGoose,
+        checkersBoard: event.checkersBoard,
+        onMove2d: event.onMove2d,
+      },
+    }));
   }, []);
 
   const handleJoinIntent = useCallback((boardKey: string) => {
@@ -4565,6 +6107,7 @@ export default function World({
         selfPositionRef: selfPosRef,
         selfId: self?.id || "",
         selfName: self?.name || "",
+        onActivityMove: reportActivityMoveWithQuests,
         joinLockedBoardKey,
         leaveAllNonce,
         leaveAllExceptBoardKey,
@@ -4572,6 +6115,9 @@ export default function World({
         chessBoardTheme,
         gameMode: boardModes?.[b.key] ?? "chess",
         onJoinIntent: handleJoinIntent,
+        quickPlay,
+        onQuickPlayResult: handleQuickPlayResult,
+        onGameEnd: handleGameEnd,
         onSelfSeatChange: handleSelfSeatChange,
         onRequestMove: handleRequestMove,
         onCenterCamera: handleCenterCamera,
@@ -4590,6 +6136,9 @@ export default function World({
       chessBoardTheme,
       chessTheme,
       boardModes,
+      quickPlay,
+      handleQuickPlayResult,
+      handleGameEnd,
       handleBoardControls,
       handleCenterCamera,
       handleJoinIntent,
@@ -4648,7 +6197,30 @@ export default function World({
             lookAtTargetRef.current = null;
           }}
         >
-          {lobbyType === "scifi" ? <SciFiLobby /> : <ParkLobby />}
+          {lobbyType === "scifi" ? (
+            <SciFiLobby
+              leaderboard={leaderboard}
+              showLeaderboardWall={!is4pRoom}
+            />
+          ) : (
+            <ParkLobby
+              leaderboard={leaderboard}
+              showLeaderboardWall={!is4pRoom}
+            />
+          )}
+
+          {sceneStage >= 2 ? (
+            <group>
+              {tvWallScreens.map((screen) => (
+                <InWorldTv
+                  key={screen.id}
+                  screen={screen}
+                  sync={board2dByKey[screen.boardKey] ?? null}
+                  mode={(boardModes?.[screen.boardKey] as BoardMode) ?? "chess"}
+                />
+              ))}
+            </group>
+          ) : null}
 
           {activeBoards.map((b, idx) => (
             <group key={b.key}>
@@ -4659,7 +6231,7 @@ export default function World({
                   {renderChessBoard(
                     b,
                     boardControls?.boardKey === b.key,
-                    board2d?.boardKey === b.key
+                    watched2dBoardKeys.has(b.key)
                   )}
                 </Suspense>
               ) : null}
@@ -4676,6 +6248,7 @@ export default function World({
                 selfPositionRef={selfPosRef}
                 selfId={self?.id || ""}
                 selfName={self?.name || ""}
+                onActivityMove={reportActivityMoveWithQuests}
                 joinLockedBoardKey={joinLockedBoardKey}
                 leaveAllNonce={leaveAllNonce}
                 leaveAllExceptBoardKey={leaveAllExceptBoardKey}
@@ -4685,7 +6258,7 @@ export default function World({
                 onCenterCamera={handleCenterCamera}
                 onBoardControls={handleBoardControls}
                 controlsOpen={boardControls?.boardKey === "m"}
-                board2dOpen={board2d?.boardKey === "m"}
+                board2dOpen={watched2dBoardKeys.has("m")}
                 chessTheme={chessTheme}
                 suppressCameraRotateRef={suppressCameraRightDragRef}
               />
@@ -5368,6 +6941,26 @@ export default function World({
             Rooms
           </button>
 
+          {!is4pRoom ? (
+            <button
+              onClick={startQuickPlay}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 8,
+                background: "rgba(0,0,0,0.4)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "white",
+                fontSize: 12,
+                cursor: "pointer",
+                transition: "background 0.2s",
+              }}
+              title="Join a fresh chess game"
+            >
+              Quick Play
+            </button>
+          ) : null}
+
           <button
             onClick={onExit}
             style={{
@@ -5385,6 +6978,99 @@ export default function World({
             Exit
           </button>
         </div>
+
+        {quickPlayStatus ? (
+          <div
+            style={{
+              marginTop: 8,
+              pointerEvents: "auto",
+              padding: "8px 12px",
+              borderRadius: 10,
+              background: "rgba(0,0,0,0.35)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "white",
+              fontSize: 12,
+              maxWidth: 360,
+            }}
+          >
+            {quickPlayStatus}
+          </div>
+        ) : null}
+
+        {activeGameEnd && joinedBoardKey === activeGameEnd.boardKey ? (
+          <div
+            style={{
+              marginTop: 8,
+              pointerEvents: "auto",
+              padding: "10px 12px",
+              borderRadius: 12,
+              background: "rgba(0,0,0,0.45)",
+              border: "1px solid rgba(255,255,255,0.12)",
+              color: "white",
+              maxWidth: 420,
+            }}
+          >
+            <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>
+              {activeGameEnd.resultLabel}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                onClick={() => {
+                  activeGameEnd.rematch();
+                  setActiveGameEnd(null);
+                }}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  color: "white",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Rematch
+              </button>
+              <button
+                onClick={() => {
+                  activeGameEnd.switchSides();
+                  setActiveGameEnd(null);
+                }}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  color: "white",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Switch sides
+              </button>
+              <button
+                onClick={() => {
+                  activeGameEnd.leave();
+                  setActiveGameEnd(null);
+                }}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  color: "white",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Back
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Rooms Modal */}
@@ -5784,6 +7470,76 @@ export default function World({
                   openAuthModal();
                   return;
                 }
+                setQuestsOpen(true);
+              }}
+              style={{
+                height: 42,
+                padding: "0 14px",
+                borderRadius: 21,
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "white",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                fontWeight: 700,
+                fontSize: 13,
+              }}
+              title="Quests"
+              aria-label="Quests"
+            >
+              <CoinsIcon size={18} />
+              Quests
+            </button>
+
+            <button
+              onClick={() => {
+                setSettingsOpen((v) => !v);
+              }}
+              style={{
+                height: 42,
+                padding: "0 14px",
+                borderRadius: 21,
+                background: "rgba(0,0,0,0.35)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "white",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+                fontWeight: 700,
+                fontSize: 13,
+              }}
+              title="Settings"
+              aria-label="Settings"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path d="M12 1v6m0 6v6m5.2-13.2l-3 3m-4.4 4.4l-3 3m13.2-4.2l-3 3m-4.4 4.4l-3 3" />
+              </svg>
+              Settings
+            </button>
+
+            <button
+              onClick={() => {
+                if (!supabaseUser) {
+                  openAuthModal();
+                  return;
+                }
                 setMenuOpen((v) => !v);
               }}
               style={{
@@ -6125,7 +7881,6 @@ export default function World({
               const mode: BoardMode =
                 (boardModes?.[boardControls.boardKey] as BoardMode) ?? "chess";
               const isChess4Way = boardControls.boardKey === "m";
-              const canOpen2d = engineForMode(mode) === "chess" && !isChess4Way;
 
               return (
                 <>
@@ -6735,57 +8490,6 @@ export default function World({
                         </button>
                       </div>
                     </div>
-
-                    <button
-                      onClick={() => {
-                        if (!canOpen2d) return;
-                        setBoard2dArrows([]);
-                        setBoard2dPos(
-                          isMobile
-                            ? { x: 8, y: 8 }
-                            : computeBoard2dCenteredPos()
-                        );
-                        setBoard2d({
-                          type: "sync2d",
-                          boardKey: boardControls.boardKey,
-                          lobby: boardControls.lobby,
-                          fen: boardControls.fen,
-                          mySide: boardControls.mySide,
-                          turn: boardControls.turn,
-                          boardOrientation: boardControls.boardOrientation,
-                          canMove2d: boardControls.canMove2d,
-                          gooseSquare: boardControls.gooseSquare,
-                          goosePhase: boardControls.goosePhase,
-                          startledSquares: boardControls.startledSquares,
-                          canPlaceGoose: boardControls.canPlaceGoose,
-                          onPlaceGoose: boardControls.onPlaceGoose,
-                          onMove2d: boardControls.onMove2d,
-                        });
-                        setBoardControls(null);
-                      }}
-                      disabled={!canOpen2d}
-                      style={{
-                        width: "100%",
-                        padding: "16px",
-                        borderRadius: 12,
-                        border:
-                          boardControls.lobby === "scifi"
-                            ? "2px solid rgba(0,255,255,0.45)"
-                            : "2px solid rgba(100,100,255,0.35)",
-                        background:
-                          boardControls.lobby === "scifi"
-                            ? "linear-gradient(135deg, rgba(0,255,255,0.2), rgba(0,200,255,0.15))"
-                            : "linear-gradient(135deg, rgba(100,100,255,0.15), rgba(150,150,255,0.1))",
-                        color: "inherit",
-                        cursor: canOpen2d ? "pointer" : "not-allowed",
-                        fontWeight: 700,
-                        fontSize: 15,
-                        letterSpacing: 0.5,
-                        opacity: canOpen2d ? 1 : 0.4,
-                      }}
-                    >
-                      📋 Open 2D Board
-                    </button>
                   </div>
                 </>
               );
@@ -6976,400 +8680,276 @@ export default function World({
         </div>
       ) : null}
 
-      {board2d ? (
+      {/* Quests Modal */}
+      {questsOpen ? (
         <div
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 56,
-            // Allow interacting with the 3D world while the 2D board is open.
-            pointerEvents: "none",
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: isMobile ? "stretch" : "center",
+            justifyContent: isMobile ? "stretch" : "center",
+            zIndex: 51,
           }}
+          onClick={() => setQuestsOpen(false)}
         >
           <div
             style={{
-              position: "fixed",
-              inset: 0,
-              background: "transparent",
-              pointerEvents: "none",
-            }}
-          />
-
-          <div
-            style={{
-              position: "absolute",
-              left: isMobile ? 8 : board2dPos.x,
-              top: isMobile ? 8 : board2dPos.y,
-              width: isMobile ? "calc(100vw - 16px)" : "min(560px, 52vw)",
-              maxHeight: isMobile ? "calc(100vh - 16px)" : "min(720px, 80vh)",
-              borderRadius: 14,
-              overflow: "hidden",
-              border:
-                board2d.lobby === "scifi"
-                  ? "1px solid rgba(0,255,255,0.22)"
-                  : "1px solid rgba(0,0,0,0.12)",
-              background:
-                board2d.lobby === "scifi"
-                  ? "linear-gradient(180deg, rgba(0,0,0,0.78), rgba(20,0,40,0.72))"
-                  : "linear-gradient(180deg, rgba(255,255,255,0.92), rgba(245,250,252,0.92))",
-              boxShadow: "0 26px 70px rgba(0,0,0,0.45)",
-              color: board2d.lobby === "scifi" ? "#e6f7ff" : "#0f2c34",
+              width: isMobile ? "100vw" : 680,
+              maxWidth: isMobile ? "100vw" : "90vw",
+              height: isMobile ? "100vh" : 520,
+              maxHeight: isMobile ? "100vh" : "90vh",
+              background: "#1a1a1a",
+              borderRadius: isMobile ? 0 : 16,
+              border: "1px solid rgba(255,255,255,0.1)",
               display: "flex",
               flexDirection: "column",
-              pointerEvents: "auto",
+              overflow: "hidden",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {(() => {
-              const headerH = isMobile ? 52 : 44;
-              const pad = isMobile ? 8 : 10;
-              const maxBoard = isMobile
-                ? `calc(100vh - 16px - ${headerH}px - ${pad * 2}px)`
-                : `calc(min(720px, 80vh) - ${headerH}px - ${pad * 2}px)`;
+            <div
+              style={{
+                padding: isMobile ? "12px 14px" : "16px 20px",
+                borderBottom: "1px solid rgba(255,255,255,0.1)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ fontSize: 20, fontWeight: 800 }}>Quests</div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  Daily/weekly quests that award coins
+                </div>
+              </div>
 
-              return (
-                <>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    background: "rgba(255,255,255,0.1)",
+                    padding: "6px 12px",
+                    borderRadius: 20,
+                    fontSize: 14,
+                  }}
+                >
+                  <CoinsIcon size={16} />
+                  {coins}
+                </div>
+
+                <button
+                  onClick={() => setQuestsOpen(false)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "rgba(255,255,255,0.6)",
+                    cursor: "pointer",
+                    padding: 4,
+                  }}
+                  aria-label="Close quests"
+                  title="Close"
+                >
+                  <CloseIcon size={24} />
+                </button>
+              </div>
+            </div>
+
+            <div
+              style={{
+                flex: 1,
+                padding: isMobile ? 14 : 18,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                overflowY: "auto",
+              }}
+            >
+              {!supabaseUser ? (
+                <button
+                  onClick={openAuthModal}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.18)",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    color: "white",
+                    cursor: "pointer",
+                    width: "fit-content",
+                  }}
+                >
+                  Sign in to earn rewards
+                </button>
+              ) : null}
+
+              {quests.map((q) => (
+                <div
+                  key={q.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "stretch",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: "12px 14px",
+                    borderRadius: 14,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(255,255,255,0.06)",
+                  }}
+                >
                   <div
                     style={{
-                      height: headerH,
                       display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: isMobile ? "0 10px" : "0 12px",
-                      cursor: "grab",
-                      userSelect: "none",
-                      touchAction: "none",
-                      borderBottom:
-                        board2d.lobby === "scifi"
-                          ? "1px solid rgba(255,255,255,0.08)"
-                          : "1px solid rgba(0,0,0,0.08)",
-                    }}
-                    onPointerDown={(e) => {
-                      const target = e.target as HTMLElement | null;
-                      if (target?.closest?.("button")) return;
-                      (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-                      board2dDragRef.current = {
-                        pointerId: e.pointerId,
-                        startClientX: e.clientX,
-                        startClientY: e.clientY,
-                        originX: board2dPos.x,
-                        originY: board2dPos.y,
-                      };
-                    }}
-                    onPointerMove={(e) => {
-                      const d = board2dDragRef.current;
-                      if (!d) return;
-                      if (d.pointerId !== e.pointerId) return;
-                      const dx = e.clientX - d.startClientX;
-                      const dy = e.clientY - d.startClientY;
-                      const rawX = d.originX + dx;
-                      const rawY = d.originY + dy;
-                      const viewportW =
-                        typeof window !== "undefined"
-                          ? window.innerWidth
-                          : 9999;
-                      const viewportH =
-                        typeof window !== "undefined"
-                          ? window.innerHeight
-                          : 9999;
-                      const modalW = isMobile
-                        ? viewportW - 16
-                        : Math.min(560, viewportW * 0.52);
-                      const modalH = isMobile
-                        ? viewportH - 16
-                        : Math.min(720, viewportH * 0.8);
-                      const maxX = Math.max(0, viewportW - modalW);
-                      const maxY = Math.max(0, viewportH - modalH);
-                      const nextX = Math.min(Math.max(0, rawX), maxX);
-                      const nextY = Math.min(Math.max(0, rawY), maxY);
-                      setBoard2dPos({ x: nextX, y: nextY });
-                    }}
-                    onPointerUp={(e) => {
-                      const d = board2dDragRef.current;
-                      if (!d) return;
-                      if (d.pointerId !== e.pointerId) return;
-                      board2dDragRef.current = null;
+                      flexDirection: "column",
+                      gap: 6,
+                      flex: 1,
                     }}
                   >
                     <div
                       style={{
                         display: "flex",
-                        alignItems: "center",
-                        gap: isMobile ? 8 : 12,
+                        alignItems: "baseline",
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ fontWeight: 800 }}>{q.title}</div>
+                      <div style={{ fontSize: 12, opacity: 0.7 }}>
+                        {q.period === "weekly" ? "Weekly" : "Daily"}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        height: 8,
+                        background: "rgba(255,255,255,0.10)",
+                        borderRadius: 999,
+                        overflow: "hidden",
+                        border: "1px solid rgba(255,255,255,0.10)",
                       }}
                     >
                       <div
                         style={{
-                          width: 32,
-                          height: 20,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          opacity: 0.5,
+                          height: "100%",
+                          width: `${
+                            q.target > 0
+                              ? Math.min(100, (q.progress / q.target) * 100)
+                              : q.completed
+                              ? 100
+                              : 0
+                          }%`,
+                          background: "#667eea",
                         }}
-                      >
-                        <svg width="18" height="6" viewBox="0 0 18 6">
-                          <rect
-                            width="18"
-                            height="2"
-                            rx="1"
-                            fill="currentColor"
-                          />
-                          <rect
-                            y="4"
-                            width="18"
-                            height="2"
-                            rx="1"
-                            fill="currentColor"
-                          />
-                        </svg>
-                      </div>
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 2,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, opacity: 0.8 }}>
-                          2D Board
-                        </div>
-                        <div style={{ fontSize: 15, fontWeight: 800 }}>
-                          {board2d.boardKey.toUpperCase()} ·{" "}
-                          {board2d.boardOrientation}
-                        </div>
-                      </div>
+                      />
                     </div>
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 8 }}
-                    >
-                      {!isMobile ? (
-                        <div
-                          style={{
-                            fontSize: 12,
-                            opacity: 0.85,
-                            padding: "6px 10px",
-                            borderRadius: 999,
-                            border:
-                              board2d.lobby === "scifi"
-                                ? "1px solid rgba(0,255,255,0.25)"
-                                : "1px solid rgba(0,0,0,0.12)",
-                            background:
-                              board2d.lobby === "scifi"
-                                ? "rgba(0,0,0,0.35)"
-                                : "rgba(255,255,255,0.7)",
-                          }}
-                        >
-                          {board2d.canMove2d ? "Your turn" : "View / annotate"}
-                        </div>
+
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>
+                      {q.target > 0
+                        ? `${Math.min(q.progress, q.target)}/${q.target}`
+                        : q.completed
+                        ? "Complete"
+                        : ""}
+                      {q.nextResetAt ? (
+                        <span style={{ marginLeft: 10, opacity: 0.7 }}>
+                          Resets{" "}
+                          {new Date(q.nextResetAt).toUTCString().slice(0, 16)}
+                        </span>
                       ) : null}
-                      <button
-                        onClick={() => {
-                          setBoard2d(null);
-                          setBoard2dSelected(null);
-                        }}
-                        style={{
-                          border: "none",
-                          background:
-                            board2d.lobby === "scifi"
-                              ? "rgba(255,255,255,0.14)"
-                              : "rgba(0,0,0,0.08)",
-                          color: "inherit",
-                          padding: "6px 10px",
-                          borderRadius: 10,
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        Close
-                      </button>
                     </div>
                   </div>
 
                   <div
-                    style={{
-                      padding: pad,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
                   >
                     <div
                       style={{
-                        width: "100%",
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "center",
+                        gap: 6,
+                        padding: "6px 10px",
+                        borderRadius: 999,
+                        background: "rgba(255,255,255,0.08)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        fontSize: 12,
+                        whiteSpace: "nowrap",
                       }}
                     >
-                      <div
-                        style={{
-                          width: "100%",
-                          maxWidth: maxBoard,
-                          aspectRatio: "1 / 1",
-                          maxHeight: maxBoard,
-                        }}
-                      >
-                        <Chessboard
-                          options={{
-                            id: `pawnsquare-2d-${board2d.boardKey}`,
-                            position: board2d.fen,
-                            boardOrientation: board2d.boardOrientation,
-                            allowDragging: board2d.canMove2d,
-                            allowDrawingArrows: true,
-                            arrows: board2dArrows,
-                            onArrowsChange: ({ arrows }) =>
-                              setBoard2dArrows(arrows),
-                            canDragPiece: ({ piece }) => {
-                              if (!board2d.canMove2d) return false;
-                              return typeof piece?.pieceType === "string"
-                                ? piece.pieceType.startsWith(board2d.turn)
-                                : false;
-                            },
-                            onPieceDrop: ({ sourceSquare, targetSquare }) => {
-                              if (!targetSquare) return false;
-                              const moved = board2d.onMove2d(
-                                sourceSquare,
-                                targetSquare
-                              );
-                              if (moved) setBoard2dSelected(null);
-                              return moved;
-                            },
-                            onSquareClick: ({ square, piece }) => {
-                              const canPlaceGoose = !!(board2d as any)
-                                .canPlaceGoose;
-                              const onPlaceGoose = (board2d as any)
-                                .onPlaceGoose as
-                                | ((sq: string) => boolean)
-                                | undefined;
-
-                              if (canPlaceGoose && onPlaceGoose && !piece) {
-                                const placed = onPlaceGoose(square);
-                                if (placed) setBoard2dSelected(null);
-                                return;
-                              }
-
-                              if (!board2d.canMove2d) return;
-                              // If clicking another own piece, switch selection without attempting a move.
-                              if (
-                                piece &&
-                                typeof piece.pieceType === "string" &&
-                                piece.pieceType.startsWith(board2d.turn)
-                              ) {
-                                setBoard2dSelected(square);
-                                return;
-                              }
-
-                              if (board2dSelected) {
-                                const moved = board2d.onMove2d(
-                                  board2dSelected,
-                                  square
-                                );
-                                setBoard2dSelected(null);
-                                if (moved) return;
-                              }
-                            },
-                            squareStyles: (() => {
-                              const styles: Record<
-                                string,
-                                React.CSSProperties
-                              > = {};
-
-                              const gooseSquare = (board2d as any)
-                                .gooseSquare as string | undefined;
-                              const startledSquares = (board2d as any)
-                                .startledSquares as string[] | undefined;
-
-                              // Custom goose SVG icon
-                              const gooseSvg = `<svg viewBox="0 0 45 45" xmlns="http://www.w3.org/2000/svg" style="width:80%;height:80%;position:absolute;top:10%;left:10%;pointer-events:none;">
-                                <g transform="translate(22.5,22.5)">
-                                  <!-- Body -->
-                                  <ellipse cx="0" cy="2" rx="10" ry="12" fill="#ffd700" stroke="#ff8c00" stroke-width="1.2"/>
-                                  <!-- Neck -->
-                                  <path d="M 0,-8 Q -2,-12 -3,-16 L -1,-16 Q 0,-12 2,-8 Z" fill="#ffd700" stroke="#ff8c00" stroke-width="1"/>
-                                  <!-- Head -->
-                                  <circle cx="0" cy="-17" r="4" fill="#ffd700" stroke="#ff8c00" stroke-width="1"/>
-                                  <!-- Beak -->
-                                  <path d="M -1,-17 L -5,-17 L -3,-19 Z" fill="#ff6b00"/>
-                                  <!-- Eye -->
-                                  <circle cx="1.5" cy="-18" r="0.8" fill="#000"/>
-                                  <!-- Wing -->
-                                  <path d="M 6,0 Q 10,-2 11,2 Q 10,4 6,3 Z" fill="#ffb700" stroke="#ff8c00" stroke-width="0.8"/>
-                                  <!-- Tail feathers -->
-                                  <path d="M -8,8 Q -10,10 -7,11 Q -8,12 -5,11 Q -6,13 -3,11 L -3,8 Z" fill="#ffb700" stroke="#ff8c00" stroke-width="0.8"/>
-                                  <!-- Feet -->
-                                  <path d="M -3,13 L -3,15 M -3,15 L -5,15 M -3,15 L -1,15" stroke="#ff8c00" stroke-width="1.2" stroke-linecap="round"/>
-                                  <path d="M 3,13 L 3,15 M 3,15 L 1,15 M 3,15 L 5,15" stroke="#ff8c00" stroke-width="1.2" stroke-linecap="round"/>
-                                </g>
-                              </svg>`;
-
-                              if (gooseSquare) {
-                                styles[gooseSquare] = {
-                                  background:
-                                    "radial-gradient(circle, rgba(255,220,100,0.45) 0%, rgba(255,200,50,0.25) 50%, transparent 70%)",
-                                  position: "relative",
-                                };
-                                // Add goose icon as background image
-                                const gooseDataUrl = `data:image/svg+xml;base64,${btoa(
-                                  gooseSvg
-                                )}`;
-                                styles[
-                                  gooseSquare
-                                ].backgroundImage = `url("${gooseDataUrl}")`;
-                                styles[gooseSquare].backgroundSize = "80%";
-                                styles[gooseSquare].backgroundPosition =
-                                  "center";
-                                styles[gooseSquare].backgroundRepeat =
-                                  "no-repeat";
-                              }
-
-                              if (Array.isArray(startledSquares)) {
-                                for (const sq of startledSquares) {
-                                  styles[sq] = {
-                                    ...(styles[sq] ?? {}),
-                                    boxShadow:
-                                      "inset 0 0 0 3px rgba(255,100,0,0.35), inset 0 0 12px rgba(255,150,0,0.25)",
-                                  };
-                                }
-                              }
-
-                              if (board2dSelected) {
-                                const tmpChess =
-                                  new (require("chess.js").Chess)(board2d.fen);
-
-                                const targets = gooseSquare
-                                  ? gooseLegalMovesForSquare(
-                                      tmpChess,
-                                      board2dSelected as any,
-                                      gooseSquare as any
-                                    ).map((m) => m.to)
-                                  : tmpChess
-                                      .moves({
-                                        square: board2dSelected,
-                                        verbose: true,
-                                      })
-                                      .map((m: any) => m.to);
-
-                                targets.forEach((toSq: string) => {
-                                  styles[toSq] = {
-                                    background:
-                                      "radial-gradient(circle, rgba(0,0,0,0.2) 25%, transparent 25%)",
-                                    borderRadius: "50%",
-                                  };
-                                });
-                              }
-                              return styles;
-                            })(),
-                            showNotation: true,
-                            clearArrowsOnPositionChange: false,
-                          }}
-                        />
-                      </div>
+                      <CoinsIcon size={14} />+{q.coins}
                     </div>
+
+                    <button
+                      disabled={
+                        !supabaseUser || questsBusy || q.claimed || !q.completed
+                      }
+                      onClick={() => claimQuest(q.id)}
+                      style={{
+                        padding: "8px 12px",
+                        borderRadius: 10,
+                        background:
+                          q.claimed || !q.completed
+                            ? "rgba(255,255,255,0.08)"
+                            : "#667eea",
+                        color: "white",
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        cursor:
+                          !supabaseUser ||
+                          questsBusy ||
+                          q.claimed ||
+                          !q.completed
+                            ? "not-allowed"
+                            : "pointer",
+                        opacity:
+                          !supabaseUser ||
+                          questsBusy ||
+                          q.claimed ||
+                          !q.completed
+                            ? 0.65
+                            : 1,
+                        fontWeight: 800,
+                        fontSize: 12,
+                        minWidth: 96,
+                      }}
+                    >
+                      {q.claimed
+                        ? "Claimed"
+                        : q.completed
+                        ? "Claim"
+                        : "In progress"}
+                    </button>
                   </div>
-                </>
-              );
-            })()}
+                </div>
+              ))}
+
+              {questsMsg ? (
+                <div style={{ color: "#ffd700", fontSize: 12 }}>
+                  {questsMsg}
+                </div>
+              ) : null}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  onClick={() => void fetchQuests()}
+                  disabled={questsBusy || !supabaseUser}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    color: "white",
+                    cursor:
+                      questsBusy || !supabaseUser ? "not-allowed" : "pointer",
+                    opacity: questsBusy || !supabaseUser ? 0.6 : 1,
+                    width: "fit-content",
+                  }}
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -7488,7 +9068,7 @@ export default function World({
                 flexWrap: "wrap",
               }}
             >
-              {(["avatar", "theme", "chess"] as const).map((t) => (
+              {(["avatar", "theme", "chess", "quests"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => {
@@ -7518,11 +9098,15 @@ export default function World({
                     <UserIcon size={16} />
                   ) : t === "theme" ? (
                     <PaletteIcon size={16} />
+                  ) : t === "quests" ? (
+                    <CoinsIcon size={16} />
                   ) : (
                     <ChessPieceIcon size={16} />
                   )}
                   {t === "chess"
                     ? "Chess"
+                    : t === "quests"
+                    ? "Quests"
                     : `${t.slice(0, 1).toUpperCase()}${t.slice(1)}s`}
                 </button>
               ))}
@@ -7673,6 +9257,217 @@ export default function World({
                       Sign in required to purchase coins.
                     </button>
                   )}
+                </div>
+              ) : shopTab === "quests" ? (
+                <div
+                  style={{
+                    flex: 1,
+                    padding: 24,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 14,
+                    overflowY: "auto",
+                  }}
+                >
+                  <div
+                    style={{ display: "flex", alignItems: "baseline", gap: 10 }}
+                  >
+                    <div style={{ fontSize: 20, fontWeight: 800 }}>Quests</div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>
+                      Daily/weekly coin bonuses
+                    </div>
+                  </div>
+
+                  {!supabaseUser ? (
+                    <button
+                      onClick={openAuthModal}
+                      style={{
+                        background: "transparent",
+                        border: "1px solid rgba(255,255,255,0.18)",
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        color: "white",
+                        cursor: "pointer",
+                        width: "fit-content",
+                      }}
+                    >
+                      Sign in to claim rewards
+                    </button>
+                  ) : null}
+
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    {quests.map((q) => (
+                      <div
+                        key={q.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "stretch",
+                          justifyContent: "space-between",
+                          gap: 12,
+                          padding: "12px 14px",
+                          borderRadius: 14,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(255,255,255,0.06)",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 4,
+                            flex: 1,
+                          }}
+                        >
+                          <div style={{ fontWeight: 800 }}>{q.title}</div>
+                          <div style={{ fontSize: 12, opacity: 0.7 }}>
+                            {q.period === "weekly" ? "Weekly" : "Daily"} •
+                            Resets{" "}
+                            {q.nextResetAt
+                              ? new Date(q.nextResetAt)
+                                  .toUTCString()
+                                  .slice(0, 16)
+                              : "soon"}
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 6,
+                              height: 8,
+                              background: "rgba(255,255,255,0.10)",
+                              borderRadius: 999,
+                              overflow: "hidden",
+                              border: "1px solid rgba(255,255,255,0.10)",
+                            }}
+                          >
+                            <div
+                              style={{
+                                height: "100%",
+                                width: `${
+                                  q.target > 0
+                                    ? Math.min(
+                                        100,
+                                        (q.progress / q.target) * 100
+                                      )
+                                    : q.completed
+                                    ? 100
+                                    : 0
+                                }%`,
+                                background: "#667eea",
+                              }}
+                            />
+                          </div>
+                          <div style={{ fontSize: 12, opacity: 0.8 }}>
+                            {q.target > 0
+                              ? `${Math.min(q.progress, q.target)}/${q.target}`
+                              : q.completed
+                              ? "Complete"
+                              : ""}
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              background: "rgba(255,255,255,0.08)",
+                              border: "1px solid rgba(255,255,255,0.1)",
+                              fontSize: 12,
+                            }}
+                          >
+                            <CoinsIcon size={14} />+{q.coins}
+                          </div>
+
+                          <button
+                            disabled={
+                              !supabaseUser ||
+                              questsBusy ||
+                              q.claimed ||
+                              !q.completed
+                            }
+                            onClick={() => claimQuest(q.id)}
+                            style={{
+                              padding: "8px 12px",
+                              borderRadius: 10,
+                              background: q.claimed
+                                ? "rgba(255,255,255,0.08)"
+                                : !q.completed
+                                ? "rgba(255,255,255,0.08)"
+                                : "#667eea",
+                              color: "white",
+                              border: "1px solid rgba(255,255,255,0.12)",
+                              cursor:
+                                !supabaseUser ||
+                                questsBusy ||
+                                q.claimed ||
+                                !q.completed
+                                  ? "not-allowed"
+                                  : "pointer",
+                              opacity:
+                                !supabaseUser ||
+                                questsBusy ||
+                                q.claimed ||
+                                !q.completed
+                                  ? 0.65
+                                  : 1,
+                              fontWeight: 800,
+                              fontSize: 12,
+                              minWidth: 86,
+                            }}
+                          >
+                            {q.claimed
+                              ? "Claimed"
+                              : q.completed
+                              ? "Claim"
+                              : "In progress"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {questsMsg ? (
+                    <div style={{ color: "#ffd700", fontSize: 12 }}>
+                      {questsMsg}
+                    </div>
+                  ) : null}
+
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button
+                      onClick={() => void fetchQuests()}
+                      disabled={questsBusy || !supabaseUser}
+                      style={{
+                        background: "transparent",
+                        border: "1px solid rgba(255,255,255,0.16)",
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        color: "white",
+                        cursor:
+                          questsBusy || !supabaseUser
+                            ? "not-allowed"
+                            : "pointer",
+                        opacity: questsBusy || !supabaseUser ? 0.6 : 1,
+                        width: "fit-content",
+                      }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -8226,6 +10021,354 @@ export default function World({
                     </div>
                   );
                 })()}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Settings Modal */}
+      {settingsOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+          }}
+          onClick={() => setSettingsOpen(false)}
+        >
+          <div
+            style={{
+              width: 420,
+              maxWidth: "92vw",
+              background: "rgba(0,0,0,0.85)",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.14)",
+              padding: 24,
+              color: "white",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 20,
+              }}
+            >
+              <div style={{ fontSize: 20, fontWeight: 700 }}>Settings</div>
+              <button
+                onClick={() => setSettingsOpen(false)}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "transparent",
+                  color: "white",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                aria-label="Close"
+                title="Close"
+              >
+                <CloseIcon size={18} />
+              </button>
+            </div>
+
+            <div
+              style={{
+                height: 1,
+                background: "rgba(255,255,255,0.12)",
+                marginBottom: 20,
+              }}
+            />
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* Chess Board Coordinates Toggle */}
+              <div>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 600,
+                    marginBottom: 8,
+                    opacity: 0.9,
+                  }}
+                >
+                  Display Options
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: 16,
+                    borderRadius: 12,
+                    background: "rgba(255,255,255,0.05)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>
+                      Board Coordinates
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                      Show a-h and 1-8 labels on chess boards
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newValue = !showCoordinates;
+                      setShowCoordinates(newValue);
+                      if (typeof window !== "undefined") {
+                        localStorage.setItem(
+                          "chess-show-coordinates",
+                          String(newValue)
+                        );
+                        // Dispatch custom event for same-window updates
+                        window.dispatchEvent(
+                          new Event("chess-coordinates-changed")
+                        );
+                      }
+                    }}
+                    style={{
+                      width: 52,
+                      height: 30,
+                      borderRadius: 15,
+                      border: "none",
+                      background: showCoordinates
+                        ? "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
+                        : "rgba(255,255,255,0.2)",
+                      position: "relative",
+                      cursor: "pointer",
+                      transition: "background 0.2s",
+                      flexShrink: 0,
+                    }}
+                    aria-label={`Toggle coordinates ${
+                      showCoordinates ? "off" : "on"
+                    }`}
+                  >
+                    <div
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: "50%",
+                        background: "white",
+                        position: "absolute",
+                        top: 3,
+                        left: showCoordinates ? 25 : 3,
+                        transition: "left 0.2s",
+                        boxShadow: "0 2px 4px rgba(0,0,0,0.2)",
+                      }}
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Username Modal */}
+      {usernameModalOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 56,
+          }}
+          onClick={() => {
+            if (!mustChooseUsername) setUsernameModalOpen(false);
+          }}
+        >
+          <div
+            style={{
+              width: 520,
+              maxWidth: "92vw",
+              background: "rgba(0,0,0,0.78)",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.14)",
+              padding: 20,
+              color: "white",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+              overflow: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>
+                  Choose a username
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                  Must be unique
+                </div>
+              </div>
+              {!mustChooseUsername ? (
+                <button
+                  onClick={() => setUsernameModalOpen(false)}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.16)",
+                    background: "transparent",
+                    color: "white",
+                    cursor: "pointer",
+                  }}
+                  aria-label="Close"
+                  title="Close"
+                >
+                  <CloseIcon size={18} />
+                </button>
+              ) : null}
+            </div>
+
+            <div
+              style={{
+                marginTop: 14,
+                height: 1,
+                background: "rgba(255,255,255,0.12)",
+              }}
+            />
+
+            <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
+              <input
+                value={usernameDraft}
+                onChange={(e) => {
+                  setUsernameMsg(null);
+                  setUsernameDraft(e.target.value);
+                }}
+                placeholder="Username"
+                autoComplete="username"
+                style={{
+                  flex: 1,
+                  height: 42,
+                  padding: "0 12px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "white",
+                  outline: "none",
+                  fontSize: 14,
+                }}
+              />
+              <button
+                disabled={usernameBusy || !supabaseUser}
+                onClick={async () => {
+                  if (!supabaseUser) return;
+                  setUsernameBusy(true);
+                  setUsernameMsg(null);
+                  try {
+                    const cleaned = usernameDraft.trim().slice(0, 24);
+                    if (cleaned.length < 3) {
+                      setUsernameMsg("Username must be at least 3 characters.");
+                      return;
+                    }
+                    if (usernameAvailable === false) {
+                      setUsernameMsg("That username is taken.");
+                      return;
+                    }
+
+                    const supabase = getSupabaseBrowserClient();
+                    const { error } = await supabase.rpc("set_username", {
+                      p_username: cleaned,
+                    });
+                    if (error) {
+                      const msg =
+                        error.code === "23505"
+                          ? "That username is taken."
+                          : error.message;
+                      setUsernameMsg(msg);
+                      return;
+                    }
+
+                    setSupabaseUsername(cleaned);
+                    setName(cleaned);
+                    try {
+                      window.sessionStorage.setItem("pawnsquare:name", cleaned);
+                    } catch {
+                      // ignore
+                    }
+                    setUsernameModalOpen(false);
+                  } catch (e) {
+                    setUsernameMsg(
+                      e instanceof Error ? e.message : "Could not set username."
+                    );
+                  } finally {
+                    setUsernameBusy(false);
+                  }
+                }}
+                style={{
+                  height: 42,
+                  padding: "0 14px",
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "white",
+                  fontWeight: 800,
+                  cursor: usernameBusy ? "not-allowed" : "pointer",
+                  fontSize: 14,
+                  opacity: usernameBusy ? 0.6 : 1,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Save
+              </button>
+            </div>
+
+            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+              {usernameDraft.trim().length >= 3 ? (
+                usernameAvailable === true ? (
+                  <span style={{ color: "rgba(120,255,170,0.95)" }}>
+                    Available
+                  </span>
+                ) : usernameAvailable === false ? (
+                  <span style={{ color: "rgba(255,140,140,0.95)" }}>Taken</span>
+                ) : (
+                  <span style={{ opacity: 0.7 }}>Checking…</span>
+                )
+              ) : (
+                <span style={{ opacity: 0.7 }}>3–24 characters</span>
+              )}
+            </div>
+
+            {usernameMsg ? (
+              <div
+                style={{
+                  marginTop: 10,
+                  fontSize: 12,
+                  color: "rgba(255,160,160,0.95)",
+                }}
+              >
+                {usernameMsg}
+              </div>
+            ) : null}
+
+            {supabaseUsername ? (
+              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+                Current: {supabaseUsername}
               </div>
             ) : null}
           </div>

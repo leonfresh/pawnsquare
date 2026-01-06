@@ -1,0 +1,252 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+// (c) Matthew Arcus 2018
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+//
+// A festive light show: generate random 4D linear transformations, from
+// a random scaling sandwiched between two random rotations (each generated
+// from two random quaternions). This is essentially a singular value
+// decomposition for the resulting matrix (we have the decomposition by
+// construction rather than having to compute it, for that see
+// https://www.shadertoy.com/view/XlsGRl by paniq).
+//
+// The random transformation is then used to projectively transform a cube in
+// 3D projective space using separate interpolation on the two rotations and
+// the diagonal scaling matrix.
+//
+// Mouse changes camera position.
+// 'c': toggle camera rotation
+// 'r': toggle rotation in transformation
+// 's': toggle scaling in transformation
+//
+////////////////////////////////////////////////////////////////////////////////
+
+const float scale = 1.0;
+const float A = 0.5; // Light amplitude
+const float K = 0.4; // Concentration
+const float R = 0.2; // Radius
+const float PI = 3.14159265359;
+
+bool dorotation = true;
+bool doscaling = true;
+bool docamerarotation = true;
+
+bool alert = false;
+void assert(bool t) {
+  if (!t) alert = true;
+}
+
+bool eq(float x, float y) {
+  return abs(x-y) < 1e-4;
+}
+
+bool eq(vec4 p, vec4 q) {
+  return eq(p.x,q.x) && eq(p.y,q.y) && eq(p.z,q.z) && eq(p.w,q.w);
+}
+
+bool eq(mat4 m, mat4 n) {
+  return eq(m[0],n[0]) && eq(m[1],n[1]) && eq(m[2],n[2]) && eq(m[3],n[3]);
+}
+
+// Quaternion left and right multiplication as matrices
+// The two forms commute (this is just associativity).
+mat4 qmat_left(vec4 q) {
+  float x = q.x, y = q.y, z = q.z, t = q.w;
+  return mat4( t, z,-y,-x, 
+              -z, t, x,-y,
+               y,-x, t,-z,
+               x, y, z, t );
+}
+
+mat4 qmat_right(vec4 q) {
+  float x = q.x, y = q.y, z = q.z, t = q.w;
+  return mat4( t,-z, y,-x, 
+               z, t,-x,-y,
+              -y, x, t,-z,
+               x, y, z, t );
+}
+
+vec2 closest(vec4 p,vec4 q,vec4 r,vec4 s) {
+  // Find k and j such that p+kq and r+js are the closest points.
+  // Use Cramer's rule to solve linear system
+  //(p+kq-r-js).q = 0 -> p.q+kq.q-r.q-js.q = 0 => kq.q - js.q = -p.q+r.q
+  //(p+kq-r-js).s = 0 -> p.s+kq.s-r.s-js.s = 0 => kq.s - js.s = -p.s+r.s
+  vec2 c0 = vec2(dot(q,q),dot(q,s));
+  vec2 c1 = vec2(-dot(q,s),-dot(s,s));
+  vec2 a = vec2(dot(r-p,q),dot(r-p,s));
+  float d0 = determinant(mat2(a,c1)); // replace c0 with a
+  float d1 = determinant(mat2(c0,a)); // replace c1 with a
+  return vec2(d0,d1)/determinant(mat2(c0,c1));
+}
+
+vec2 rotate(vec2 p, float t) {
+  return p * cos(t) + vec2(p.y, -p.x) * sin(t);
+}
+
+// Numerical Recipes 32-bit Linear Congruential Generator
+uint seed = 1U;
+uint lcg() {
+  seed *= 1664525U;
+  seed += 1013904223U;
+  return seed;
+}
+
+// Wang Hash, used to seed LCG
+uint ihash(uint a) {
+  a = (a ^ 61U) ^ (a >> 16);
+  a *= 9U;
+  a = a ^ (a >> 4);
+  a = a * 0x27d4eb2dU;
+  a = a ^ (a >> 15);
+  return a;
+}
+
+// Uniform random float in [0,1)
+float random() {
+  return float(lcg())/pow(2.0,32.0);
+}
+
+// Construct a uniformly distributed point on a sphere.
+vec3 randomspherepoint() {
+  float theta = 2.0*PI*random(); // Random azimuth
+  float z = 2.0*random()-1.0;    // z in [-1,1]
+  float r = sqrt(1.0-z*z);       // Sphere radius at z
+  return vec3(r*cos(theta),r*sin(theta),z);
+}
+
+float randomscalefactor(float t) {
+  //float s = -2.0*log(random());
+  //float s = 0.5/(random()-0.5);
+  //float s = inversesqrt(random());
+  float s = 1.0/random();
+  t = 2.0*min(t,1.0-t);
+  float res = mix(1.0,s,smoothstep(0.0,1.0,t));
+  return res;
+}
+
+mat4 randomscaling(float t) {
+  return mat4(randomscalefactor(t),0,0,0,
+              0,randomscalefactor(t),0,0,
+              0,0,randomscalefactor(t),0,
+              0,0,0,randomscalefactor(t));
+}
+
+vec4 randomquaternion(float t) {
+  vec3 axis = randomspherepoint();
+  float theta = PI*(random()-0.5);
+  t = min(t,1.0-t);
+  theta *= smoothstep(0.0,0.5,t);
+  return vec4(sin(theta)*axis,cos(theta));
+}
+
+// General a random R4 rotation, from two
+// random quaternions.
+mat4 randomrotation(float t) {
+  mat4 left = qmat_left(randomquaternion(t));
+  mat4 right = qmat_right(randomquaternion(t));
+  //assert(eq(left*right,right*left));
+  return left*right;
+}
+
+mat4 setmatrix(float t) {
+  t /= 10.0;
+  uint epoch = uint(floor(t));
+  seed = ihash(epoch);
+  t = fract(t);
+  if (true) {
+    // 4 seconds each out and back, with a 1 second pause between.
+    t *= 1.25;
+    if (t > 0.5) t = max(t-0.125,0.5);
+    if (t > 1.0) t = max(t-0.125,1.0);
+  }
+  mat4 m = mat4(1);
+  if (dorotation) m *= randomrotation(t);
+  if (doscaling) m *= randomscaling(t);
+  if (dorotation && doscaling) m *= randomrotation(t);
+  return m;
+}
+
+// A cube, centre of side and side direction.
+vec4 lines[] = vec4[]
+  (vec4(1,1,0,1),vec4(0,0,1,0),
+   vec4(1,-1,0,1),vec4(0,0,1,0),
+   vec4(-1,-1,0,1),vec4(0,0,1,0),
+   vec4(-1,1,0,1),vec4(0,0,1,0),
+
+   vec4(1,0,1,1),vec4(0,1,0,0),
+   vec4(1,0,-1,1),vec4(0,1,0,0),
+   vec4(-1,0,-1,1),vec4(0,1,0,0),
+   vec4(-1,0,1,1),vec4(0,1,0,0),
+   
+   vec4(0,1,1,1),vec4(1,0,0,0),
+   vec4(0,1,-1,1),vec4(1,0,0,0),
+   vec4(0,-1,-1,1),vec4(1,0,0,0),
+   vec4(0,-1,1,1),vec4(1,0,0,0));   
+
+void getline(int i, mat4 m, out vec4 r, out vec4 s) {
+  vec4 r0 = m*lines[2*i];
+  vec4 s0 = m*lines[2*i+1];
+  r  = r0/r0.w;
+  // Normalization not needed for the vector algebra, but
+  // we need to measure along the line consistently.
+  s = normalize(r0*s0.w-r0.w*s0);
+}
+
+vec4 transform(in vec4 p) {
+  if (iMouse.x > 0.0) {
+    float theta = (2.0*iMouse.y-iResolution.y)/iResolution.y*PI;
+    float phi = (2.0*iMouse.x-iResolution.x)/iResolution.x*PI;
+    p.yz = rotate(p.yz,-theta);
+    p.zx = rotate(p.zx,phi);
+  }
+  if (docamerarotation) {
+    p.yz = rotate(p.yz, 0.123*iTime);
+    p.zx = rotate(p.zx, 0.2*iTime);
+  }
+  return p;
+}
+
+// Smooth HSV to RGB conversion 
+// Function by iq, from https://www.shadertoy.com/view/MsS3Wc
+vec3 hsv2rgb( in vec3 c ) {
+  vec3 rgb = clamp( abs(mod(c.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0, 1.0 );
+  rgb = rgb*rgb*(3.0-2.0*rgb); // cubic smoothing	
+  return c.z * mix( vec3(1.0), rgb, c.y);
+}
+
+const int CHAR_C = 67;
+const int CHAR_R = 82;
+const int CHAR_S = 83;
+
+bool keypress(int code) {
+  return texelFetch(iChannel0, ivec2(code,2),0).x != 0.0;
+}
+
+void mainImage(out vec4 outColor, vec2 fragCoord) {
+  docamerarotation = !keypress(CHAR_C);
+  dorotation = !keypress(CHAR_R);
+  doscaling = !keypress(CHAR_S);
+
+  vec2 xy = scale*(2.0*fragCoord - iResolution.xy)/iResolution.y;
+  // p+kq is viewing ray
+  float camera = 3.0;
+  vec4 p = vec4(0,0,camera,1);
+  vec4 q = vec4(xy,-1,0);
+  p = transform(p);
+  q = normalize(transform(q));
+  vec3 color = vec3(0); // Accumulate color here
+  mat4 m = setmatrix(iTime);
+  for (int i = 0; i < 12; i++) {
+    vec4 r,s;
+    getline(i,m,r,s);
+    vec2 k = closest(p,q,r,s);
+    vec4 p1 = p+k.x*q;
+    vec4 r1 = r+k.y*s;
+    float d = distance(p1/p1.w,r1/r1.w);
+    float h = mod(0.3*(-iTime+log(1.0+abs(k.y))),1.0);
+    vec3 basecolor = hsv2rgb(vec3(h,1.0,1.0));
+    color += A*float(k.x > 0.0)*(1.0-pow(smoothstep(0.0,R,d),K))*basecolor;
+  }
+  outColor = vec4(sqrt(color),1.0);
+  if (alert) outColor = vec4(1,0,0,1);
+}

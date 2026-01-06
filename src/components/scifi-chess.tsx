@@ -1,6 +1,6 @@
 "use client";
 
-import { RoundedBox, Text, useGLTF } from "@react-three/drei";
+import { RoundedBox, Text, useGLTF, Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
@@ -34,6 +34,183 @@ import { parseFenMoveNumber } from "@/lib/gooseChess";
  */
 
 const SQUARE_TOP_Y = 0.04;
+
+function CoordinateLabels({
+  originVec,
+  squareSize,
+  boardSize,
+  showCoordinates,
+  boardTheme,
+}: {
+  originVec: THREE.Vector3;
+  squareSize: number;
+  boardSize: number;
+  showCoordinates: boolean;
+  boardTheme?: string;
+}) {
+  if (!showCoordinates) return null;
+
+  const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const ranks = ["1", "2", "3", "4", "5", "6", "7", "8"];
+  const borderWidth = 0.35;
+  const borderHeight = 0.12;
+  const borderExtend = boardSize / 2 + borderWidth / 2;
+  const borderY = originVec.y - 0.09;
+  const textY = originVec.y + 0.02;
+  const textOffset = 0.25;
+
+  // Material props based on board theme
+  const isMarble = boardTheme === "board_marble";
+  const isNeon = boardTheme === "board_neon";
+  const isWalnut = boardTheme === "board_walnut";
+  const isClassic = !isMarble && !isNeon && !isWalnut;
+
+  // Border colors based on theme
+  const borderColor = isMarble
+    ? "#2b2b33"
+    : isNeon
+    ? "#07101c"
+    : isWalnut
+    ? "#5a3a1a"
+    : "#0d1b2a";
+
+  return (
+    <group>
+      {/* Border frame with sci-fi styling */}
+      {/* Bottom border */}
+      <mesh
+        position={[originVec.x, borderY, originVec.z + borderExtend]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry
+          args={[boardSize + borderWidth * 2, borderHeight, borderWidth]}
+        />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <meshStandardMaterial
+            color={borderColor}
+            roughness={0.35}
+            metalness={0.65}
+            emissive="#021019"
+            emissiveIntensity={0.35}
+          />
+        )}
+      </mesh>
+
+      {/* Top border */}
+      <mesh
+        position={[originVec.x, borderY, originVec.z - borderExtend]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry
+          args={[boardSize + borderWidth * 2, borderHeight, borderWidth]}
+        />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <meshStandardMaterial
+            color={borderColor}
+            roughness={0.35}
+            metalness={0.65}
+            emissive="#021019"
+            emissiveIntensity={0.35}
+          />
+        )}
+      </mesh>
+
+      {/* Left border */}
+      <mesh
+        position={[originVec.x - borderExtend, borderY, originVec.z]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry args={[borderWidth, borderHeight, boardSize]} />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <meshStandardMaterial
+            color={borderColor}
+            roughness={0.35}
+            metalness={0.65}
+            emissive="#021019"
+            emissiveIntensity={0.35}
+          />
+        )}
+      </mesh>
+
+      {/* Right border */}
+      <mesh
+        position={[originVec.x + borderExtend, borderY, originVec.z]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry args={[borderWidth, borderHeight, boardSize]} />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <meshStandardMaterial
+            color={borderColor}
+            roughness={0.35}
+            metalness={0.65}
+            emissive="#021019"
+            emissiveIntensity={0.35}
+          />
+        )}
+      </mesh>
+
+      {/* File labels (a-h) at bottom */}
+      {files.map((file, idx) => {
+        const x = (idx - 3.5) * squareSize;
+        return (
+          <Text
+            key={`file-${file}`}
+            position={[originVec.x + x, textY, originVec.z + borderExtend]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={0.18}
+            color="#00d9ff"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.015}
+            outlineColor="#000000"
+          >
+            {file}
+          </Text>
+        );
+      })}
+
+      {/* Rank labels (1-8) on left side */}
+      {ranks.map((rank, idx) => {
+        const z = (7 - idx - 3.5) * squareSize;
+        return (
+          <Text
+            key={`rank-${rank}`}
+            position={[originVec.x - borderExtend, textY, originVec.z + z]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={0.18}
+            color="#00d9ff"
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.015}
+            outlineColor="#000000"
+          >
+            {rank}
+          </Text>
+        );
+      })}
+    </group>
+  );
+}
 
 function HolographicPlacementText({
   originVec,
@@ -1077,10 +1254,14 @@ export function ScifiChess({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
   leaveAllExceptBoardKey,
   onJoinIntent,
+  quickPlay,
+  onQuickPlayResult,
+  onGameEnd,
   onSelfSeatChange,
   onRequestMove,
   onCenterCamera,
@@ -1097,10 +1278,29 @@ export function ScifiChess({
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  onActivityMove?: (game: string, boardKey: string) => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
   leaveAllExceptBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
+  quickPlay?: { token: number; targetBoardKey: string | null } | null;
+  onQuickPlayResult?: (
+    token: number,
+    boardKey: string,
+    ok: boolean,
+    reason?: string
+  ) => void;
+  onGameEnd?: (event: {
+    boardKey: string;
+    mode: BoardMode;
+    resultLabel: string;
+    didWin: boolean | null;
+    hadOpponent?: boolean;
+    resultSeq?: number;
+    rematch: () => void;
+    switchSides: () => void;
+    leave: () => void;
+  }) => void;
   onSelfSeatChange?: (boardKey: string, isSeated: boolean) => void;
   onRequestMove?: (
     dest: Vec3,
@@ -1117,6 +1317,36 @@ export function ScifiChess({
   const engine = engineForMode(gameMode);
   const [warningSquare, setWarningSquare] = useState<Square | null>(null);
   const [warningStartMs, setWarningStartMs] = useState(0);
+  const [showCoordinates, setShowCoordinates] = useState(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      return stored !== null ? stored === "true" : true;
+    }
+    return true;
+  });
+
+  // Listen for storage changes from the settings modal
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleStorageChange = () => {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      setShowCoordinates(stored !== null ? stored === "true" : true);
+    };
+
+    // Custom event for same-window updates
+    window.addEventListener("chess-coordinates-changed", handleStorageChange);
+    // Storage event for cross-tab updates
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener(
+        "chess-coordinates-changed",
+        handleStorageChange
+      );
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (!warningSquare || !warningStartMs) return;
@@ -1144,6 +1374,11 @@ export function ScifiChess({
     selfPositionRef,
     selfId,
     selfName,
+    onActivityMove: () =>
+      onActivityMove?.(
+        chessVariantForMode(gameMode) === "goose" ? "goose" : "chess",
+        boardKey
+      ),
     joinLockedBoardKey,
     leaveAllNonce,
     leaveAllExceptBoardKey,
@@ -1165,6 +1400,134 @@ export function ScifiChess({
     },
   });
 
+  // Quick Play: if targeted, try to join an available seat (only on fresh games).
+  const lastQuickPlayTokenRef = useRef<number>(-1);
+  useEffect(() => {
+    const token = quickPlay?.token ?? -1;
+    const target = quickPlay?.targetBoardKey ?? null;
+    if (token <= 0) return;
+    if (!target || target !== boardKey) return;
+    if (token === lastQuickPlayTokenRef.current) return;
+    lastQuickPlayTokenRef.current = token;
+
+    if (engine !== "chess" || gameMode !== "chess") {
+      onQuickPlayResult?.(token, boardKey, false, "not-chess");
+      return;
+    }
+
+    const seats = chessGame.netState.seats;
+    const wConnId = seats.w?.connId ?? null;
+    const bConnId = seats.b?.connId ?? null;
+
+    if (
+      wConnId === chessGame.chessSelfId ||
+      bConnId === chessGame.chessSelfId
+    ) {
+      onQuickPlayResult?.(token, boardKey, true);
+      return;
+    }
+
+    const isFresh =
+      chessGame.netState.seq === 0 &&
+      !chessGame.netState.lastMove &&
+      !chessGame.netState.clock.running &&
+      !chessGame.netState.result;
+
+    const wTaken = !!wConnId;
+    const bTaken = !!bConnId;
+    const bothTaken = wTaken && bTaken;
+    if (bothTaken) {
+      onQuickPlayResult?.(token, boardKey, false, "full");
+      return;
+    }
+    if (!isFresh) {
+      onQuickPlayResult?.(token, boardKey, false, "in-progress");
+      return;
+    }
+
+    const side: Side | null = !wTaken ? "w" : !bTaken ? "b" : null;
+    if (!side) {
+      onQuickPlayResult?.(token, boardKey, false, "full");
+      return;
+    }
+
+    onJoinIntent?.(boardKey);
+    chessGame.centerCamera();
+    chessGame.clickJoin(side);
+    onQuickPlayResult?.(token, boardKey, true);
+  }, [
+    quickPlay?.token,
+    quickPlay?.targetBoardKey,
+    boardKey,
+    engine,
+    gameMode,
+    chessGame.netState.seats,
+    chessGame.netState.seq,
+    chessGame.netState.lastMove,
+    chessGame.netState.clock.running,
+    chessGame.netState.result,
+    chessGame.chessSelfId,
+    chessGame.centerCamera,
+    chessGame.clickJoin,
+    onJoinIntent,
+    onQuickPlayResult,
+  ]);
+
+  // Game end -> notify world so it can show rematch/switch UI.
+  const lastReportedResultSeqRef = useRef<number>(-1);
+  useEffect(() => {
+    if (engine !== "chess") return;
+    if (gameMode !== "chess" && gameMode !== "goose") return;
+    const r = chessGame.netState.result;
+    if (!r) return;
+    if (chessGame.netState.seq === lastReportedResultSeqRef.current) return;
+    lastReportedResultSeqRef.current = chessGame.netState.seq;
+    if (!chessGame.resultLabel) return;
+
+    const mySide = chessGame.myPrimarySide;
+    const didWin =
+      r.type === "draw" ? null : mySide ? r.winner === mySide : null;
+
+    const seats = chessGame.netState.seats;
+    const hadOpponent =
+      !!seats.w?.connId &&
+      !!seats.b?.connId &&
+      seats.w.connId !== seats.b.connId;
+
+    onGameEnd?.({
+      boardKey,
+      mode: gameMode,
+      resultLabel: chessGame.resultLabel,
+      didWin,
+      hadOpponent,
+      resultSeq: chessGame.netState.seq,
+      rematch: () => chessGame.clickReset(),
+      switchSides: () => {
+        const s = chessGame.myPrimarySide;
+        if (!s) return;
+        const other: Side = s === "w" ? "b" : "w";
+        chessGame.clickJoin(s);
+        chessGame.clickJoin(other);
+      },
+      leave: () => {
+        const s = chessGame.myPrimarySide;
+        if (!s) return;
+        chessGame.clickJoin(s);
+      },
+    });
+  }, [
+    engine,
+    gameMode,
+    chessGame.netState.result,
+    chessGame.netState.seq,
+    chessGame.myPrimarySide,
+    chessGame.resultLabel,
+    chessGame.clickReset,
+    chessGame.clickJoin,
+    onGameEnd,
+    boardKey,
+  ]);
+
   const checkersGame = useCheckersGame({
     enabled: engine === "checkers",
     roomId,
@@ -1173,6 +1536,7 @@ export function ScifiChess({
     selfPositionRef,
     selfId,
     selfName,
+    onActivityMove: () => onActivityMove?.("checkers", boardKey),
     joinLockedBoardKey,
     leaveAllNonce,
     leaveAllExceptBoardKey,
@@ -1194,6 +1558,13 @@ export function ScifiChess({
   });
 
   const originVec = chessGame.originVec;
+  const ox = originVec.x;
+  const oz = originVec.z;
+  const skipWhiteRight = ox < -1 && oz < -1;
+  const skipWhiteLeft = ox > 1 && oz < -1;
+  const skipBlackRight = ox < -1 && oz > 1;
+  const skipBlackLeft = ox > 1 && oz > 1;
+
   const squareSize = chessGame.squareSize;
   const boardSize = chessGame.boardSize;
 
@@ -1432,334 +1803,358 @@ export function ScifiChess({
 
       {/* Sci-fi Seats */}
       {/* White side seats */}
-      <group
-        position={[originVec.x - 3.5, 0.28, originVec.z + padOffset + 1.5]}
-      >
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            activeRequestSitAt(
-              originVec.x - 3.5,
-              originVec.z + padOffset + 1.35
-            );
-          }}
+      {!skipWhiteLeft && (
+        <group
+          position={[originVec.x - 3.5, 0.28, originVec.z + padOffset + 1.5]}
         >
-          <boxGeometry args={[2.9, 0.1, 0.85]} />
-          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
-        </mesh>
+          <mesh
+            castShadow
+            receiveShadow
+            onPointerEnter={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = "default";
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              activeRequestSitAt(
+                originVec.x - 3.5,
+                originVec.z + padOffset + 1.35
+              );
+            }}
+          >
+            <boxGeometry args={[2.9, 0.1, 0.85]} />
+            <meshStandardMaterial
+              color="#111"
+              roughness={0.2}
+              metalness={0.9}
+            />
+          </mesh>
 
-        {/* cushion + pillows (raise seat height) */}
-        <RoundedBox
-          args={[2.55, 0.14, 0.72]}
-          radius={0.1}
-          smoothness={3}
-          position={[0, 0.1, 0]}
-          castShadow
-          receiveShadow
+          {/* cushion + pillows (raise seat height) */}
+          <RoundedBox
+            args={[2.55, 0.14, 0.72]}
+            radius={0.1}
+            smoothness={3}
+            position={[0, 0.1, 0]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#1a1a24"
+              roughness={0.98}
+              metalness={0.02}
+            />
+          </RoundedBox>
+
+          <RoundedBox
+            args={[0.82, 0.12, 0.36]}
+            radius={0.1}
+            smoothness={3}
+            position={[-0.62, 0.18, 0.1]}
+            rotation={[0, 0.08, 0.06]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
+
+          <RoundedBox
+            args={[0.88, 0.12, 0.38]}
+            radius={0.1}
+            smoothness={3}
+            position={[0.62, 0.175, -0.06]}
+            rotation={[0, -0.07, -0.05]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
+
+          {/* Glowing edge */}
+          <mesh position={[0, 0.135, 0.42]}>
+            <boxGeometry args={[2.9, 0.01, 0.02]} />
+            <meshBasicMaterial color="#00ffff" />
+          </mesh>
+          {/* Floating effect base */}
+          <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
+          </mesh>
+        </group>
+      )}
+      {!skipWhiteRight && (
+        <group
+          position={[originVec.x + 3.5, 0.28, originVec.z + padOffset + 1.5]}
         >
-          <meshStandardMaterial
-            color="#1a1a24"
-            roughness={0.98}
-            metalness={0.02}
-          />
-        </RoundedBox>
+          <mesh
+            castShadow
+            receiveShadow
+            onPointerEnter={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = "default";
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              activeRequestSitAt(
+                originVec.x + 3.5,
+                originVec.z + padOffset + 1.35
+              );
+            }}
+          >
+            <boxGeometry args={[2.9, 0.1, 0.85]} />
+            <meshStandardMaterial
+              color="#111"
+              roughness={0.2}
+              metalness={0.9}
+            />
+          </mesh>
 
-        <RoundedBox
-          args={[0.82, 0.12, 0.36]}
-          radius={0.1}
-          smoothness={3}
-          position={[-0.62, 0.18, 0.1]}
-          rotation={[0, 0.08, 0.06]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
+          {/* cushion + pillows (raise seat height) */}
+          <RoundedBox
+            args={[2.55, 0.14, 0.72]}
+            radius={0.1}
+            smoothness={3}
+            position={[0, 0.1, 0]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#1a1a24"
+              roughness={0.98}
+              metalness={0.02}
+            />
+          </RoundedBox>
 
-        <RoundedBox
-          args={[0.88, 0.12, 0.38]}
-          radius={0.1}
-          smoothness={3}
-          position={[0.62, 0.175, -0.06]}
-          rotation={[0, -0.07, -0.05]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
+          <RoundedBox
+            args={[0.82, 0.12, 0.36]}
+            radius={0.1}
+            smoothness={3}
+            position={[-0.62, 0.18, 0.1]}
+            rotation={[0, 0.08, 0.06]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
 
-        {/* Glowing edge */}
-        <mesh position={[0, 0.135, 0.42]}>
-          <boxGeometry args={[2.9, 0.01, 0.02]} />
-          <meshBasicMaterial color="#00ffff" />
-        </mesh>
-        {/* Floating effect base */}
-        <mesh position={[0, -0.2, 0]}>
-          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-          <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
-        </mesh>
-      </group>
-      <group
-        position={[originVec.x + 3.5, 0.28, originVec.z + padOffset + 1.5]}
-      >
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            activeRequestSitAt(
-              originVec.x + 3.5,
-              originVec.z + padOffset + 1.35
-            );
-          }}
-        >
-          <boxGeometry args={[2.9, 0.1, 0.85]} />
-          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
-        </mesh>
+          <RoundedBox
+            args={[0.88, 0.12, 0.38]}
+            radius={0.1}
+            smoothness={3}
+            position={[0.62, 0.175, -0.06]}
+            rotation={[0, -0.07, -0.05]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
 
-        {/* cushion + pillows (raise seat height) */}
-        <RoundedBox
-          args={[2.55, 0.14, 0.72]}
-          radius={0.1}
-          smoothness={3}
-          position={[0, 0.1, 0]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#1a1a24"
-            roughness={0.98}
-            metalness={0.02}
-          />
-        </RoundedBox>
-
-        <RoundedBox
-          args={[0.82, 0.12, 0.36]}
-          radius={0.1}
-          smoothness={3}
-          position={[-0.62, 0.18, 0.1]}
-          rotation={[0, 0.08, 0.06]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
-
-        <RoundedBox
-          args={[0.88, 0.12, 0.38]}
-          radius={0.1}
-          smoothness={3}
-          position={[0.62, 0.175, -0.06]}
-          rotation={[0, -0.07, -0.05]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
-
-        <mesh position={[0, 0.135, 0.42]}>
-          <boxGeometry args={[2.9, 0.01, 0.02]} />
-          <meshBasicMaterial color="#00ffff" />
-        </mesh>
-        <mesh position={[0, -0.2, 0]}>
-          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-          <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
-        </mesh>
-      </group>
+          <mesh position={[0, 0.135, 0.42]}>
+            <boxGeometry args={[2.9, 0.01, 0.02]} />
+            <meshBasicMaterial color="#00ffff" />
+          </mesh>
+          <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#00ffff" transparent opacity={0.3} />
+          </mesh>
+        </group>
+      )}
 
       {/* Black side seats */}
-      <group
-        position={[originVec.x - 3.5, 0.28, originVec.z - padOffset - 1.5]}
-      >
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            activeRequestSitAt(
-              originVec.x - 3.5,
-              originVec.z - padOffset - 1.35
-            );
-          }}
+      {!skipBlackLeft && (
+        <group
+          position={[originVec.x - 3.5, 0.28, originVec.z - padOffset - 1.5]}
         >
-          <boxGeometry args={[2.9, 0.1, 0.85]} />
-          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
-        </mesh>
+          <mesh
+            castShadow
+            receiveShadow
+            onPointerEnter={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = "default";
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              activeRequestSitAt(
+                originVec.x - 3.5,
+                originVec.z - padOffset - 1.35
+              );
+            }}
+          >
+            <boxGeometry args={[2.9, 0.1, 0.85]} />
+            <meshStandardMaterial
+              color="#111"
+              roughness={0.2}
+              metalness={0.9}
+            />
+          </mesh>
 
-        {/* cushion + pillows (raise seat height) */}
-        <RoundedBox
-          args={[2.55, 0.14, 0.72]}
-          radius={0.1}
-          smoothness={3}
-          position={[0, 0.1, 0]}
-          castShadow
-          receiveShadow
+          {/* cushion + pillows (raise seat height) */}
+          <RoundedBox
+            args={[2.55, 0.14, 0.72]}
+            radius={0.1}
+            smoothness={3}
+            position={[0, 0.1, 0]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#1a1a24"
+              roughness={0.98}
+              metalness={0.02}
+            />
+          </RoundedBox>
+
+          <RoundedBox
+            args={[0.82, 0.12, 0.36]}
+            radius={0.1}
+            smoothness={3}
+            position={[-0.62, 0.18, 0.1]}
+            rotation={[0, 0.08, 0.06]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
+
+          <RoundedBox
+            args={[0.88, 0.12, 0.38]}
+            radius={0.1}
+            smoothness={3}
+            position={[0.62, 0.175, -0.06]}
+            rotation={[0, -0.07, -0.05]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
+
+          <mesh position={[0, 0.135, -0.42]}>
+            <boxGeometry args={[2.9, 0.01, 0.02]} />
+            <meshBasicMaterial color="#ff00ff" />
+          </mesh>
+          <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
+          </mesh>
+        </group>
+      )}
+      {!skipBlackRight && (
+        <group
+          position={[originVec.x + 3.5, 0.28, originVec.z - padOffset - 1.5]}
         >
-          <meshStandardMaterial
-            color="#1a1a24"
-            roughness={0.98}
-            metalness={0.02}
-          />
-        </RoundedBox>
+          <mesh
+            castShadow
+            receiveShadow
+            onPointerEnter={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = "default";
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              activeRequestSitAt(
+                originVec.x + 3.5,
+                originVec.z - padOffset - 1.35
+              );
+            }}
+          >
+            <boxGeometry args={[2.9, 0.1, 0.85]} />
+            <meshStandardMaterial
+              color="#111"
+              roughness={0.2}
+              metalness={0.9}
+            />
+          </mesh>
 
-        <RoundedBox
-          args={[0.82, 0.12, 0.36]}
-          radius={0.1}
-          smoothness={3}
-          position={[-0.62, 0.18, 0.1]}
-          rotation={[0, 0.08, 0.06]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
+          {/* cushion + pillows (raise seat height) */}
+          <RoundedBox
+            args={[2.55, 0.14, 0.72]}
+            radius={0.1}
+            smoothness={3}
+            position={[0, 0.1, 0]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#1a1a24"
+              roughness={0.98}
+              metalness={0.02}
+            />
+          </RoundedBox>
 
-        <RoundedBox
-          args={[0.88, 0.12, 0.38]}
-          radius={0.1}
-          smoothness={3}
-          position={[0.62, 0.175, -0.06]}
-          rotation={[0, -0.07, -0.05]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
+          <RoundedBox
+            args={[0.82, 0.12, 0.36]}
+            radius={0.1}
+            smoothness={3}
+            position={[-0.62, 0.18, 0.1]}
+            rotation={[0, 0.08, 0.06]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
 
-        <mesh position={[0, 0.135, -0.42]}>
-          <boxGeometry args={[2.9, 0.01, 0.02]} />
-          <meshBasicMaterial color="#ff00ff" />
-        </mesh>
-        <mesh position={[0, -0.2, 0]}>
-          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-          <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
-        </mesh>
-      </group>
-      <group
-        position={[originVec.x + 3.5, 0.28, originVec.z - padOffset - 1.5]}
-      >
-        <mesh
-          castShadow
-          receiveShadow
-          onPointerEnter={() => {
-            document.body.style.cursor = "pointer";
-          }}
-          onPointerLeave={() => {
-            document.body.style.cursor = "default";
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            activeRequestSitAt(
-              originVec.x + 3.5,
-              originVec.z - padOffset - 1.35
-            );
-          }}
-        >
-          <boxGeometry args={[2.9, 0.1, 0.85]} />
-          <meshStandardMaterial color="#111" roughness={0.2} metalness={0.9} />
-        </mesh>
+          <RoundedBox
+            args={[0.88, 0.12, 0.38]}
+            radius={0.1}
+            smoothness={3}
+            position={[0.62, 0.175, -0.06]}
+            rotation={[0, -0.07, -0.05]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#151525"
+              roughness={0.99}
+              metalness={0.01}
+            />
+          </RoundedBox>
 
-        {/* cushion + pillows (raise seat height) */}
-        <RoundedBox
-          args={[2.55, 0.14, 0.72]}
-          radius={0.1}
-          smoothness={3}
-          position={[0, 0.1, 0]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#1a1a24"
-            roughness={0.98}
-            metalness={0.02}
-          />
-        </RoundedBox>
-
-        <RoundedBox
-          args={[0.82, 0.12, 0.36]}
-          radius={0.1}
-          smoothness={3}
-          position={[-0.62, 0.18, 0.1]}
-          rotation={[0, 0.08, 0.06]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
-
-        <RoundedBox
-          args={[0.88, 0.12, 0.38]}
-          radius={0.1}
-          smoothness={3}
-          position={[0.62, 0.175, -0.06]}
-          rotation={[0, -0.07, -0.05]}
-          castShadow
-          receiveShadow
-        >
-          <meshStandardMaterial
-            color="#151525"
-            roughness={0.99}
-            metalness={0.01}
-          />
-        </RoundedBox>
-
-        <mesh position={[0, 0.135, -0.42]}>
-          <boxGeometry args={[2.9, 0.01, 0.02]} />
-          <meshBasicMaterial color="#ff00ff" />
-        </mesh>
-        <mesh position={[0, -0.2, 0]}>
-          <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
-          <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
-        </mesh>
-      </group>
+          <mesh position={[0, 0.135, -0.42]}>
+            <boxGeometry args={[2.9, 0.01, 0.02]} />
+            <meshBasicMaterial color="#ff00ff" />
+          </mesh>
+          <mesh position={[0, -0.2, 0]}>
+            <cylinderGeometry args={[0.1, 0.1, 0.4, 8]} />
+            <meshBasicMaterial color="#ff00ff" transparent opacity={0.3} />
+          </mesh>
+        </group>
+      )}
 
       {/* Sci-fi Props (Data Pylons) */}
       {[-1, 1].map((side) => (
@@ -2248,6 +2643,15 @@ export function ScifiChess({
       ) : null}
 
       {/* Startled squares handled by shader effect on pieces */}
+
+      {/* Coordinate labels */}
+      <CoordinateLabels
+        originVec={originVec}
+        squareSize={squareSize}
+        boardSize={boardSize}
+        showCoordinates={showCoordinates}
+        boardTheme={chessBoardTheme}
+      />
 
       {/* Pieces */}
       {engine === "checkers"

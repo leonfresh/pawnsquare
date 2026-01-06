@@ -20,6 +20,14 @@ type ChatMessage = {
 
 type BoardMode = "chess" | "checkers" | "goose";
 
+type LeaderboardEntry = {
+  id: string;
+  name: string;
+  moves: number;
+  playMs: number;
+  score: number;
+};
+
 type Message =
   | {
       type: "hello";
@@ -28,6 +36,7 @@ type Message =
       gender: "male" | "female";
       avatarUrl?: string;
     }
+  | { type: "activity:move"; game: string; boardKey?: string }
   | { type: "state"; position: [number, number, number]; rotY: number }
   | { type: "chat"; text: string }
   | { type: "sync"; players: Record<string, Player>; chat: ChatMessage[] }
@@ -37,6 +46,8 @@ type Message =
   | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
   | { type: "voice:hangup"; to: string; reason?: string }
   | { type: "voice:request-connections"; deviceId?: string; peers?: string[] };
+
+type LeaderboardMessage = { type: "leaderboard"; entries: LeaderboardEntry[] };
 
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
@@ -48,12 +59,75 @@ export default class RoomServer implements Party.Server {
     d: "chess",
   };
 
+  stats: Map<
+    string,
+    { name: string; moves: number; playMsAcc: number; connectedAtMs: number }
+  > = new Map();
+  leaderboardTimer: ReturnType<typeof setInterval> | null = null;
+
   static readonly MAX_PLAYERS = 16;
 
   constructor(readonly room: Party.Room) {}
 
+  computeLeaderboard(nowMs: number): LeaderboardEntry[] {
+    const entries: LeaderboardEntry[] = [];
+
+    for (const [id, player] of this.players.entries()) {
+      const st = this.stats.get(id);
+      const name = st?.name || player.name || `Player-${id.slice(0, 4)}`;
+      const moves = st?.moves ?? 0;
+      const playMs =
+        (st?.playMsAcc ?? 0) +
+        Math.max(0, nowMs - (st?.connectedAtMs ?? nowMs));
+      const minutes = Math.max(1, playMs / 60000);
+      const score = moves / minutes;
+
+      entries.push({ id, name, moves, playMs, score });
+    }
+
+    entries.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.moves !== a.moves) return b.moves - a.moves;
+      return b.playMs - a.playMs;
+    });
+
+    return entries.slice(0, 10);
+  }
+
+  broadcastLeaderboard() {
+    const now = Date.now();
+    const entries = this.computeLeaderboard(now);
+    this.room.broadcast(
+      JSON.stringify({
+        type: "leaderboard",
+        entries,
+      } satisfies LeaderboardMessage)
+    );
+  }
+
   onConnect(conn: Party.Connection) {
     console.log(`[PartyKit] Player connected: ${conn.id}`);
+
+    // Track playtime while connected.
+    const existing = this.stats.get(conn.id);
+    if (existing) {
+      existing.connectedAtMs = Date.now();
+    } else {
+      this.stats.set(conn.id, {
+        name: `Player-${conn.id.slice(0, 4)}`,
+        moves: 0,
+        playMsAcc: 0,
+        connectedAtMs: Date.now(),
+      });
+    }
+
+    // Start periodic leaderboard updates (for playtime ticking up).
+    if (!this.leaderboardTimer) {
+      this.leaderboardTimer = setInterval(() => {
+        if (!this.players.size) return;
+        this.broadcastLeaderboard();
+      }, 5000);
+    }
 
     // Send current state to new connection
     const players: Record<string, Player> = {};
@@ -69,6 +143,14 @@ export default class RoomServer implements Party.Server {
         boardModes: this.boardModes,
       })
     );
+
+    // Also send the current leaderboard snapshot.
+    conn.send(
+      JSON.stringify({
+        type: "leaderboard",
+        entries: this.computeLeaderboard(Date.now()),
+      } satisfies LeaderboardMessage)
+    );
   }
 
   onMessage(message: string, sender: Party.Connection) {
@@ -78,14 +160,14 @@ export default class RoomServer implements Party.Server {
       if (msg.type === "hello") {
         // Check if room is full
         if (this.players.size >= RoomServer.MAX_PLAYERS) {
-          conn.send(
+          sender.send(
             JSON.stringify({
               type: "error",
               message: "room-full",
               reason: "This room has reached maximum capacity (16 players)",
             })
           );
-          conn.close();
+          sender.close();
           return;
         }
 
@@ -101,10 +183,19 @@ export default class RoomServer implements Party.Server {
         };
         this.players.set(sender.id, player);
 
+        const st = this.stats.get(sender.id);
+        if (st) st.name = msg.name;
+
         // Broadcast to all except sender
         this.room.broadcast(JSON.stringify({ type: "player-joined", player }), [
           sender.id,
         ]);
+
+        this.broadcastLeaderboard();
+      } else if (msg.type === "activity:move") {
+        const st = this.stats.get(sender.id);
+        if (st) st.moves += 1;
+        this.broadcastLeaderboard();
       } else if (msg.type === "state") {
         // Update player position
         const player = this.players.get(sender.id);
@@ -236,10 +327,25 @@ export default class RoomServer implements Party.Server {
 
   onClose(conn: Party.Connection) {
     console.log(`[PartyKit] Player disconnected: ${conn.id}`);
+
+    const st = this.stats.get(conn.id);
+    if (st) {
+      const now = Date.now();
+      st.playMsAcc += Math.max(0, now - st.connectedAtMs);
+      st.connectedAtMs = now;
+    }
+
     this.players.delete(conn.id);
 
     // Notify others
     this.room.broadcast(JSON.stringify({ type: "player-left", id: conn.id }));
+
+    this.broadcastLeaderboard();
+
+    if (!this.players.size && this.leaderboardTimer) {
+      clearInterval(this.leaderboardTimer);
+      this.leaderboardTimer = null;
+    }
   }
 }
 

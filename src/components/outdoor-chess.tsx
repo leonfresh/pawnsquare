@@ -1,6 +1,6 @@
 "use client";
 
-import { RoundedBox, Text, useGLTF } from "@react-three/drei";
+import { RoundedBox, Text, useGLTF, Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import {
   type RefObject,
@@ -2005,11 +2005,22 @@ function OutdoorBenches({
     [onRequestMove, ox, oy, oz]
   );
 
+  // Determine which bench to skip based on board position relative to center (0,0)
+  // Top-Left board (ox < 0, oz < 0): Skip Bottom-Right bench (White Right)
+  // Top-Right board (ox > 0, oz < 0): Skip Bottom-Left bench (White Left)
+  // Bottom-Left board (ox < 0, oz > 0): Skip Top-Right bench (Black Right)
+  // Bottom-Right board (ox > 0, oz > 0): Skip Top-Left bench (Black Left)
+  const skipWhiteRight = ox < -1 && oz < -1;
+  const skipWhiteLeft = ox > 1 && oz < -1;
+  const skipBlackRight = ox < -1 && oz > 1;
+  const skipBlackLeft = ox > 1 && oz > 1;
+
   return (
     <group>
       {/* Decorative benches */}
       {/* White side benches (facing board -> -Z) */}
       {(() => {
+        if (skipWhiteLeft) return null;
         const x = ox - 3.5;
         const z = oz + padOffset + 1.5;
         return (
@@ -2021,6 +2032,7 @@ function OutdoorBenches({
         );
       })()}
       {(() => {
+        if (skipWhiteRight) return null;
         const x = ox + 3.5;
         const z = oz + padOffset + 1.5;
         return (
@@ -2034,6 +2046,7 @@ function OutdoorBenches({
 
       {/* Black side benches (facing board -> +Z) */}
       {(() => {
+        if (skipBlackLeft) return null;
         const x = ox - 3.5;
         const z = oz - padOffset - 1.5;
         return (
@@ -2045,6 +2058,7 @@ function OutdoorBenches({
         );
       })()}
       {(() => {
+        if (skipBlackRight) return null;
         const x = ox + 3.5;
         const z = oz - padOffset - 1.5;
         return (
@@ -2066,11 +2080,30 @@ export type OutdoorChessProps = {
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  onActivityMove?: (game: string, boardKey: string) => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
   leaveAllExceptBoardKey?: string | null;
   onJoinIntent?: (boardKey: string) => void;
   onSelfSeatChange?: (boardKey: string, isSeated: boolean) => void;
+  quickPlay?: { token: number; targetBoardKey: string | null } | null;
+  onQuickPlayResult?: (
+    token: number,
+    boardKey: string,
+    ok: boolean,
+    reason?: string
+  ) => void;
+  onGameEnd?: (event: {
+    boardKey: string;
+    mode: BoardMode;
+    resultLabel: string;
+    didWin: boolean | null;
+    hadOpponent?: boolean;
+    resultSeq?: number;
+    rematch: () => void;
+    switchSides: () => void;
+    leave: () => void;
+  }) => void;
   onRequestMove?: (
     dest: Vec3,
     opts?: { rotY?: number; sit?: boolean; sitDest?: Vec3; lookAtTarget?: Vec3 }
@@ -2091,11 +2124,15 @@ function OutdoorChessChessMode({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
   leaveAllExceptBoardKey,
   onJoinIntent,
   onSelfSeatChange,
+  quickPlay,
+  onQuickPlayResult,
+  onGameEnd,
   onRequestMove,
   onCenterCamera,
   onBoardControls,
@@ -2105,6 +2142,37 @@ function OutdoorChessChessMode({
   chessBoardTheme,
   gameMode = "chess",
 }: OutdoorChessProps) {
+  const [showCoordinates, setShowCoordinates] = useState(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      return stored !== null ? stored === "true" : true;
+    }
+    return true;
+  });
+
+  // Listen for storage changes from the settings modal
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleStorageChange = () => {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      setShowCoordinates(stored !== null ? stored === "true" : true);
+    };
+
+    // Custom event for same-window updates
+    window.addEventListener("chess-coordinates-changed", handleStorageChange);
+    // Storage event for cross-tab updates
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener(
+        "chess-coordinates-changed",
+        handleStorageChange
+      );
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
+
   const {
     playMove,
     playCapture,
@@ -2123,6 +2191,8 @@ function OutdoorChessChessMode({
     selfPositionRef,
     selfId,
     selfName,
+    onActivityMove: () =>
+      onActivityMove?.(isGooseMode(gameMode) ? "goose" : "chess", boardKey),
     joinLockedBoardKey,
     leaveAllNonce,
     leaveAllExceptBoardKey,
@@ -2144,6 +2214,133 @@ function OutdoorChessChessMode({
       honk: playHonk,
     },
   });
+
+  // Quick Play: if targeted, try to join an available seat (only on fresh games).
+  const lastQuickPlayTokenRef = useRef<number>(-1);
+  useEffect(() => {
+    const token = quickPlay?.token ?? -1;
+    const target = quickPlay?.targetBoardKey ?? null;
+    if (token <= 0) return;
+    if (!target || target !== boardKey) return;
+    if (token === lastQuickPlayTokenRef.current) return;
+    lastQuickPlayTokenRef.current = token;
+
+    if (gameMode !== "chess") {
+      onQuickPlayResult?.(token, boardKey, false, "not-chess");
+      return;
+    }
+
+    const seats = chessGame.netState.seats;
+    const wConnId = seats.w?.connId ?? null;
+    const bConnId = seats.b?.connId ?? null;
+
+    // Already seated -> treat as success.
+    if (
+      wConnId === chessGame.chessSelfId ||
+      bConnId === chessGame.chessSelfId
+    ) {
+      onQuickPlayResult?.(token, boardKey, true);
+      return;
+    }
+
+    // Avoid joining mid-game: treat a "fresh" game as no moves yet and clock not running.
+    const isFresh =
+      chessGame.netState.seq === 0 &&
+      !chessGame.netState.lastMove &&
+      !chessGame.netState.clock.running &&
+      !chessGame.netState.result;
+
+    const wTaken = !!wConnId;
+    const bTaken = !!bConnId;
+    const bothTaken = wTaken && bTaken;
+    if (bothTaken) {
+      onQuickPlayResult?.(token, boardKey, false, "full");
+      return;
+    }
+    if (!isFresh) {
+      onQuickPlayResult?.(token, boardKey, false, "in-progress");
+      return;
+    }
+
+    const side: Side | null = !wTaken ? "w" : !bTaken ? "b" : null;
+    if (!side) {
+      onQuickPlayResult?.(token, boardKey, false, "full");
+      return;
+    }
+
+    onJoinIntent?.(boardKey);
+    chessGame.centerCamera();
+    chessGame.clickJoin(side);
+    onQuickPlayResult?.(token, boardKey, true);
+  }, [
+    quickPlay?.token,
+    quickPlay?.targetBoardKey,
+    boardKey,
+    gameMode,
+    chessGame.netState.seats,
+    chessGame.netState.seq,
+    chessGame.netState.lastMove,
+    chessGame.netState.clock.running,
+    chessGame.netState.result,
+    chessGame.chessSelfId,
+    chessGame.centerCamera,
+    chessGame.clickJoin,
+    onJoinIntent,
+    onQuickPlayResult,
+  ]);
+
+  // Game end -> notify world so it can show rematch/switch UI.
+  const lastReportedResultSeqRef = useRef<number>(-1);
+  useEffect(() => {
+    if (gameMode !== "chess" && gameMode !== "goose") return;
+    const r = chessGame.netState.result;
+    if (!r) return;
+    if (chessGame.netState.seq === lastReportedResultSeqRef.current) return;
+    lastReportedResultSeqRef.current = chessGame.netState.seq;
+    if (!chessGame.resultLabel) return;
+
+    const mySide = chessGame.myPrimarySide;
+    const didWin =
+      r.type === "draw" ? null : mySide ? r.winner === mySide : null;
+
+    const seats = chessGame.netState.seats;
+    const hadOpponent =
+      !!seats.w?.connId &&
+      !!seats.b?.connId &&
+      seats.w.connId !== seats.b.connId;
+
+    onGameEnd?.({
+      boardKey,
+      mode: gameMode,
+      resultLabel: chessGame.resultLabel,
+      didWin,
+      hadOpponent,
+      resultSeq: chessGame.netState.seq,
+      rematch: () => chessGame.clickReset(),
+      switchSides: () => {
+        const s = chessGame.myPrimarySide;
+        if (!s) return;
+        const other: Side = s === "w" ? "b" : "w";
+        chessGame.clickJoin(s);
+        chessGame.clickJoin(other);
+      },
+      leave: () => {
+        const s = chessGame.myPrimarySide;
+        if (!s) return;
+        chessGame.clickJoin(s);
+      },
+    });
+  }, [
+    gameMode,
+    chessGame.netState.result,
+    chessGame.netState.seq,
+    chessGame.myPrimarySide,
+    chessGame.resultLabel,
+    chessGame.clickReset,
+    chessGame.clickJoin,
+    onGameEnd,
+    boardKey,
+  ]);
 
   const {
     originVec,
@@ -2696,6 +2893,15 @@ function OutdoorChessChessMode({
 
       {/* Startled squares handled by shader effect on pieces */}
 
+      {/* Coordinate labels */}
+      <CoordinateLabels
+        originVec={originVec}
+        squareSize={squareSize}
+        boardSize={boardSize}
+        showCoordinates={showCoordinates}
+        boardTheme={chessBoardTheme}
+      />
+
       {/* Pieces */}
       {pieces.map((p) => {
         const isMyPiece = mySides.has(p.color);
@@ -2741,6 +2947,7 @@ function OutdoorChessCheckersMode({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
   leaveAllExceptBoardKey,
@@ -2754,6 +2961,37 @@ function OutdoorChessCheckersMode({
   chessTheme,
   chessBoardTheme,
 }: OutdoorChessProps) {
+  const [showCoordinates, setShowCoordinates] = useState(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      return stored !== null ? stored === "true" : true;
+    }
+    return true;
+  });
+
+  // Listen for storage changes from the settings modal
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleStorageChange = () => {
+      const stored = localStorage.getItem("chess-show-coordinates");
+      setShowCoordinates(stored !== null ? stored === "true" : true);
+    };
+
+    // Custom event for same-window updates
+    window.addEventListener("chess-coordinates-changed", handleStorageChange);
+    // Storage event for cross-tab updates
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener(
+        "chess-coordinates-changed",
+        handleStorageChange
+      );
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
+
   const { playMove, playCapture, playSelect, playWarning, playClick } =
     useChessSounds();
 
@@ -2765,6 +3003,7 @@ function OutdoorChessCheckersMode({
     selfPositionRef,
     selfId,
     selfName,
+    onActivityMove: () => onActivityMove?.("checkers", boardKey),
     joinLockedBoardKey,
     leaveAllNonce,
     leaveAllExceptBoardKey,
@@ -3112,6 +3351,15 @@ function OutdoorChessCheckersMode({
         }}
       />
 
+      {/* Coordinate labels */}
+      <CoordinateLabels
+        originVec={originVec}
+        squareSize={squareSize}
+        boardSize={boardSize}
+        showCoordinates={showCoordinates}
+        boardTheme={chessBoardTheme}
+      />
+
       {/* Pieces */}
       {pieces.map((p) => {
         const file = p.square.charCodeAt(0) - 97;
@@ -3136,6 +3384,159 @@ function OutdoorChessCheckersMode({
             canMove={canMove}
             onPick={() => onPickPiece(p.square as any)}
           />
+        );
+      })}
+    </group>
+  );
+}
+
+function CoordinateLabels({
+  originVec,
+  squareSize,
+  boardSize,
+  showCoordinates,
+  boardTheme,
+}: {
+  originVec: THREE.Vector3;
+  squareSize: number;
+  boardSize: number;
+  showCoordinates: boolean;
+  boardTheme?: string;
+}) {
+  if (!showCoordinates) return null;
+
+  const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const ranks = ["1", "2", "3", "4", "5", "6", "7", "8"];
+  const borderWidth = 0.35;
+  const borderHeight = 0.12;
+  const borderExtend = boardSize / 2 + borderWidth / 2;
+  const borderY = originVec.y - 0.09;
+  const textY = originVec.y + 0.02;
+  const textOffset = 0.25;
+
+  // Material props based on board theme
+  const isMarble = boardTheme === "board_marble";
+  const isNeon = boardTheme === "board_neon";
+  const isWalnut = boardTheme === "board_walnut";
+  const isWood = !isMarble && !isNeon;
+
+  // Border colors based on theme
+  const borderColor = isMarble
+    ? "#2b2b33"
+    : isNeon
+    ? "#07101c"
+    : isWalnut
+    ? "#5a3a1a"
+    : "#6b4423";
+
+  return (
+    <group>
+      {/* Border frame */}
+      {/* Bottom border */}
+      <mesh
+        position={[originVec.x, borderY, originVec.z + borderExtend]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry
+          args={[boardSize + borderWidth * 2, borderHeight, borderWidth]}
+        />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <WoodMaterial color={borderColor} roughness={0.7} metalness={0.15} />
+        )}
+      </mesh>
+
+      {/* Top border */}
+      <mesh
+        position={[originVec.x, borderY, originVec.z - borderExtend]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry
+          args={[boardSize + borderWidth * 2, borderHeight, borderWidth]}
+        />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <WoodMaterial color={borderColor} roughness={0.7} metalness={0.15} />
+        )}
+      </mesh>
+
+      {/* Left border */}
+      <mesh
+        position={[originVec.x - borderExtend, borderY, originVec.z]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry args={[borderWidth, borderHeight, boardSize]} />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <WoodMaterial color={borderColor} roughness={0.7} metalness={0.15} />
+        )}
+      </mesh>
+
+      {/* Right border */}
+      <mesh
+        position={[originVec.x + borderExtend, borderY, originVec.z]}
+        receiveShadow
+        castShadow
+      >
+        <boxGeometry args={[borderWidth, borderHeight, boardSize]} />
+        {isMarble ? (
+          <MarbleTileMaterial color={borderColor} />
+        ) : isNeon ? (
+          <NeonTileMaterial color={borderColor} />
+        ) : (
+          <WoodMaterial color={borderColor} roughness={0.7} metalness={0.15} />
+        )}
+      </mesh>
+
+      {/* File labels (a-h) at bottom */}
+      {files.map((file, idx) => {
+        const x = (idx - 3.5) * squareSize;
+        return (
+          <Text
+            key={`file-${file}`}
+            position={[originVec.x + x, textY, originVec.z + borderExtend]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={0.18}
+            color={isNeon ? "#00d9ff" : "#e8d5c0"}
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.015}
+            outlineColor="#000000"
+          >
+            {file}
+          </Text>
+        );
+      })}
+
+      {/* Rank labels (1-8) on left side */}
+      {ranks.map((rank, idx) => {
+        const z = (7 - idx - 3.5) * squareSize;
+        return (
+          <Text
+            key={`rank-${rank}`}
+            position={[originVec.x - borderExtend, textY, originVec.z + z]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={0.18}
+            color={isNeon ? "#00d9ff" : "#e8d5c0"}
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={0.015}
+            outlineColor="#000000"
+          >
+            {rank}
+          </Text>
         );
       })}
     </group>

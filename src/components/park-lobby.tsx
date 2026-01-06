@@ -1,11 +1,17 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef, useState } from "react";
-import { Html } from "@react-three/drei";
+import { useMemo, useRef, useState, useEffect } from "react";
+import { Html, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { BoardLamp } from "./world";
 import { WaterPlane } from "./water-material";
+import { Butterflies } from "./butterflies";
+import { Fireflies } from "./fireflies";
+import { FloatingParticles } from "./floating-particles";
+import { Wildflowers } from "./wildflowers";
+import { AmbientBirds } from "./ambient-birds";
+import type { LeaderboardEntry } from "@/lib/partyRoom";
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -67,40 +73,78 @@ function makeGroundGeometry({
 
   // Path definitions (same as before, but now baked into the ground)
   const paths = [
-    { points: [[-14, -10], [-8, -13], [0, -14], [8, -12], [14, -8]], width: 2.2 },
-    { points: [[-14, 8], [-6, 12], [2, 13], [10, 10]], width: 2.0 },
-    { points: [[14, -6], [15, 0], [14, 6]], width: 1.6 },
-    { points: [[-15, -4], [-15, 0], [-14, 4]], width: 1.5 },
+    {
+      points: [
+        [-14, -10],
+        [-8, -13],
+        [0, -14],
+        [8, -12],
+        [14, -8],
+      ],
+      width: 2.2,
+    },
+    {
+      points: [
+        [-14, 8],
+        [-6, 12],
+        [2, 13],
+        [10, 10],
+      ],
+      width: 2.0,
+    },
+    {
+      points: [
+        [14, -6],
+        [15, 0],
+        [14, 6],
+      ],
+      width: 1.6,
+    },
+    {
+      points: [
+        [-15, -4],
+        [-15, 0],
+        [-14, 4],
+      ],
+      width: 1.5,
+    },
   ];
 
   // Helper to compute distance from a point to a path
-  function distanceToPath(x: number, z: number, pathPoints: number[][], pathWidth: number): number {
+  function distanceToPath(
+    x: number,
+    z: number,
+    pathPoints: number[][],
+    pathWidth: number
+  ): number {
     let minDist = Infinity;
     for (let i = 0; i < pathPoints.length - 1; i++) {
       const [x1, z1] = pathPoints[i]!;
       const [x2, z2] = pathPoints[i + 1]!;
-      
+
       // Distance from point to line segment
       const dx = x2 - x1;
       const dz = z2 - z1;
       const lengthSq = dx * dx + dz * dz;
-      
+
       if (lengthSq === 0) {
         const dist = Math.sqrt((x - x1) * (x - x1) + (z - z1) * (z - z1));
         minDist = Math.min(minDist, dist);
         continue;
       }
-      
+
       let t = ((x - x1) * dx + (z - z1) * dz) / lengthSq;
       t = Math.max(0, Math.min(1, t));
-      
+
       const projX = x1 + t * dx;
       const projZ = z1 + t * dz;
-      const dist = Math.sqrt((x - projX) * (x - projX) + (z - projZ) * (z - projZ));
-      
+      const dist = Math.sqrt(
+        (x - projX) * (x - projX) + (z - projZ) * (z - projZ)
+      );
+
       minDist = Math.min(minDist, dist);
     }
-    
+
     // Soft falloff
     const halfWidth = pathWidth / 2;
     if (minDist > halfWidth + 1.0) return 1.0; // Far from path
@@ -604,16 +648,18 @@ function BushMaterial(props: any) {
       }
 
       ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
-      `
+    `
+      .replace(
+        "#include <worldpos_vertex>",
+        `
       #include <worldpos_vertex>
       vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
       vNormal = normalize(normalMatrix * normal);
       `
-    ).replace(
-      "#include <begin_vertex>",
-      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `
       #include <begin_vertex>
       
       // Vertex Displacement for Bushes
@@ -625,7 +671,7 @@ function BushMaterial(props: any) {
       
       transformed += normal * ((1.0 - disp) * strength + rustle);
       `
-    );
+      );
 
     shader.fragmentShader = `
       varying vec3 vPos;
@@ -731,7 +777,7 @@ function BushMaterial(props: any) {
     <meshStandardMaterial
       ref={materialRef}
       onBeforeCompile={onBeforeCompile}
-      // Enable alpha test for discard to work properly with shadows if needed, 
+      // Enable alpha test for discard to work properly with shadows if needed,
       // though standard material might need customDepthMaterial for shadows to respect discard.
       // For now, let's just keep it simple.
       side={THREE.DoubleSide} // See inside of back leaves
@@ -780,16 +826,18 @@ function TreeMaterial(props: any) {
       }
 
       ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
-      `
+    `
+      .replace(
+        "#include <worldpos_vertex>",
+        `
       #include <worldpos_vertex>
       vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
       vNormal = normalize(normalMatrix * normal);
       `
-    ).replace(
-      "#include <begin_vertex>",
-      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `
       #include <begin_vertex>
       
       // Vertex Displacement
@@ -808,7 +856,7 @@ function TreeMaterial(props: any) {
       // Push out based on noise (inverted voronoi gives bumps)
       transformed += normal * ((1.0 - disp) * strength + rustle);
       `
-    );
+      );
 
     shader.fragmentShader = `
       varying vec3 vPos;
@@ -921,15 +969,17 @@ function TallTreeMaterial(props: any) {
       }
 
       ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
-      `
+    `
+      .replace(
+        "#include <worldpos_vertex>",
+        `
       #include <worldpos_vertex>
       vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
       `
-    ).replace(
-      "#include <begin_vertex>",
-      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `
       #include <begin_vertex>
       
       // Vertex Displacement
@@ -945,7 +995,7 @@ function TallTreeMaterial(props: any) {
       
       transformed += normal * ((1.0 - disp) * strength + rustle);
       `
-    );
+      );
 
     shader.fragmentShader = `
       varying vec3 vPos;
@@ -1246,38 +1296,38 @@ function ProceduralTallTree({
 
   const clusters = useMemo(() => {
     const items: { pos: [number, number, number]; size: number }[] = [];
-    
+
     // Stack of spheres tapering to top
     // Use a step-based approach to ensure overlap regardless of height
     let y = height * 0.25;
     let i = 0;
-    
+
     while (y < height) {
-        // Normalized height progress (0 to 1)
-        const t = Math.max(0, (y - height * 0.25) / (height * 0.75));
-        
-        // Radius tapers as we go up
-        const r = 1.1 * (1.0 - t * 0.65) + rand(i) * 0.25;
-        
-        items.push({ pos: [0, y, 0], size: r });
-        
-        // Add side variation (branches)
-        if (t > 0.1 && t < 0.9) {
-            const count = 2 + Math.floor(rand(i * 50) * 2);
-            for (let j = 0; j < count; j++) {
-                const angle = (j / count) * Math.PI * 2 + rand(i * 10 + j);
-                const dist = r * 0.5;
-                const x = Math.cos(angle) * dist;
-                const z = Math.sin(angle) * dist;
-                items.push({ pos: [x, y - r * 0.2, z], size: r * 0.65 });
-            }
+      // Normalized height progress (0 to 1)
+      const t = Math.max(0, (y - height * 0.25) / (height * 0.75));
+
+      // Radius tapers as we go up
+      const r = 1.1 * (1.0 - t * 0.65) + rand(i) * 0.25;
+
+      items.push({ pos: [0, y, 0], size: r });
+
+      // Add side variation (branches)
+      if (t > 0.1 && t < 0.9) {
+        const count = 2 + Math.floor(rand(i * 50) * 2);
+        for (let j = 0; j < count; j++) {
+          const angle = (j / count) * Math.PI * 2 + rand(i * 10 + j);
+          const dist = r * 0.5;
+          const x = Math.cos(angle) * dist;
+          const z = Math.sin(angle) * dist;
+          items.push({ pos: [x, y - r * 0.2, z], size: r * 0.65 });
         }
-        
-        // Move up by a fraction of the radius to ensure overlap
-        y += r * 0.7;
-        i++;
+      }
+
+      // Move up by a fraction of the radius to ensure overlap
+      y += r * 0.7;
+      i++;
     }
-    
+
     return items;
   }, [height, seed]);
 
@@ -1288,7 +1338,7 @@ function ProceduralTallTree({
         <cylinderGeometry args={[0.3, 0.5, height * 0.8, 8]} />
         <TrunkMaterial color="#3a2a1a" roughness={1} />
       </mesh>
-      
+
       {/* Leaf Clusters */}
       {clusters.map((c, i) => (
         <mesh key={i} position={c.pos as any} castShadow>
@@ -1319,7 +1369,7 @@ function ProceduralTree({
   const clusters = useMemo(() => {
     const count = 12;
     const items: { pos: [number, number, number]; size: number }[] = [];
-    
+
     // Main central mass
     items.push({ pos: [0, height * 0.85, 0], size: 1.6 });
     items.push({ pos: [0, height * 0.65, 0], size: 1.8 });
@@ -1329,11 +1379,11 @@ function ProceduralTree({
       const angle = (i / count) * Math.PI * 2 + rand(i) * 2.0;
       const r = 0.8 + rand(i + 10) * 0.8;
       const y = height * 0.5 + rand(i + 20) * (height * 0.4);
-      
+
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
       const size = 0.8 + rand(i + 30) * 0.6;
-      
+
       items.push({ pos: [x, y, z], size });
     }
     return items;
@@ -1346,7 +1396,7 @@ function ProceduralTree({
         <cylinderGeometry args={[0.2, 0.35, height * 0.8, 8]} />
         <TrunkMaterial color="#3a2a1a" roughness={1} />
       </mesh>
-      
+
       {/* Leaf Clusters */}
       {clusters.map((c, i) => (
         <mesh key={i} position={c.pos as any} castShadow>
@@ -1358,7 +1408,13 @@ function ProceduralTree({
   );
 }
 
-function ProceduralBush({ scale = 1, seed = 0 }: { scale?: number; seed?: number }) {
+function ProceduralBush({
+  scale = 1,
+  seed = 0,
+}: {
+  scale?: number;
+  seed?: number;
+}) {
   const rand = (offset: number) => {
     const s = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
     return s - Math.floor(s);
@@ -1367,10 +1423,10 @@ function ProceduralBush({ scale = 1, seed = 0 }: { scale?: number; seed?: number
   const clusters = useMemo(() => {
     const count = 5;
     const items: { pos: [number, number, number]; size: number }[] = [];
-    
+
     // Center
     items.push({ pos: [0, 0.4, 0], size: 0.7 });
-    
+
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2 + rand(i) * 1.0;
       const r = 0.3 + rand(i + 5) * 0.3;
@@ -1401,21 +1457,23 @@ function RockMaterial(props: any) {
     shader.vertexShader = `
       varying vec3 vPos;
       ${shader.vertexShader}
-    `.replace(
-      "#include <worldpos_vertex>",
-      `
+    `
+      .replace(
+        "#include <worldpos_vertex>",
+        `
       #include <worldpos_vertex>
       vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
       `
-    ).replace(
-      "#include <begin_vertex>",
-      `
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `
       #include <begin_vertex>
       // Rock displacement
       float noise = sin(position.x * 5.0) * sin(position.y * 5.0) * sin(position.z * 5.0);
       transformed += normal * noise * 0.1;
       `
-    );
+      );
 
     shader.fragmentShader = `
       varying vec3 vPos;
@@ -1459,18 +1517,30 @@ function RockMaterial(props: any) {
       `
     );
   };
-  return <meshStandardMaterial ref={materialRef} onBeforeCompile={onBeforeCompile} {...props} />;
+  return (
+    <meshStandardMaterial
+      ref={materialRef}
+      onBeforeCompile={onBeforeCompile}
+      {...props}
+    />
+  );
 }
 
-function ProceduralRock({ scale = 1, seed = 0 }: { scale?: number; seed?: number }) {
+function ProceduralRock({
+  scale = 1,
+  seed = 0,
+}: {
+  scale?: number;
+  seed?: number;
+}) {
   const rand = (offset: number) => {
     const s = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
     return s - Math.floor(s);
   };
-  
+
   // Random shape parameters
   const deform = useMemo(() => {
-    return [rand(1), rand(2), rand(3)].map(v => 0.8 + v * 0.4);
+    return [rand(1), rand(2), rand(3)].map((v) => 0.8 + v * 0.4);
   }, [seed]);
 
   return (
@@ -1479,7 +1549,13 @@ function ProceduralRock({ scale = 1, seed = 0 }: { scale?: number; seed?: number
         <dodecahedronGeometry args={[0.6, 0]} />
         <RockMaterial roughness={0.9} />
       </mesh>
-      <mesh castShadow receiveShadow position={[0.4, -0.2, 0.3]} rotation={[rand(7), rand(8), rand(9)]} scale={0.6}>
+      <mesh
+        castShadow
+        receiveShadow
+        position={[0.4, -0.2, 0.3]}
+        rotation={[rand(7), rand(8), rand(9)]}
+        scale={0.6}
+      >
         <dodecahedronGeometry args={[0.5, 0]} />
         <RockMaterial roughness={0.9} />
       </mesh>
@@ -1487,7 +1563,13 @@ function ProceduralRock({ scale = 1, seed = 0 }: { scale?: number; seed?: number
   );
 }
 
-function ProceduralStatue({ scale = 1, seed = 0 }: { scale?: number; seed?: number }) {
+function ProceduralStatue({
+  scale = 1,
+  seed = 0,
+}: {
+  scale?: number;
+  seed?: number;
+}) {
   const rand = (offset: number) => {
     const s = Math.sin(seed * 12.9898 + offset * 78.233) * 43758.5453;
     return s - Math.floor(s);
@@ -1502,31 +1584,47 @@ function ProceduralStatue({ scale = 1, seed = 0 }: { scale?: number; seed?: numb
         <boxGeometry args={[0.8, 0.8, 0.8]} />
         <WallMaterial roughness={0.8} color="#8a8a8a" />
       </mesh>
-      
+
       {/* Statue Body */}
       <group position={[0, 0.8, 0]}>
         {shapeType === 0 && (
           <>
             <mesh castShadow position={[0, 0.4, 0]}>
               <sphereGeometry args={[0.4, 16, 16]} />
-              <meshStandardMaterial color="#e0e0e0" roughness={0.4} metalness={0.1} />
+              <meshStandardMaterial
+                color="#e0e0e0"
+                roughness={0.4}
+                metalness={0.1}
+              />
             </mesh>
             <mesh castShadow position={[0, 1.0, 0]}>
               <sphereGeometry args={[0.3, 16, 16]} />
-              <meshStandardMaterial color="#e0e0e0" roughness={0.4} metalness={0.1} />
+              <meshStandardMaterial
+                color="#e0e0e0"
+                roughness={0.4}
+                metalness={0.1}
+              />
             </mesh>
           </>
         )}
         {shapeType === 1 && (
           <group position={[0, 0.5, 0]}>
-            <mesh castShadow position={[0, 0, 0]} rotation={[rand(2), rand(3), rand(4)]}>
+            <mesh
+              castShadow
+              position={[0, 0, 0]}
+              rotation={[rand(2), rand(3), rand(4)]}
+            >
               <torusKnotGeometry args={[0.3, 0.1, 64, 8]} />
-              <meshStandardMaterial color="#d4af37" roughness={0.3} metalness={0.8} />
+              <meshStandardMaterial
+                color="#d4af37"
+                roughness={0.3}
+                metalness={0.8}
+              />
             </mesh>
             {/* Small stand for the knot */}
             <mesh position={[0, -0.3, 0]}>
-               <cylinderGeometry args={[0.05, 0.1, 0.6, 8]} />
-               <meshStandardMaterial color="#4a4a4a" roughness={0.8} />
+              <cylinderGeometry args={[0.05, 0.1, 0.6, 8]} />
+              <meshStandardMaterial color="#4a4a4a" roughness={0.8} />
             </mesh>
           </group>
         )}
@@ -1541,20 +1639,20 @@ function ProceduralStatue({ scale = 1, seed = 0 }: { scale?: number; seed?: numb
   );
 }
 
-function ProceduralDuck({ 
-  position = [0, 0, 0], 
-  radius = 5, 
-  speed = 0.8, 
-  seed = 0 
-}: { 
-  position?: [number, number, number]; 
-  radius?: number; 
-  speed?: number; 
-  seed?: number; 
+function ProceduralDuck({
+  position = [0, 0, 0],
+  radius = 5,
+  speed = 0.8,
+  seed = 0,
+}: {
+  position?: [number, number, number];
+  radius?: number;
+  speed?: number;
+  seed?: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const stateRef = useRef({
-    mode: 'idle' as 'idle' | 'moving',
+    mode: "idle" as "idle" | "moving",
     timer: Math.random() * 2,
     target: new THREE.Vector3(position[0], position[1], position[2]),
     currentPos: new THREE.Vector3(position[0], position[1], position[2]),
@@ -1564,17 +1662,17 @@ function ProceduralDuck({
     if (!groupRef.current) return;
     const s = stateRef.current;
 
-    if (s.mode === 'idle') {
+    if (s.mode === "idle") {
       s.timer -= dt;
       if (s.timer <= 0) {
-        s.mode = 'moving';
+        s.mode = "moving";
         // Pick random point in circle
         const angle = Math.random() * Math.PI * 2;
         const r = Math.sqrt(Math.random()) * radius;
         s.target.set(
-            position[0] + Math.cos(angle) * r,
-            position[1],
-            position[2] + Math.sin(angle) * r
+          position[0] + Math.cos(angle) * r,
+          position[1],
+          position[2] + Math.sin(angle) * r
         );
       }
     } else {
@@ -1583,15 +1681,15 @@ function ProceduralDuck({
       const dist = diff.length();
 
       if (dist < 0.1) {
-        s.mode = 'idle';
+        s.mode = "idle";
         s.timer = 2 + Math.random() * 4; // Pause for 2-6 seconds
       } else {
-        const moveSpeed = (speed * 0.5) * dt; // Slower speed
+        const moveSpeed = speed * 0.5 * dt; // Slower speed
         if (dist > moveSpeed) {
-            diff.normalize().multiplyScalar(moveSpeed);
-            s.currentPos.add(diff);
+          diff.normalize().multiplyScalar(moveSpeed);
+          s.currentPos.add(diff);
         } else {
-            s.currentPos.copy(s.target);
+          s.currentPos.copy(s.target);
         }
 
         // Smooth rotation
@@ -1605,7 +1703,11 @@ function ProceduralDuck({
 
     // Bobbing
     const bob = Math.sin(state.clock.elapsedTime * 3) * 0.015;
-    groupRef.current.position.set(s.currentPos.x, s.currentPos.y + bob, s.currentPos.z);
+    groupRef.current.position.set(
+      s.currentPos.x,
+      s.currentPos.y + bob,
+      s.currentPos.z
+    );
   });
 
   return (
@@ -1623,10 +1725,11 @@ function ProceduralDuck({
       {/* Head */}
       <mesh castShadow position={[0, 0.45, 0.2]}>
         <sphereGeometry args={[0.1, 12, 12]} />
-        <meshStandardMaterial color="#004400" roughness={0.3} /> {/* Mallard green head */}
+        <meshStandardMaterial color="#004400" roughness={0.3} />{" "}
+        {/* Mallard green head */}
       </mesh>
       {/* Beak */}
-      <mesh castShadow position={[0, 0.43, 0.3]} rotation={[Math.PI/2, 0, 0]}>
+      <mesh castShadow position={[0, 0.43, 0.3]} rotation={[Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.04, 0.1, 8]} />
         <meshStandardMaterial color="#ffaa00" roughness={0.5} />
       </mesh>
@@ -1643,20 +1746,20 @@ function ProceduralDuck({
   );
 }
 
-function ProceduralSwan({ 
-  position = [0, 0, 0], 
-  radius = 5, 
-  speed = 0.5, 
-  seed = 0 
-}: { 
-  position?: [number, number, number]; 
-  radius?: number; 
-  speed?: number; 
-  seed?: number; 
+function ProceduralSwan({
+  position = [0, 0, 0],
+  radius = 5,
+  speed = 0.5,
+  seed = 0,
+}: {
+  position?: [number, number, number];
+  radius?: number;
+  speed?: number;
+  seed?: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const stateRef = useRef({
-    mode: 'idle' as 'idle' | 'moving',
+    mode: "idle" as "idle" | "moving",
     timer: Math.random() * 2,
     target: new THREE.Vector3(position[0], position[1], position[2]),
     currentPos: new THREE.Vector3(position[0], position[1], position[2]),
@@ -1666,16 +1769,16 @@ function ProceduralSwan({
     if (!groupRef.current) return;
     const s = stateRef.current;
 
-    if (s.mode === 'idle') {
+    if (s.mode === "idle") {
       s.timer -= dt;
       if (s.timer <= 0) {
-        s.mode = 'moving';
+        s.mode = "moving";
         const angle = Math.random() * Math.PI * 2;
         const r = Math.sqrt(Math.random()) * radius;
         s.target.set(
-            position[0] + Math.cos(angle) * r,
-            position[1],
-            position[2] + Math.sin(angle) * r
+          position[0] + Math.cos(angle) * r,
+          position[1],
+          position[2] + Math.sin(angle) * r
         );
       }
     } else {
@@ -1683,15 +1786,15 @@ function ProceduralSwan({
       const dist = diff.length();
 
       if (dist < 0.1) {
-        s.mode = 'idle';
+        s.mode = "idle";
         s.timer = 3 + Math.random() * 5; // Longer pause for swans
       } else {
-        const moveSpeed = (speed * 0.4) * dt; // Slower than ducks
+        const moveSpeed = speed * 0.4 * dt; // Slower than ducks
         if (dist > moveSpeed) {
-            diff.normalize().multiplyScalar(moveSpeed);
-            s.currentPos.add(diff);
+          diff.normalize().multiplyScalar(moveSpeed);
+          s.currentPos.add(diff);
         } else {
-            s.currentPos.copy(s.target);
+          s.currentPos.copy(s.target);
         }
 
         const targetRot = Math.atan2(diff.x, diff.z);
@@ -1703,7 +1806,11 @@ function ProceduralSwan({
     }
 
     const bob = Math.sin(state.clock.elapsedTime * 2) * 0.01;
-    groupRef.current.position.set(s.currentPos.x, s.currentPos.y + bob, s.currentPos.z);
+    groupRef.current.position.set(
+      s.currentPos.x,
+      s.currentPos.y + bob,
+      s.currentPos.z
+    );
   });
 
   return (
@@ -1715,14 +1822,14 @@ function ProceduralSwan({
       </mesh>
       {/* Neck (S-curve approximation) */}
       <group position={[0, 0.35, 0.25]}>
-         <mesh castShadow position={[0, 0, 0]} rotation={[0.4, 0, 0]}>
-            <cylinderGeometry args={[0.07, 0.09, 0.3, 8]} />
-            <meshStandardMaterial color="#ffffff" roughness={0.4} />
-         </mesh>
-         <mesh castShadow position={[0, 0.25, 0.05]} rotation={[-0.2, 0, 0]}>
-            <cylinderGeometry args={[0.06, 0.07, 0.25, 8]} />
-            <meshStandardMaterial color="#ffffff" roughness={0.4} />
-         </mesh>
+        <mesh castShadow position={[0, 0, 0]} rotation={[0.4, 0, 0]}>
+          <cylinderGeometry args={[0.07, 0.09, 0.3, 8]} />
+          <meshStandardMaterial color="#ffffff" roughness={0.4} />
+        </mesh>
+        <mesh castShadow position={[0, 0.25, 0.05]} rotation={[-0.2, 0, 0]}>
+          <cylinderGeometry args={[0.06, 0.07, 0.25, 8]} />
+          <meshStandardMaterial color="#ffffff" roughness={0.4} />
+        </mesh>
       </group>
       {/* Head */}
       <mesh castShadow position={[0, 0.75, 0.35]}>
@@ -1730,7 +1837,11 @@ function ProceduralSwan({
         <meshStandardMaterial color="#ffffff" roughness={0.4} />
       </mesh>
       {/* Beak */}
-      <mesh castShadow position={[0, 0.73, 0.42]} rotation={[Math.PI/2, 0, 0]}>
+      <mesh
+        castShadow
+        position={[0, 0.73, 0.42]}
+        rotation={[Math.PI / 2, 0, 0]}
+      >
         <coneGeometry args={[0.04, 0.12, 8]} />
         <meshStandardMaterial color="#ff9900" roughness={0.5} />
       </mesh>
@@ -1738,69 +1849,69 @@ function ProceduralSwan({
   );
 }
 
-function ProceduralRabbit({ 
-  position = [0, 0, 0], 
-  radius = 5, 
-  seed = 0 
-}: { 
-  position?: [number, number, number]; 
-  radius?: number; 
-  seed?: number; 
+function ProceduralRabbit({
+  position = [0, 0, 0],
+  radius = 5,
+  seed = 0,
+}: {
+  position?: [number, number, number];
+  radius?: number;
+  seed?: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const stateRef = useRef({
-    mode: 'idle' as 'idle' | 'moving',
+    mode: "idle" as "idle" | "moving",
     timer: Math.random() * 2,
     target: new THREE.Vector3(position[0], position[1], position[2]),
     currentPos: new THREE.Vector3(position[0], position[1], position[2]),
-    hopPhase: 0
+    hopPhase: 0,
   });
 
   useFrame((state, dt) => {
     if (!groupRef.current) return;
     const s = stateRef.current;
 
-    if (s.mode === 'idle') {
+    if (s.mode === "idle") {
       s.timer -= dt;
       if (s.timer <= 0) {
-        s.mode = 'moving';
+        s.mode = "moving";
         const angle = Math.random() * Math.PI * 2;
         const r = Math.sqrt(Math.random()) * radius;
         s.target.set(
-            position[0] + Math.cos(angle) * r,
-            position[1],
-            position[2] + Math.sin(angle) * r
+          position[0] + Math.cos(angle) * r,
+          position[1],
+          position[2] + Math.sin(angle) * r
         );
       }
       // Idle animation: occasional twitch
       if (Math.random() < 0.02) {
-         groupRef.current.rotation.z = (Math.random() - 0.5) * 0.1;
+        groupRef.current.rotation.z = (Math.random() - 0.5) * 0.1;
       } else {
-         groupRef.current.rotation.z *= 0.9;
+        groupRef.current.rotation.z *= 0.9;
       }
     } else {
       const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
       const dist = diff.length();
 
       if (dist < 0.1) {
-        s.mode = 'idle';
+        s.mode = "idle";
         s.timer = 1 + Math.random() * 4;
         s.hopPhase = 0;
         groupRef.current.position.y = position[1];
       } else {
         const speed = 1.5; // Fast hops
         const moveSpeed = speed * dt;
-        
+
         if (dist > moveSpeed) {
-            diff.normalize().multiplyScalar(moveSpeed);
-            s.currentPos.add(diff);
-            
-            // Hop animation
-            s.hopPhase += dt * 15;
-            const hopHeight = Math.abs(Math.sin(s.hopPhase)) * 0.15;
-            groupRef.current.position.y = position[1] + hopHeight;
+          diff.normalize().multiplyScalar(moveSpeed);
+          s.currentPos.add(diff);
+
+          // Hop animation
+          s.hopPhase += dt * 15;
+          const hopHeight = Math.abs(Math.sin(s.hopPhase)) * 0.15;
+          groupRef.current.position.y = position[1] + hopHeight;
         } else {
-            s.currentPos.copy(s.target);
+          s.currentPos.copy(s.target);
         }
 
         const targetRot = Math.atan2(diff.x, diff.z);
@@ -1810,7 +1921,7 @@ function ProceduralRabbit({
         groupRef.current.rotation.y += rotDiff * 10 * dt;
       }
     }
-    
+
     groupRef.current.position.x = s.currentPos.x;
     groupRef.current.position.z = s.currentPos.z;
   });
@@ -1845,7 +1956,13 @@ function ProceduralRabbit({
   );
 }
 
-export function ParkLobby() {
+export function ParkLobby({
+  leaderboard,
+  showLeaderboardWall = true,
+}: {
+  leaderboard?: LeaderboardEntry[];
+  showLeaderboardWall?: boolean;
+}) {
   const groundGeom = useMemo(() => makeGroundGeometry({}), []);
   const plazaGeom = useMemo(
     () =>
@@ -1862,15 +1979,104 @@ export function ParkLobby() {
     []
   );
 
+  // Dev mode state
+  const [devMode, setDevMode] = useState(false);
+  const [enhancements, setEnhancements] = useState({
+    butterflies: false,
+    fireflies: true,
+    floatingParticles: true,
+    wildflowers: false,
+    ambientBirds: false,
+  });
+
+  // Toggle dev mode with tilde key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "`") {
+        setDevMode((prev) => !prev);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const toggleEnhancement = (key: keyof typeof enhancements) => {
+    setEnhancements((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   return (
     <>
+      {/* Dev Mode Panel */}
+      {devMode && (
+        <Html position={[0, 0, 0]} center style={{ pointerEvents: "none" }}>
+          <div
+            style={{
+              position: "fixed",
+              top: "10px",
+              right: "10px",
+              background: "rgba(0, 0, 0, 0.85)",
+              color: "white",
+              padding: "16px",
+              borderRadius: "8px",
+              fontFamily: "monospace",
+              fontSize: "12px",
+              minWidth: "220px",
+              pointerEvents: "auto",
+              zIndex: 10000,
+            }}
+          >
+            <div
+              style={{
+                marginBottom: "12px",
+                fontWeight: "bold",
+                fontSize: "14px",
+              }}
+            >
+              🎮 Dev Mode - Enhancements
+            </div>
+            {Object.entries(enhancements).map(([key, value]) => (
+              <label
+                key={key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  marginBottom: "8px",
+                  cursor: "pointer",
+                  userSelect: "none",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={value}
+                  onChange={() =>
+                    toggleEnhancement(key as keyof typeof enhancements)
+                  }
+                  style={{ marginRight: "8px", cursor: "pointer" }}
+                />
+                <span style={{ textTransform: "capitalize" }}>
+                  {key.replace(/([A-Z])/g, " $1").trim()}
+                </span>
+              </label>
+            ))}
+            <div
+              style={{
+                marginTop: "12px",
+                paddingTop: "8px",
+                borderTop: "1px solid #444",
+                fontSize: "10px",
+                opacity: 0.7,
+              }}
+            >
+              Press ` (tilde) to toggle
+            </div>
+          </div>
+        </Html>
+      )}
+
       {/* Cozy garden plaza lighting (sunset) */}
       <ambientLight intensity={0.24} color="#ffe8c8" />
-      <hemisphereLight
-        intensity={0.42}
-        groundColor="#2f4a35"
-        color="#ffd7b3"
-      />
+      <hemisphereLight intensity={0.42} groundColor="#2f4a35" color="#ffd7b3" />
 
       {/* Lightweight gradient sky (no textures/particles) */}
       <GradientSky top="#1e2a44" bottom="#d6a57d" />
@@ -1904,30 +2110,79 @@ export function ParkLobby() {
         <GrassMaterial vertexColors roughness={1} metalness={0} />
       </mesh>
 
+      {/* ENHANCED: Flying butterflies */}
+      {enhancements.butterflies && <Butterflies count={20} />}
+
+      {/* ENHANCED: Magical fireflies at dusk */}
+      {enhancements.fireflies && <Fireflies count={120} />}
+
+      {/* ENHANCED: Floating dandelion seeds and pollen */}
+      {enhancements.floatingParticles && <FloatingParticles count={250} />}
+
+      {/* ENHANCED: Scattered wildflowers */}
+      {enhancements.wildflowers && (
+        <Wildflowers count={400} radius={50} excludeRadius={18} />
+      )}
+
+      {/* ENHANCED: Birds flying overhead */}
+      {enhancements.ambientBirds && <AmbientBirds count={12} />}
+
       {/* Lakes/ponds - much closer and visible */}
       {/* Lake 1 - East side */}
-      <WaterPlane position={[30, 0.02, -35]} rotation={[-Math.PI / 2, 0, 0]} args={[14, 48]} />
+      <WaterPlane
+        position={[30, 0.02, -35]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        args={[14, 48]}
+      />
       {/* Ducks in Lake 1 */}
       {Array.from({ length: 3 }).map((_, i) => (
-        <ProceduralDuck key={`duck1-${i}`} position={[30, 0, -35]} radius={8} seed={i} />
+        <ProceduralDuck
+          key={`duck1-${i}`}
+          position={[30, 0, -35]}
+          radius={8}
+          seed={i}
+        />
       ))}
       <ProceduralSwan position={[30, 0, -35]} radius={5} seed={100} />
-      
+
       {/* Lake 2 - Southwest */}
-      <WaterPlane position={[-40, 0.02, 30]} rotation={[-Math.PI / 2, 0, 0]} args={[18, 48]} />
+      <WaterPlane
+        position={[-40, 0.02, 30]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        args={[18, 48]}
+      />
       {/* Swans in Lake 2 */}
       {Array.from({ length: 2 }).map((_, i) => (
-        <ProceduralSwan key={`swan2-${i}`} position={[-40, 0, 30]} radius={10} seed={i + 20} />
+        <ProceduralSwan
+          key={`swan2-${i}`}
+          position={[-40, 0, 30]}
+          radius={10}
+          seed={i + 20}
+        />
       ))}
       {Array.from({ length: 4 }).map((_, i) => (
-        <ProceduralDuck key={`duck2-${i}`} position={[-40, 0, 30]} radius={14} seed={i + 50} />
+        <ProceduralDuck
+          key={`duck2-${i}`}
+          position={[-40, 0, 30]}
+          radius={14}
+          seed={i + 50}
+        />
       ))}
 
       {/* Lake 3 - Southeast (smaller pond) */}
-      <WaterPlane position={[38, 0.02, 42]} rotation={[-Math.PI / 2, 0, 0]} args={[10, 40]} />
+      <WaterPlane
+        position={[38, 0.02, 42]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        args={[10, 40]}
+      />
       {/* Ducks in Lake 3 */}
       {Array.from({ length: 2 }).map((_, i) => (
-        <ProceduralDuck key={`duck3-${i}`} position={[38, 0, 42]} radius={6} seed={i + 80} />
+        <ProceduralDuck
+          key={`duck3-${i}`}
+          position={[38, 0, 42]}
+          radius={6}
+          seed={i + 80}
+        />
       ))}
 
       {/* Rabbits in the grass */}
@@ -1937,7 +2192,12 @@ export function ParkLobby() {
         const x = Math.cos(angle) * r;
         const z = Math.sin(angle) * r;
         return (
-          <ProceduralRabbit key={`rabbit-${i}`} position={[x, 0, z]} radius={4} seed={i + 200} />
+          <ProceduralRabbit
+            key={`rabbit-${i}`}
+            position={[x, 0, z]}
+            radius={4}
+            seed={i + 200}
+          />
         );
       })}
 
@@ -1946,13 +2206,10 @@ export function ParkLobby() {
         {/* Main castle keep (tall central tower) */}
         <mesh position={[0, 12, 0]} castShadow receiveShadow>
           <boxGeometry args={[8, 24, 8]} />
-          <WallMaterial
-            roughness={0.9}
-            metalness={0.05}
-          />
+          <WallMaterial roughness={0.9} metalness={0.05} />
         </mesh>
         {/* Battlements on top */}
-        {[-3, -1, 1, 3].map((x, i) => 
+        {[-3, -1, 1, 3].map((x, i) =>
           [-3, -1, 1, 3].map((z, j) => (
             <mesh key={`b${i}-${j}`} position={[x, 24.5, z]} castShadow>
               <boxGeometry args={[1.2, 1, 1.2]} />
@@ -1960,9 +2217,14 @@ export function ParkLobby() {
             </mesh>
           ))
         )}
-        
+
         {/* Corner towers */}
-        {[[-10, -10], [10, -10], [-10, 10], [10, 10]].map(([x, z], i) => (
+        {[
+          [-10, -10],
+          [10, -10],
+          [-10, 10],
+          [10, 10],
+        ].map(([x, z], i) => (
           <group key={`tower${i}`} position={[x, 0, z]}>
             <mesh position={[0, 8, 0]} castShadow receiveShadow>
               <cylinderGeometry args={[2.5, 3, 16, 12]} />
@@ -2021,13 +2283,19 @@ export function ParkLobby() {
             <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
               <boxGeometry args={[w, h, d]} />
               <meshStandardMaterial
-                color={i % 3 === 0 ? "#8b7355" : i % 3 === 1 ? "#a08060" : "#6f5545"}
+                color={
+                  i % 3 === 0 ? "#8b7355" : i % 3 === 1 ? "#a08060" : "#6f5545"
+                }
                 roughness={0.95}
                 metalness={0.02}
               />
             </mesh>
             {/* Roof */}
-            <mesh position={[0, h + 0.4, 0]} castShadow rotation={[0, Math.PI / 4, 0]}>
+            <mesh
+              position={[0, h + 0.4, 0]}
+              castShadow
+              rotation={[0, Math.PI / 4, 0]}
+            >
               <coneGeometry args={[w * 0.8, 1.2, 4]} />
               <meshStandardMaterial color="#3a2a1a" roughness={0.9} />
             </mesh>
@@ -2051,7 +2319,12 @@ export function ParkLobby() {
           <meshStandardMaterial color="#3a3530" roughness={0.85} />
         </mesh>
         {/* Torch */}
-        <pointLight position={[0, 10, 0]} color="#ff8833" intensity={1} distance={15} />
+        <pointLight
+          position={[0, 10, 0]}
+          color="#ff8833"
+          intensity={1}
+          distance={15}
+        />
       </group>
 
       {/* Stone bridge over eastern lake */}
@@ -2122,7 +2395,13 @@ export function ParkLobby() {
       {Array.from({ length: 5 }).map((_, i) => {
         const x = -12 + i * 6;
         const z = 42;
-        const tentColors = ["#8b2222", "#2a5a8b", "#8b6a2a", "#2a8b4a", "#6a2a8b"];
+        const tentColors = [
+          "#8b2222",
+          "#2a5a8b",
+          "#8b6a2a",
+          "#2a8b4a",
+          "#6a2a8b",
+        ];
         return (
           <group key={`tent${i}`} position={[x, 0, z]}>
             {/* Center pole */}
@@ -2131,7 +2410,12 @@ export function ParkLobby() {
               <meshStandardMaterial color="#4a3a2a" roughness={0.95} />
             </mesh>
             {/* Corner poles */}
-            {[[-1.3, -1.3], [1.3, -1.3], [-1.3, 1.3], [1.3, 1.3]].map(([px, pz], j) => (
+            {[
+              [-1.3, -1.3],
+              [1.3, -1.3],
+              [-1.3, 1.3],
+              [1.3, 1.3],
+            ].map(([px, pz], j) => (
               <mesh key={`pole${j}`} position={[px, 0.9, pz]} castShadow>
                 <cylinderGeometry args={[0.06, 0.06, 1.8, 6]} />
                 <meshStandardMaterial color="#3a2a1a" roughness={0.95} />
@@ -2140,16 +2424,20 @@ export function ParkLobby() {
             {/* Tent fabric (pyramid shape) */}
             <mesh position={[0, 2.2, 0]} castShadow receiveShadow>
               <coneGeometry args={[2.2, 2.6, 4]} />
-              <meshStandardMaterial 
+              <meshStandardMaterial
                 color={tentColors[i % tentColors.length]}
                 roughness={0.85}
                 side={2}
               />
             </mesh>
             {/* Tent stripes for detail */}
-            <mesh position={[0, 2.2, 0]} castShadow rotation={[0, Math.PI / 4, 0]}>
+            <mesh
+              position={[0, 2.2, 0]}
+              castShadow
+              rotation={[0, Math.PI / 4, 0]}
+            >
               <coneGeometry args={[2.25, 2.65, 4]} />
-              <meshStandardMaterial 
+              <meshStandardMaterial
                 color={tentColors[(i + 1) % tentColors.length]}
                 roughness={0.85}
                 transparent
@@ -2157,9 +2445,13 @@ export function ParkLobby() {
               />
             </mesh>
             {/* Ground cloth/rug */}
-            <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <mesh
+              position={[0, 0.01, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              receiveShadow
+            >
               <circleGeometry args={[1.8, 16]} />
-              <meshStandardMaterial 
+              <meshStandardMaterial
                 color={i % 2 === 0 ? "#6a4a3a" : "#5a3a2a"}
                 roughness={0.95}
               />
@@ -2169,7 +2461,12 @@ export function ParkLobby() {
               <sphereGeometry args={[0.15, 8, 8]} />
               <meshBasicMaterial color="#ffaa44" />
             </mesh>
-            <pointLight position={[0, 3.2, 0]} color="#ff8833" intensity={0.5} distance={6} />
+            <pointLight
+              position={[0, 3.2, 0]}
+              color="#ff8833"
+              intensity={0.5}
+              distance={6}
+            />
           </group>
         );
       })}
@@ -2190,10 +2487,19 @@ export function ParkLobby() {
         {/* Light chamber */}
         <mesh position={[0, 17, 0]} castShadow>
           <cylinderGeometry args={[2, 2, 2, 12]} />
-          <meshStandardMaterial color="#333333" roughness={0.6} metalness={0.3} />
+          <meshStandardMaterial
+            color="#333333"
+            roughness={0.6}
+            metalness={0.3}
+          />
         </mesh>
         {/* Rotating light */}
-        <pointLight position={[0, 17.5, 0]} color="#ffff88" intensity={3} distance={50} />
+        <pointLight
+          position={[0, 17.5, 0]}
+          color="#ffff88"
+          intensity={3}
+          distance={50}
+        />
         <mesh position={[0, 17.5, 0]}>
           <sphereGeometry args={[0.8, 12, 12]} />
           <meshBasicMaterial color="#ffffaa" />
@@ -2201,7 +2507,11 @@ export function ParkLobby() {
       </group>
 
       {/* Ocean/Sea - Far East */}
-      <mesh position={[85, -0.1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+      <mesh
+        position={[85, -0.1, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        receiveShadow
+      >
         <planeGeometry args={[50, 100]} />
         <meshStandardMaterial
           color="#2a4a6a"
@@ -2213,7 +2523,11 @@ export function ParkLobby() {
       </mesh>
 
       {/* Distant sailing ships on the horizon */}
-      {[[-8, 35], [5, 40], [15, 32]].map(([ox, oz], i) => (
+      {[
+        [-8, 35],
+        [5, 40],
+        [15, 32],
+      ].map(([ox, oz], i) => (
         <group key={`ship${i}`} position={[85 + ox, 0, oz]}>
           {/* Hull */}
           <mesh position={[0, 1, 0]} castShadow>
@@ -2241,6 +2555,11 @@ export function ParkLobby() {
         const radius = 16.5;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
+
+        // Keep the TV wall area clear so the screens are usable.
+        // (Wall sits at z=±14, TVs are around x=±6, so avoid the north/south arc.)
+        if (Math.abs(z) > 11.5) return null;
+
         return (
           <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
             <mesh castShadow receiveShadow>
@@ -2267,7 +2586,7 @@ export function ParkLobby() {
                 key={bi}
                 position={[bx, 0.55, bi % 2 === 0 ? -0.18 : 0.16]}
               >
-                 <ProceduralBush scale={0.45} seed={i * 10 + bi} />
+                <ProceduralBush scale={0.45} seed={i * 10 + bi} />
               </group>
             ))}
 
@@ -2299,9 +2618,13 @@ export function ParkLobby() {
         const radius = 14.6;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
+
+        // Keep the TV wall area clear.
+        if (Math.abs(z) > 10.5) return null;
+
         return (
           <group key={i} position={[x, 0, z]} rotation={[0, -angle, 0]}>
-             <ProceduralStatue scale={1.2} seed={i * 123} />
+            <ProceduralStatue scale={1.2} seed={i * 123} />
           </group>
         );
       })}
@@ -2312,11 +2635,13 @@ export function ParkLobby() {
         const r = 25 + (i % 5) * 5;
         const x = Math.cos(angle) * r;
         const z = Math.sin(angle) * r;
-        
+
         // Avoid buildings
-        const distToVillage = Math.sqrt(Math.pow(x - (-50), 2) + Math.pow(z - (-45), 2));
+        const distToVillage = Math.sqrt(
+          Math.pow(x - -50, 2) + Math.pow(z - -45, 2)
+        );
         if (distToVillage < 42) return null;
-        
+
         return (
           <group key={`rock${i}`} position={[x, 0.3, z]}>
             <ProceduralRock scale={0.8 + (i % 3) * 0.4} seed={i + 500} />
@@ -2331,56 +2656,176 @@ export function ParkLobby() {
         // Village is at [-50, -45], radius 35 -> extends to ~85 distance from origin
         // We need to be careful.
         // Let's use a larger radius range and filter out bad spots.
-        const radius = 45 + (i % 5) * 8; 
+        const radius = 45 + (i % 5) * 8;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
-        
+
         // Check for collisions with major landmarks
         // Village center [-50, -45], radius ~40
-        const distToVillage = Math.sqrt(Math.pow(x - (-50), 2) + Math.pow(z - (-45), 2));
+        const distToVillage = Math.sqrt(
+          Math.pow(x - -50, 2) + Math.pow(z - -45, 2)
+        );
         if (distToVillage < 42) return null;
-        
+
         // Windmill [-45, 35], radius ~15
-        const distToWindmill = Math.sqrt(Math.pow(x - (-45), 2) + Math.pow(z - 35, 2));
+        const distToWindmill = Math.sqrt(
+          Math.pow(x - -45, 2) + Math.pow(z - 35, 2)
+        );
         if (distToWindmill < 18) return null;
-        
+
         // Chapel [48, 8], radius ~15
-        const distToChapel = Math.sqrt(Math.pow(x - 48, 2) + Math.pow(z - 8, 2));
+        const distToChapel = Math.sqrt(
+          Math.pow(x - 48, 2) + Math.pow(z - 8, 2)
+        );
         if (distToChapel < 18) return null;
-        
+
         // Lighthouse [70, 0], radius ~15
-        const distToLighthouse = Math.sqrt(Math.pow(x - 70, 2) + Math.pow(z - 0, 2));
+        const distToLighthouse = Math.sqrt(
+          Math.pow(x - 70, 2) + Math.pow(z - 0, 2)
+        );
         if (distToLighthouse < 18) return null;
 
         const h = 3.2 + (i % 5) * 0.6;
         const scale = 0.8 + (i % 4) * 0.1;
-        
+
         // Mix of regular trees and tall cypress/poplar trees
         const isTall = i % 3 === 0;
-        
+
         return (
           <group key={i} position={[x, 0, z]}>
-             {isTall ? (
-                 <ProceduralTallTree height={h * 2.5} scale={scale * 1.2} seed={i} />
-             ) : (
-                 <ProceduralTree height={h} scale={scale} seed={i} />
-             )}
+            {isTall ? (
+              <ProceduralTallTree
+                height={h * 2.5}
+                scale={scale * 1.2}
+                seed={i}
+              />
+            ) : (
+              <ProceduralTree height={h} scale={scale} seed={i} />
+            )}
           </group>
         );
       })}
-      
+
       {/* Extra wild bushes scattered around */}
       {Array.from({ length: 12 }).map((_, i) => {
-          const angle = (i / 12) * Math.PI * 2 + 0.5;
-          const r = 22 + (i % 4) * 2;
-          const x = Math.cos(angle) * r;
-          const z = Math.sin(angle) * r;
-          return (
-             <group key={`wildbush${i}`} position={[x, 0, z]}>
-                <ProceduralBush scale={1.2 + (i%3)*0.3} seed={i + 100} />
-             </group>
-          )
+        const angle = (i / 12) * Math.PI * 2 + 0.5;
+        const r = 22 + (i % 4) * 2;
+        let x = Math.cos(angle) * r;
+        let z = Math.sin(angle) * r;
+
+        // Keep bushes from overlapping the north/south wall enclosures.
+        // Walls are centered roughly at z=±14 and span about |x|<=~18.
+        if (Math.abs(x) < 22) {
+          if (z > 8 && z < 22) z = 30;
+          if (z < -8 && z > -22) z = -30;
+        }
+
+        return (
+          <group key={`wildbush${i}`} position={[x, 0, z]}>
+            <ProceduralBush scale={1.2 + (i % 3) * 0.3} seed={i + 100} />
+          </group>
+        );
       })}
+
+      {/* Stone wall to the north - for future credits/leaderboard */}
+      <group position={[0, 0, 14]}>
+        {/* Back wall (faces south toward the boards) */}
+        <mesh position={[0, 0.6, 3]} castShadow receiveShadow>
+          <boxGeometry args={[36, 1.2, 1]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+
+        {/* Leaderboard display mounted to the north back wall */}
+        {showLeaderboardWall ? (
+          <group position={[0, 0, 2.2]} rotation={[0, Math.PI, 0]}>
+            <mesh position={[0, 2.8, 0]} castShadow receiveShadow>
+              <boxGeometry args={[4.8, 5.6, 0.25]} />
+              <WallMaterial roughness={0.9} metalness={0.05} />
+            </mesh>
+
+            <Text
+              position={[0, 5.25, 0.16]}
+              fontSize={0.5}
+              font="/fonts/Orbitron-Bold.ttf"
+              color="#ffffff"
+              anchorX="center"
+              anchorY="middle"
+            >
+              Leaderboard
+            </Text>
+
+            {(leaderboard ?? []).slice(0, 10).map((e, idx) => {
+              const minutes = Math.max(1, Math.round(e.playMs / 60000));
+              const line = `${idx + 1}. ${e.name}  ${
+                e.moves
+              }m  ${minutes}min  ${(e.score ?? 0).toFixed(2)}`;
+              return (
+                <Text
+                  key={e.id}
+                  position={[-2.25, 4.65 - idx * 0.38, 0.16]}
+                  fontSize={0.26}
+                  font="/fonts/Orbitron-Regular.ttf"
+                  color="#ffffff"
+                  anchorX="left"
+                  anchorY="middle"
+                  maxWidth={4.4}
+                >
+                  {line}
+                </Text>
+              );
+            })}
+          </group>
+        ) : null}
+
+        {/* TV wall panels (north): 2 screens */}
+        <mesh position={[-6, 2.8, 2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+        <mesh position={[6, 2.8, 2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+
+        {/* Side returns */}
+        <mesh position={[-17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+        <mesh position={[17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+      </group>
+
+      {/* Stone wall to the south - for future credits/leaderboard */}
+      <group position={[0, 0, -14]}>
+        {/* Back wall (faces north toward the boards) */}
+        <mesh position={[0, 0.6, -3]} castShadow receiveShadow>
+          <boxGeometry args={[36, 1.2, 1]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+
+        {/* TV wall panels (south): 2 screens */}
+        <mesh position={[-6, 2.8, -2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+        <mesh position={[6, 2.8, -2.2]} castShadow receiveShadow>
+          <boxGeometry args={[4.8, 5.6, 0.25]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+
+        {/* Side returns */}
+        <mesh position={[-17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+        <mesh position={[17.5, 0.6, 0]} castShadow receiveShadow>
+          <boxGeometry args={[1, 1.2, 6]} />
+          <WallMaterial roughness={0.9} metalness={0.05} />
+        </mesh>
+      </group>
     </>
   );
 }

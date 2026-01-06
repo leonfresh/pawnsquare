@@ -1,7 +1,7 @@
 "use client";
 
 import { useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import * as THREE from "three";
 import {
   createAvatar,
@@ -50,7 +50,7 @@ type EnqueuedTask<T> = {
 
 const avatarLoadQueue: Array<EnqueuedTask<Avatar>> = [];
 let avatarLoadActive = 0;
-const AVATAR_LOAD_CONCURRENCY = 1;
+const AVATAR_LOAD_CONCURRENCY = 2;
 
 function pumpAvatarQueue() {
   while (avatarLoadActive < AVATAR_LOAD_CONCURRENCY && avatarLoadQueue.length) {
@@ -75,7 +75,7 @@ function enqueueAvatarLoad(run: () => Promise<Avatar>): Promise<Avatar> {
 }
 
 function optimizeTextures(avatarUrl: string, obj: THREE.Object3D) {
-  const MAX_TEXTURE_SIZE = 512;
+  const MAX_TEXTURE_SIZE = 256;
 
   let texCache = textureCache.get(avatarUrl);
   if (!texCache) {
@@ -462,7 +462,7 @@ async function ensureAnimationsLoaded() {
   await animationsPreloadPromise;
 }
 
-export function ThreeAvatar({
+function ThreeAvatarComponent({
   movingSpeed = 0,
   url,
   pose = "stand",
@@ -772,6 +772,7 @@ export function ThreeAvatar({
     // This ensures consistent behavior across different VRM models (VRM 0.0 vs 1.0).
     const vrm = a.vrm;
     const humanoid = vrm?.humanoid;
+    const avatarUrlLower = (url ?? DEFAULT_AVATAR_URL).toLowerCase();
 
     // Smoothly transition sit weight
     const targetWeight = pose === "sit" ? 1 : 0;
@@ -796,15 +797,22 @@ export function ThreeAvatar({
       // permuted/flipped relative to the rest of the avatars. Our procedural sit pose
       // assumes a consistent local axis basis when using Euler(x,y,z).
       //
-      // Detect Miu via VRM meta and apply a minimal axis remap for the bones we pose.
+      // Detect affected rigs and apply a minimal axis remap for the bones we pose.
+      // We use VRM meta when present, but also fall back to URL matching because
+      // some exports don't preserve a stable meta title.
       const meta: any = (vrm as any)?.meta;
       const metaTitle = meta?.title || meta?.name || meta?.author || "";
-      const isMiu =
-        typeof metaTitle === "string" && metaTitle.toLowerCase() === "miu";
+      const metaLower =
+        typeof metaTitle === "string" ? metaTitle.toLowerCase() : "";
+      const needsAxisRemap =
+        metaLower === "miu" ||
+        avatarUrlLower.includes("miu_optimized_5mb") ||
+        avatarUrlLower.includes("default_male") ||
+        avatarUrlLower.includes("ren_optimized_7mb");
 
       const targetQ = tmpTargetQuatRef.current;
 
-      if (!isMiu) {
+      if (!needsAxisRemap) {
         targetQ.setFromEuler(new THREE.Euler(x, y, z));
       } else {
         // Pragmatic fix for Miu: keep the same Euler convention as other avatars,
@@ -979,3 +987,6 @@ export function ThreeAvatar({
   if (!avatar) return null;
   return <primitive object={avatar.object3D} />;
 }
+
+// Memoize to prevent unnecessary re-renders
+export const ThreeAvatar = memo(ThreeAvatarComponent);

@@ -330,6 +330,7 @@ export type OutdoorChess4PProps = {
   selfPositionRef: React.RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  onActivityMove?: (game: string, boardKey: string) => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
   leaveAllExceptBoardKey?: string | null;
@@ -380,6 +381,7 @@ export function OutdoorChess4P({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
   leaveAllExceptBoardKey,
@@ -400,6 +402,7 @@ export function OutdoorChess4P({
     selfPositionRef,
     selfId,
     selfName,
+    onActivityMove: () => onActivityMove?.("chess4", boardKey),
     joinLockedBoardKey,
     leaveAllNonce,
     leaveAllExceptBoardKey,

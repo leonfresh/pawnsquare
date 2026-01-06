@@ -37,6 +37,14 @@ export type ChatMessage = {
   t: number;
 };
 
+export type LeaderboardEntry = {
+  id: string;
+  name: string;
+  moves: number;
+  playMs: number;
+  score: number;
+};
+
 type PartyMessage =
   | {
       type: "sync";
@@ -48,7 +56,8 @@ type PartyMessage =
   | { type: "player-moved"; id: string; position: Vec3; rotY: number }
   | { type: "player-left"; id: string }
   | { type: "chat"; message: ChatMessage }
-  | { type: "board:modes"; boardModes: Record<string, BoardMode> };
+  | { type: "board:modes"; boardModes: Record<string, BoardMode> }
+  | { type: "leaderboard"; entries: LeaderboardEntry[] };
 
 function defaultName(selfId: string) {
   return `Player-${selfId.slice(0, 4)}`;
@@ -73,6 +82,7 @@ export function usePartyRoom(
   const [players, setPlayers] = useState<Record<string, Player>>({});
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [boardModes, setBoardModes] = useState<Record<string, BoardMode>>({
     a: "chess",
     b: "chess",
@@ -265,6 +275,10 @@ export function usePartyRoom(
           }
         } else if (msg.type === "board:modes") {
           setBoardModes(msg.boardModes);
+        } else if (msg.type === "leaderboard") {
+          setLeaderboard(
+            Array.isArray(msg.entries) ? msg.entries.slice(0, 10) : []
+          );
         }
       } catch (err) {
         console.error("[PartyKit] Error parsing message:", err);
@@ -377,6 +391,20 @@ export function usePartyRoom(
     }
   }, []);
 
+  const reportActivityMove = useCallback((game: string, boardKey?: string) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(
+        JSON.stringify({
+          type: "activity:move",
+          game: (game ?? "").toString().slice(0, 16),
+          boardKey: boardKey
+            ? (boardKey ?? "").toString().slice(0, 8)
+            : undefined,
+        })
+      );
+    }
+  }, []);
+
   const setName = useCallback((name: string) => {
     selfNameRef.current = name;
     setSelfName(name);
@@ -418,11 +446,13 @@ export function usePartyRoom(
     players,
     peerCount: Object.keys(players).length,
     chat,
+    leaderboard,
     connected,
     boardModes,
     sendSelfState,
     sendChat,
     setBoardMode,
+    reportActivityMove,
     setName,
     setAvatarUrl,
     socketRef, // Expose for voice integration

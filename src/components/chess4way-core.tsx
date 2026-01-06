@@ -173,6 +173,7 @@ export type UseChess4WayGameOptions = {
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  onActivityMove?: () => void;
   arrowDragActiveExternalRef?: React.MutableRefObject<boolean>;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
@@ -477,6 +478,7 @@ export function useChess4WayGame({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   arrowDragActiveExternalRef,
   joinLockedBoardKey,
   leaveAllNonce,
@@ -823,10 +825,26 @@ export function useChess4WayGame({
     }
   }, [pendingJoinSeat, netState.seats, chessSelfId]);
 
+  const pendingMoveRef = useRef(false);
+  const pendingMoveSentSeqRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!pendingMoveRef.current) return;
+    const sentSeq = pendingMoveSentSeqRef.current;
+    if (sentSeq === null) return;
+    if (netState.seq <= sentSeq) return;
+
+    pendingMoveRef.current = false;
+    pendingMoveSentSeqRef.current = null;
+    onActivityMove?.();
+  }, [netState.seq, onActivityMove]);
+
   const submitMove = (from: string, to: string) => {
     if (!isSeated) return;
     if (netState.result) return;
     if (!myColors.has(turn)) return;
+    pendingMoveRef.current = true;
+    pendingMoveSentSeqRef.current = netState.seq;
     send({ type: "move", from, to });
 
     // Moving a piece clears all team arrows.

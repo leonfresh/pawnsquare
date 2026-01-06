@@ -66,6 +66,7 @@ export type BoardControlsEvent =
       turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
+      checkersBoard?: Record<string, CheckersPiece>;
       canInc: boolean;
       canDec: boolean;
       canIncIncrement: boolean;
@@ -90,8 +91,10 @@ export type BoardControlsEvent =
       lobby: LobbyKind;
       fen: string;
       mySide: Side | null;
+      turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
+      checkersBoard?: Record<string, CheckersPiece>;
       onMove2d: (
         from: string,
         to: string,
@@ -270,6 +273,7 @@ export type UseCheckersGameOptions = {
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  onActivityMove?: () => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
   leaveAllExceptBoardKey?: string | null;
@@ -340,6 +344,7 @@ export function useCheckersGame({
   selfPositionRef,
   selfId,
   selfName,
+  onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
   leaveAllExceptBoardKey,
@@ -696,6 +701,20 @@ export function useCheckersGame({
     turn,
   ]);
 
+  const pendingMoveRef = useRef(false);
+  const pendingMoveSentSeqRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!pendingMoveRef.current) return;
+    const sentSeq = pendingMoveSentSeqRef.current;
+    if (sentSeq === null) return;
+    if (netState.seq <= sentSeq) return;
+
+    pendingMoveRef.current = false;
+    pendingMoveSentSeqRef.current = null;
+    onActivityMove?.();
+  }, [netState.seq, onActivityMove]);
+
   const requestJoin = (side: Side) => {
     const seat = netState.seats[side];
     if (seat && seat.connId !== gameSelfId) return;
@@ -711,6 +730,8 @@ export function useCheckersGame({
     if (netState.result) return;
     if (!mySides.has(turn)) return;
 
+    pendingMoveRef.current = true;
+    pendingMoveSentSeqRef.current = netState.seq;
     send({ type: "move", from, to });
   };
 
@@ -927,7 +948,29 @@ export function useCheckersGame({
   const boardOrientation: "white" | "black" =
     myPrimarySide === "b" ? "black" : "white";
 
-  const canMove2d = false;
+  const canMove2d =
+    isSeated && !netState.result && mySides.has(turn) && enabled === true;
+
+  const tryMove2d = (from: string, to: string) => {
+    if (!enabled) return false;
+    if (!isSeated) return false;
+    if (netState.result) return false;
+    if (!mySides.has(turn)) return false;
+    if (!isSquare(from) || !isSquare(to)) return false;
+
+    const { moves, hasAnyCapture } = listAllMoves(
+      netState.board,
+      turn,
+      netState.forcedFrom
+    );
+    const ok = moves.some(
+      (m) =>
+        m.from === from && m.to === to && (!hasAnyCapture ? true : m.isCapture)
+    );
+    if (!ok) return false;
+    submitMove(from, to);
+    return true;
+  };
 
   const setTimeControlByIndex = (nextIdx: number) => {
     if (!canConfigure) return;
@@ -995,6 +1038,7 @@ export function useCheckersGame({
       turn,
       boardOrientation,
       canMove2d,
+      checkersBoard: netState.board,
       canInc: canConfigure && timeIndex < TIME_OPTIONS_SECONDS.length - 1,
       canDec: canConfigure && timeIndex > 0,
       canIncIncrement:
@@ -1002,7 +1046,7 @@ export function useCheckersGame({
       canDecIncrement: canConfigure && incrementIndex > 0,
       canReset: isSeated || !bothSeatsOccupied,
       canCenter: !!onCenterCamera,
-      onMove2d: () => false,
+      onMove2d: tryMove2d,
       onInc: () => setTimeControlByIndex(timeIndex + 1),
       onDec: () => setTimeControlByIndex(timeIndex - 1),
       onIncIncrement: () => setIncrementByIndex(incrementIndex + 1),
@@ -1041,10 +1085,38 @@ export function useCheckersGame({
     onCenterCamera,
   ]);
 
+  const emit2dSync = () => {
+    onBoardControls?.({
+      type: "sync2d",
+      boardKey,
+      lobby,
+      fen: "",
+      mySide: myPrimarySide,
+      turn,
+      boardOrientation,
+      canMove2d,
+      checkersBoard: netState.board,
+      onMove2d: tryMove2d,
+    });
+  };
+
   useEffect(() => {
-    // Checkers: no 2D board.
-    void board2dOpen;
-  }, [board2dOpen]);
+    if (!enabled) return;
+    if (!board2dOpen) return;
+    emit2dSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    enabled,
+    board2dOpen,
+    netState.board,
+    netState.seq,
+    netState.forcedFrom,
+    netState.result,
+    myPrimarySide,
+    turn,
+    canMove2d,
+    isSeated,
+  ]);
 
   const resultLabel = useMemo(() => {
     const r = netState.result;
