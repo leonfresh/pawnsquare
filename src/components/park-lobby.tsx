@@ -1656,6 +1656,7 @@ function ProceduralDuck({
     timer: Math.random() * 2,
     target: new THREE.Vector3(position[0], position[1], position[2]),
     currentPos: new THREE.Vector3(position[0], position[1], position[2]),
+    diff: new THREE.Vector3(),
   });
 
   useFrame((state, dt) => {
@@ -1677,7 +1678,7 @@ function ProceduralDuck({
       }
     } else {
       // Move towards target
-      const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
+      const diff = s.diff.subVectors(s.target, s.currentPos);
       const dist = diff.length();
 
       if (dist < 0.1) {
@@ -1763,6 +1764,7 @@ function ProceduralSwan({
     timer: Math.random() * 2,
     target: new THREE.Vector3(position[0], position[1], position[2]),
     currentPos: new THREE.Vector3(position[0], position[1], position[2]),
+    diff: new THREE.Vector3(),
   });
 
   useFrame((state, dt) => {
@@ -1782,7 +1784,7 @@ function ProceduralSwan({
         );
       }
     } else {
-      const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
+      const diff = s.diff.subVectors(s.target, s.currentPos);
       const dist = diff.length();
 
       if (dist < 0.1) {
@@ -1865,6 +1867,7 @@ function ProceduralRabbit({
     target: new THREE.Vector3(position[0], position[1], position[2]),
     currentPos: new THREE.Vector3(position[0], position[1], position[2]),
     hopPhase: 0,
+    diff: new THREE.Vector3(),
   });
 
   useFrame((state, dt) => {
@@ -1890,7 +1893,7 @@ function ProceduralRabbit({
         groupRef.current.rotation.z *= 0.9;
       }
     } else {
-      const diff = new THREE.Vector3().subVectors(s.target, s.currentPos);
+      const diff = s.diff.subVectors(s.target, s.currentPos);
       const dist = diff.length();
 
       if (dist < 0.1) {

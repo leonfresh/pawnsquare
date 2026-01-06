@@ -24,7 +24,7 @@ export default function Home() {
   const [lobbyType, setLobbyType] = useState<"park" | "scifi">("park");
   const [worldReady, setWorldReady] = useState(false);
 
-  const { allRooms } = useRoomDiscovery();
+  const { allRooms } = useRoomDiscovery({ enabled: !joined });
 
   const MAX_PLAYERS_PER_ROOM = 16;
   const baseNormalRoom = "main-room";

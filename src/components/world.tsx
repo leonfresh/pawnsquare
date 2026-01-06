@@ -2439,6 +2439,12 @@ function FollowCamera({
   const pinchRef = useRef<{ dist: number; radius: number } | null>(null);
   const touchIdsRef = useRef<Set<number>>(new Set());
 
+  // Reused vectors to avoid per-frame allocations (reduces GC stutter).
+  const povForwardRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const desiredPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const lookAtPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const orbitOffsetRef = useRef<THREE.Vector3>(new THREE.Vector3());
+
   // POV orientation (yaw/pitch) controlled by drag.
   const povYawRef = useRef(0);
   const povPitchRef = useRef(0);
@@ -2724,31 +2730,31 @@ function FollowCamera({
       const yaw = povYawRef.current;
       const pitch = povPitchRef.current;
       const cy = Math.cos(pitch);
-      const forward = new THREE.Vector3(
-        Math.sin(yaw) * cy,
-        Math.sin(pitch),
-        Math.cos(yaw) * cy
-      );
+      const forward = povForwardRef.current;
+      forward.set(Math.sin(yaw) * cy, Math.sin(pitch), Math.cos(yaw) * cy);
 
-      const desired = new THREE.Vector3(t.x, t.y + eyeHeight, t.z);
+      const desired = desiredPosRef.current;
+      desired.set(t.x, t.y + eyeHeight, t.z);
       camera.position.lerp(desired, clamp(dt * 14, 0, 1));
-      camera.lookAt(desired.clone().add(forward));
+
+      const lookAt = lookAtPosRef.current;
+      lookAt.copy(desired).add(forward);
+      camera.lookAt(lookAt);
       return;
     }
 
     // Use lookAtOverride as orbit center when watching a board
     const orbitCenter = lookAtOverride?.current || t;
 
-    const offset = new THREE.Vector3().setFromSphericalCoords(
+    const offset = orbitOffsetRef.current;
+    offset.setFromSphericalCoords(
       radiusRef.current,
       phiRef.current,
       thetaRef.current
     );
-    const desired = new THREE.Vector3(
-      orbitCenter.x,
-      orbitCenter.y,
-      orbitCenter.z
-    ).add(offset);
+
+    const desired = desiredPosRef.current;
+    desired.set(orbitCenter.x, orbitCenter.y, orbitCenter.z).add(offset);
     camera.position.lerp(desired, clamp(dt * 6, 0, 1));
     camera.lookAt(orbitCenter.x, orbitCenter.y + 1.0, orbitCenter.z);
 
@@ -5737,7 +5743,7 @@ export default function World({
   const [showRoomsModal, setShowRoomsModal] = useState(false);
   const [nameInput, setNameInput] = useState("");
 
-  const { allRooms, setMyRoom } = useRoomDiscovery();
+  const { allRooms, setMyRoom } = useRoomDiscovery({ enabled: showRoomsModal });
 
   // Broadcast our current room/channel + player count to the discovery room.
   useEffect(() => {
@@ -10737,6 +10743,8 @@ function VoiceProximityUpdater({
   const lastTickRef = useRef(0);
   const lastConnTickRef = useRef(0);
   const desiredPeersRef = useRef<Set<string>>(new Set());
+  const candidatesRef = useRef<Array<{ id: string; d: number }>>([]);
+  const nextIdsRef = useRef<string[]>([]);
 
   useFrame(() => {
     if (!enabled) return;
@@ -10749,8 +10757,11 @@ function VoiceProximityUpdater({
     if (now - lastTickRef.current < 100) return;
     lastTickRef.current = now;
 
-    for (const [peerId, p] of Object.entries(players)) {
+    for (const peerId in players) {
       if (peerId === selfId) continue;
+
+      const p = players[peerId];
+      if (!p) continue;
 
       // If we don't yet have a valid remote position, don't stomp the gain.
       const pos = p.position;
@@ -10788,9 +10799,14 @@ function VoiceProximityUpdater({
 
         const prev = desiredPeersRef.current;
 
-        const candidates: Array<{ id: string; d: number }> = [];
-        for (const [peerId, p] of Object.entries(players)) {
+        const candidates = candidatesRef.current;
+        candidates.length = 0;
+
+        for (const peerId in players) {
           if (peerId === selfId) continue;
+
+          const p = players[peerId];
+          if (!p) continue;
           const pos = p.position;
           if (!pos || pos.length < 3) continue;
           const px = pos[0];
@@ -10816,13 +10832,18 @@ function VoiceProximityUpdater({
         }
 
         candidates.sort((a, b) => a.d - b.d);
-        const nextIds = candidates.slice(0, MAX_PEERS).map((c) => c.id);
-        const next = new Set(nextIds);
 
-        let changed = next.size !== prev.size;
+        const nextIds = nextIdsRef.current;
+        nextIds.length = 0;
+        for (let i = 0; i < candidates.length && i < MAX_PEERS; i++) {
+          nextIds.push(candidates[i]!.id);
+        }
+
+        // Compare desired peer set without allocating a new Set every tick.
+        let changed = nextIds.length !== prev.size;
         if (!changed) {
-          for (const id of next) {
-            if (!prev.has(id)) {
+          for (let i = 0; i < nextIds.length; i++) {
+            if (!prev.has(nextIds[i]!)) {
               changed = true;
               break;
             }
@@ -10830,6 +10851,7 @@ function VoiceProximityUpdater({
         }
 
         if (changed) {
+          const next = new Set(nextIds);
           // Disconnect peers that dropped out of range.
           for (const id of prev) {
             if (!next.has(id)) {
