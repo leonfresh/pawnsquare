@@ -307,6 +307,53 @@ export function usePartyVoice(opts: {
     }
   }, [attachAndPlayRemoteStream]);
 
+  // Some browsers will not fire `ontrack` when an audio transceiver is negotiated
+  // with no sender track and later `replaceTrack()` is used. In that case, we
+  // need to proactively attach the existing receiver track.
+  const maybeAttachReceiverTrack = useCallback(
+    async (peerId: string, reason: string) => {
+      const conn = peersRef.current.get(peerId);
+      if (!conn) return;
+
+      // If we've already attached remote audio for this peer, don't redo work.
+      if (conn.hasRemoteAudio && conn.stream) return;
+
+      const receiverTrack =
+        conn.audioTransceiver?.receiver?.track ??
+        conn.pc.getReceivers().find((r) => r.track?.kind === "audio")?.track;
+
+      if (!receiverTrack || receiverTrack.kind !== "audio") return;
+
+      // If the receiver track exists, create a stream and attach it.
+      const stream = new MediaStream([receiverTrack]);
+      conn.stream = stream;
+      conn.hasRemoteAudio = true;
+      recomputeCounts();
+
+      if (!gestureUnlockedRef.current) {
+        pendingTracksRef.current.set(peerId, stream);
+        console.log(
+          "[party-voice] ⏸️ Storing receiver track for",
+          peerId,
+          "until user gesture (reason:",
+          reason,
+          ")"
+        );
+        return;
+      }
+
+      console.log(
+        "[party-voice] ↪ Attaching receiver track for",
+        peerId,
+        "(reason:",
+        reason,
+        ")"
+      );
+      await attachAndPlayRemoteStream(peerId, stream);
+    },
+    [attachAndPlayRemoteStream, recomputeCounts]
+  );
+
   const ensureMic = useCallback(async () => {
     if (typeof window === "undefined") return;
     if (micStreamRef.current && micTrackRef.current) {
@@ -584,6 +631,14 @@ export function usePartyVoice(opts: {
           pc.connectionState
         );
 
+        if (pc.connectionState === "connected") {
+          // If `ontrack` didn't fire, still ensure we attach the negotiated receiver.
+          void maybeAttachReceiverTrack(
+            peerId,
+            "connectionstatechange:connected"
+          );
+        }
+
         if (pc.connectionState === "failed") {
           void maybeRestartIce();
           // Give ICE restart a moment; cleanup only if it stays failed.
@@ -626,7 +681,13 @@ export function usePartyVoice(opts: {
 
       return { pc, audioTransceiver, pendingIce: [] };
     },
-    [ensureAudio, socket]
+    [
+      attachAndPlayRemoteStream,
+      maybeAttachReceiverTrack,
+      pushEvent,
+      recomputeCounts,
+      socket,
+    ]
   );
 
   const cleanup = useCallback(
@@ -698,6 +759,10 @@ export function usePartyVoice(opts: {
 
       try {
         await pc.setRemoteDescription(offer);
+
+        // Ensure receiver track is attached even if `ontrack` doesn't fire.
+        void maybeAttachReceiverTrack(from, "handleOffer:setRemoteDescription");
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
@@ -707,7 +772,10 @@ export function usePartyVoice(opts: {
             try {
               await pc.addIceCandidate(c);
             } catch (err) {
-              console.error("[party-voice] Failed to add pending ICE (offer path):", err);
+              console.error(
+                "[party-voice] Failed to add pending ICE (offer path):",
+                err
+              );
               pushEvent({
                 kind: "error",
                 peerId: from,
@@ -738,7 +806,13 @@ export function usePartyVoice(opts: {
         });
       }
     },
-    [createPeerConnection, socket, recomputeCounts, pushEvent]
+    [
+      createPeerConnection,
+      socket,
+      recomputeCounts,
+      pushEvent,
+      maybeAttachReceiverTrack,
+    ]
   );
 
   const handleAnswer = useCallback(
@@ -749,14 +823,23 @@ export function usePartyVoice(opts: {
       const conn = peersRef.current.get(from);
       if (!conn) return;
 
-       // Only accept answers when we have a local offer outstanding.
-       if (conn.pc.signalingState !== "have-local-offer") {
-         console.warn("[party-voice] Ignoring answer in state", conn.pc.signalingState);
-         return;
-       }
+      // Only accept answers when we have a local offer outstanding.
+      if (conn.pc.signalingState !== "have-local-offer") {
+        console.warn(
+          "[party-voice] Ignoring answer in state",
+          conn.pc.signalingState
+        );
+        return;
+      }
 
       try {
         await conn.pc.setRemoteDescription(answer);
+
+        // Ensure receiver track is attached even if `ontrack` doesn't fire.
+        void maybeAttachReceiverTrack(
+          from,
+          "handleAnswer:setRemoteDescription"
+        );
 
         // Apply any ICE candidates that arrived before remote description.
         if (conn.pendingIce?.length) {
@@ -764,7 +847,10 @@ export function usePartyVoice(opts: {
             try {
               await conn.pc.addIceCandidate(c);
             } catch (err) {
-              console.error("[party-voice] Failed to add pending ICE (answer path):", err);
+              console.error(
+                "[party-voice] Failed to add pending ICE (answer path):",
+                err
+              );
               pushEvent({
                 kind: "error",
                 peerId: from,
@@ -783,7 +869,7 @@ export function usePartyVoice(opts: {
         });
       }
     },
-    [pushEvent]
+    [pushEvent, maybeAttachReceiverTrack]
   );
 
   const handleIceCandidate = useCallback(
