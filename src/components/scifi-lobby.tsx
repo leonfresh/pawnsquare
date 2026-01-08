@@ -1,7 +1,6 @@
 "use client";
-
-import { Text, Billboard, Float, Stars, useGLTF } from "@react-three/drei";
 import { type ThreeElements, useFrame } from "@react-three/fiber";
+import { Billboard, Float, Stars, Text, useGLTF } from "@react-three/drei";
 import { useCallback, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { NeonText3D } from "./neon-text-3d";
@@ -3001,6 +3000,94 @@ export function SciFiLobby({
             metalness={0.75}
           />
         </mesh>
+
+        {/* About display mounted to the south back wall */}
+        <group position={[0, 0, -2.2]}>
+          <mesh position={[0, 2.8, 0]} castShadow receiveShadow>
+            <boxGeometry args={[4.8, 5.6, 0.25]} />
+            <SciFiWallMaterial
+              color="#0b0b12"
+              roughness={0.55}
+              metalness={0.75}
+            />
+          </mesh>
+
+          <Text
+            position={[0, 5.25, 0.16]}
+            fontSize={0.52}
+            font="/fonts/Orbitron-ExtraBold.ttf"
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+          >
+            ABOUT
+          </Text>
+
+          <Text
+            position={[-2.25, 4.55, 0.16]}
+            fontSize={0.245}
+            font="/fonts/Orbitron-Regular.ttf"
+            color="#ffffff"
+            anchorX="left"
+            anchorY="top"
+            maxWidth={4.4}
+            lineHeight={1.25}
+          >
+            {
+              "PawnSquare is a 3D boardgame metaverse.\nWalk up to a table to play Chess, Goose Chess, or Checkers.\nSupport this solo dev: buy coins to unlock skins + more."
+            }
+          </Text>
+
+          <Text
+            position={[-2.25, 2.05, 0.16]}
+            fontSize={0.26}
+            font="/fonts/Orbitron-Regular.ttf"
+            color="#ffffff"
+            anchorX="left"
+            anchorY="middle"
+            maxWidth={4.4}
+          >
+            Dev: Leon Fresh
+          </Text>
+
+          <Text
+            position={[-2.25, 1.65, 0.16]}
+            fontSize={0.26}
+            font="/fonts/Orbitron-Regular.ttf"
+            color="#ffffff"
+            anchorX="left"
+            anchorY="middle"
+            maxWidth={4.4}
+            onPointerOver={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerOut={() => {
+              document.body.style.cursor = "default";
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              window.open(
+                "https://leonfresh.om",
+                "_blank",
+                "noopener,noreferrer"
+              );
+            }}
+          >
+            Portfolio: leonfresh.om
+          </Text>
+
+          <Text
+            position={[-2.25, 1.25, 0.16]}
+            fontSize={0.26}
+            font="/fonts/Orbitron-Regular.ttf"
+            color="#ffffff"
+            anchorX="left"
+            anchorY="middle"
+            maxWidth={4.4}
+          >
+            Chess: ~2200 Elo
+          </Text>
+        </group>
 
         {/* TV wall panels (south): 2 screens */}
         <mesh position={[-6, 2.8, -2.2]} castShadow receiveShadow>
