@@ -20,6 +20,7 @@ export type { Square } from "chess.js";
 export type GameResult =
   | { type: "timeout"; winner: Side }
   | { type: "checkmate"; winner: Side }
+  | { type: "resign"; winner: Side }
   | {
       type: "draw";
       reason:
@@ -53,6 +54,10 @@ export type ChessNetState = {
   result: GameResult | null;
   lastMove: { from: Square; to: Square } | null;
 
+  // Session UX (standard + goose)
+  drawOfferFrom?: Side | null;
+  rematch?: { w: boolean; b: boolean };
+
   // Goose Chess (only present in the goose PartyKit room)
   gooseSquare?: Square;
   phase?: "piece" | "goose";
@@ -73,6 +78,14 @@ export type ChessSendMessage =
       promotion?: "q" | "r" | "b" | "n";
     }
   | { type: "goose"; square: Square }
+  | { type: "resign" }
+  | { type: "draw:offer" }
+  | { type: "draw:accept" }
+  | { type: "draw:decline" }
+  | { type: "draw:cancel" }
+  | { type: "rematch:request" }
+  | { type: "rematch:decline" }
+  | { type: "rematch:cancel" }
   | { type: "setTime"; baseSeconds: number; incrementSeconds?: number }
   | { type: "reset" };
 
@@ -94,6 +107,27 @@ export type BoardControlsEvent =
       clockRunning?: boolean;
       clockActive?: Side | null;
       clockSnapshotAtMs?: number;
+
+      // Match UX (chess/goose only)
+      resultLabel?: string | null;
+      drawOfferFrom?: Side | null;
+      rematch?: { w: boolean; b: boolean };
+      canResign?: boolean;
+      canOfferDraw?: boolean;
+      canAcceptDraw?: boolean;
+      canDeclineDraw?: boolean;
+      canCancelDraw?: boolean;
+      canRequestRematch?: boolean;
+      canDeclineRematch?: boolean;
+      canCancelRematch?: boolean;
+      onResign?: () => void;
+      onOfferDraw?: () => void;
+      onAcceptDraw?: () => void;
+      onDeclineDraw?: () => void;
+      onCancelDraw?: () => void;
+      onRequestRematch?: () => void;
+      onDeclineRematch?: () => void;
+      onCancelRematch?: () => void;
       gooseSquare?: string;
       goosePhase?: "piece" | "goose";
       canPlaceGoose?: boolean;
@@ -130,6 +164,11 @@ export type BoardControlsEvent =
       clockRunning?: boolean;
       clockActive?: Side | null;
       clockSnapshotAtMs?: number;
+
+      // Match UX (chess/goose only)
+      resultLabel?: string | null;
+      drawOfferFrom?: Side | null;
+      rematch?: { w: boolean; b: boolean };
       gooseSquare?: string;
       goosePhase?: "piece" | "goose";
       canPlaceGoose?: boolean;
@@ -1140,6 +1179,8 @@ export type UseChessGameResult = {
   mySides: Set<Side>;
   myPrimarySide: Side | null;
   isSeated: boolean;
+  drawOfferFrom: Side | null;
+  rematch: { w: boolean; b: boolean };
   selected: Square | null;
   legalTargets: Square[];
   hoveredSquare: Square | null;
@@ -1250,6 +1291,8 @@ export function useChessGame({
     clock: defaultClock,
     result: null,
     lastMove: null,
+    drawOfferFrom: null,
+    rematch: { w: false, b: false },
     gooseSquare: variant === "goose" ? ("d5" as Square) : undefined,
     phase: variant === "goose" ? "piece" : undefined,
     activeSide: variant === "goose" ? "w" : undefined,
@@ -1263,6 +1306,8 @@ export function useChessGame({
       clock: defaultClock,
       result: null,
       lastMove: null,
+      drawOfferFrom: null,
+      rematch: { w: false, b: false },
       gooseSquare: variant === "goose" ? ("d5" as Square) : undefined,
       phase: variant === "goose" ? "piece" : undefined,
       activeSide: variant === "goose" ? "w" : undefined,
@@ -1894,6 +1939,53 @@ export function useChessGame({
     mySides.has(turn) &&
     (variant !== "goose" || goosePhase === "piece");
 
+  const drawOfferFrom: Side | null =
+    (netState.drawOfferFrom as Side | null | undefined) ?? null;
+  const rematch = netState.rematch ?? { w: false, b: false };
+
+  const canResign = isSeated && !netState.result;
+  const canOfferDraw = isSeated && !netState.result && !drawOfferFrom;
+  const canCancelDraw =
+    isSeated &&
+    !netState.result &&
+    !!drawOfferFrom &&
+    !!myPrimarySide &&
+    drawOfferFrom === myPrimarySide;
+  const canAcceptDraw =
+    isSeated &&
+    !netState.result &&
+    !!drawOfferFrom &&
+    !!myPrimarySide &&
+    drawOfferFrom !== myPrimarySide;
+  const canDeclineDraw = canAcceptDraw;
+
+  const canRequestRematch =
+    isSeated &&
+    !!netState.result &&
+    bothSeatsOccupied &&
+    !!myPrimarySide &&
+    rematch[myPrimarySide] !== true;
+
+  const otherPrimarySide: Side | null = myPrimarySide
+    ? myPrimarySide === "w"
+      ? "b"
+      : "w"
+    : null;
+  const canDeclineRematch =
+    isSeated &&
+    !!netState.result &&
+    bothSeatsOccupied &&
+    !!myPrimarySide &&
+    !!otherPrimarySide &&
+    rematch[otherPrimarySide] === true &&
+    rematch[myPrimarySide] !== true;
+  const canCancelRematch =
+    isSeated &&
+    !!netState.result &&
+    bothSeatsOccupied &&
+    !!myPrimarySide &&
+    rematch[myPrimarySide] === true;
+
   const canPlaceGoose =
     variant === "goose" &&
     isSeated &&
@@ -1998,6 +2090,25 @@ export function useChessGame({
       clockRunning: clocks.running,
       clockActive: clocks.active,
       clockSnapshotAtMs: Date.now(),
+      resultLabel,
+      drawOfferFrom,
+      rematch,
+      canResign,
+      canOfferDraw,
+      canAcceptDraw,
+      canDeclineDraw,
+      canCancelDraw,
+      canRequestRematch,
+      canDeclineRematch,
+      canCancelRematch,
+      onResign: resign,
+      onOfferDraw: offerDraw,
+      onAcceptDraw: acceptDraw,
+      onDeclineDraw: declineDraw,
+      onCancelDraw: cancelDraw,
+      onRequestRematch: requestRematch,
+      onDeclineRematch: declineRematch,
+      onCancelRematch: cancelRematch,
       gooseSquare: gooseSquare ?? undefined,
       goosePhase: goosePhase ?? undefined,
       canPlaceGoose: canPlaceGoose || undefined,
@@ -2035,6 +2146,9 @@ export function useChessGame({
       clockRunning: clocks.running,
       clockActive: clocks.active,
       clockSnapshotAtMs: Date.now(),
+      resultLabel,
+      drawOfferFrom,
+      rematch,
       gooseSquare: gooseSquare ?? undefined,
       goosePhase: goosePhase ?? undefined,
       canPlaceGoose: canPlaceGoose || undefined,
@@ -2077,11 +2191,55 @@ export function useChessGame({
     send({ type: "reset" });
   };
 
+  const resign = () => {
+    if (!canResign) return;
+    click?.();
+    send({ type: "resign" });
+  };
+
+  const offerDraw = () => {
+    if (!canOfferDraw) return;
+    click?.();
+    send({ type: "draw:offer" });
+  };
+  const acceptDraw = () => {
+    if (!canAcceptDraw) return;
+    click?.();
+    send({ type: "draw:accept" });
+  };
+  const declineDraw = () => {
+    if (!canDeclineDraw) return;
+    click?.();
+    send({ type: "draw:decline" });
+  };
+  const cancelDraw = () => {
+    if (!canCancelDraw) return;
+    click?.();
+    send({ type: "draw:cancel" });
+  };
+
+  const requestRematch = () => {
+    if (!canRequestRematch) return;
+    click?.();
+    send({ type: "rematch:request" });
+  };
+  const declineRematch = () => {
+    if (!canDeclineRematch) return;
+    click?.();
+    send({ type: "rematch:decline" });
+  };
+  const cancelRematch = () => {
+    if (!canCancelRematch) return;
+    click?.();
+    send({ type: "rematch:cancel" });
+  };
+
   const resultLabel = useMemo(() => {
     const r = netState.result;
     if (!r) return null;
     if (r.type === "timeout") return `${winnerLabel(r.winner)} wins (time)`;
     if (r.type === "checkmate") return `${winnerLabel(r.winner)} wins (mate)`;
+    if (r.type === "resign") return `${winnerLabel(r.winner)} wins (resign)`;
     return `Draw (${r.reason})`;
   }, [netState.result]);
 
@@ -2111,6 +2269,9 @@ export function useChessGame({
     clocks.baseMs,
     clocks.incrementMs,
     myPrimarySide,
+    netState.result,
+    drawOfferFrom,
+    rematch,
     onCenterCamera,
   ]);
 
@@ -2126,6 +2287,8 @@ export function useChessGame({
     myPrimarySide,
     turn,
     netState.result,
+    drawOfferFrom,
+    rematch,
     canMove2d,
     isSeated,
   ]);
@@ -2143,6 +2306,8 @@ export function useChessGame({
     mySides,
     myPrimarySide,
     isSeated,
+    drawOfferFrom,
+    rematch,
     selected,
     legalTargets,
     hoveredSquare,

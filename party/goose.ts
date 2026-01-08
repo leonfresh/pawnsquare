@@ -20,6 +20,7 @@ type SeatInfo = {
 type GameResult =
   | { type: "timeout"; winner: Side }
   | { type: "checkmate"; winner: Side }
+  | { type: "resign"; winner: Side }
   | { type: "draw"; reason: DrawReason };
 
 type DrawReason =
@@ -48,6 +49,8 @@ type GooseChessState = {
   gooseSquare: Square;
   phase: GoosePhase;
   activeSide: Side;
+  drawOfferFrom: Side | null;
+  rematch: { w: boolean; b: boolean };
 };
 
 type GooseChessMessage =
@@ -60,6 +63,14 @@ type GooseChessMessage =
       promotion?: "q" | "r" | "b" | "n";
     }
   | { type: "goose"; square: Square }
+  | { type: "resign" }
+  | { type: "draw:offer" }
+  | { type: "draw:accept" }
+  | { type: "draw:decline" }
+  | { type: "draw:cancel" }
+  | { type: "rematch:request" }
+  | { type: "rematch:decline" }
+  | { type: "rematch:cancel" }
   | { type: "setTime"; baseSeconds: number; incrementSeconds?: number }
   | { type: "reset" }
   | { type: "state"; state: GooseChessState };
@@ -134,6 +145,8 @@ export default class GooseChessServer implements Party.Server {
       gooseSquare: "d5",
       phase: "piece",
       activeSide: "w",
+      drawOfferFrom: null,
+      rematch: { w: false, b: false },
     };
 
     this.timeoutCheck = setInterval(() => {
@@ -229,6 +242,21 @@ export default class GooseChessServer implements Party.Server {
     this.state.gooseSquare = "d5";
     this.state.phase = "piece";
     this.state.activeSide = "w";
+    this.state.drawOfferFrom = null;
+    this.state.rematch = { w: false, b: false };
+  }
+
+  sideForConn(connId: string): Side | null {
+    if (this.state.seats.w?.connId === connId) return "w";
+    if (this.state.seats.b?.connId === connId) return "b";
+    return null;
+  }
+
+  stopClockAt(nowMs: number) {
+    const { remainingMs } = this.getRemainingWithNow(nowMs);
+    this.state.clock.remainingMs = remainingMs;
+    this.state.clock.running = false;
+    this.state.clock.lastTickMs = null;
   }
 
   broadcastState() {
@@ -351,6 +379,88 @@ export default class GooseChessServer implements Party.Server {
         this.resetGame(baseMs, incrementMs);
         this.state.seq++;
         this.broadcastState();
+      } else if (msg.type === "resign") {
+        if (this.state.result) return;
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        const now = Date.now();
+        this.stopClockAt(now);
+        this.state.drawOfferFrom = null;
+        this.state.rematch = { w: false, b: false };
+        this.state.result = { type: "resign", winner: otherSide(side) };
+        this.cancelAutoReset();
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "draw:offer") {
+        if (this.state.result) return;
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        this.state.drawOfferFrom = side;
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "draw:cancel") {
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        if (this.state.drawOfferFrom !== side) return;
+        this.state.drawOfferFrom = null;
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "draw:decline") {
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        if (!this.state.drawOfferFrom) return;
+        if (this.state.drawOfferFrom === side) return;
+        this.state.drawOfferFrom = null;
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "draw:accept") {
+        if (this.state.result) return;
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        if (!this.state.drawOfferFrom) return;
+        if (this.state.drawOfferFrom === side) return;
+
+        const now = Date.now();
+        this.stopClockAt(now);
+        this.state.drawOfferFrom = null;
+        this.state.rematch = { w: false, b: false };
+        this.state.result = { type: "draw", reason: "draw" };
+        this.cancelAutoReset();
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "rematch:request") {
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        if (!this.state.result) return;
+        this.state.rematch[side] = true;
+
+        if (this.state.rematch.w && this.state.rematch.b) {
+          const baseMs = this.state.clock.baseMs;
+          const incrementMs = this.state.clock.incrementMs;
+          this.cancelAutoReset();
+          this.resetGame(baseMs, incrementMs);
+        }
+
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "rematch:decline") {
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        if (!this.state.result) return;
+
+        const other: Side = side === "w" ? "b" : "w";
+        if (!this.state.rematch[other]) return;
+        if (this.state.rematch[side]) return;
+
+        this.state.rematch[other] = false;
+        this.state.seq++;
+        this.broadcastState();
+      } else if (msg.type === "rematch:cancel") {
+        const side = this.sideForConn(sender.id);
+        if (!side) return;
+        this.state.rematch[side] = false;
+        this.state.seq++;
+        this.broadcastState();
       } else if (msg.type === "move") {
         if (this.state.result) return;
         if (this.state.phase !== "piece") return;
@@ -363,6 +473,10 @@ export default class GooseChessServer implements Party.Server {
 
         const now = Date.now();
         this.startClockIfNeeded(now);
+
+        // Any action cancels draw offers / rematch intent.
+        this.state.drawOfferFrom = null;
+        this.state.rematch = { w: false, b: false };
         if (this.applyClockAndMaybeTimeout(now)) {
           this.state.seq++;
           this.broadcastState();
@@ -418,6 +532,10 @@ export default class GooseChessServer implements Party.Server {
 
         const now = Date.now();
         this.startClockIfNeeded(now);
+
+        // Any action cancels draw offers / rematch intent.
+        this.state.drawOfferFrom = null;
+        this.state.rematch = { w: false, b: false };
         if (this.applyClockAndMaybeTimeout(now)) {
           this.state.seq++;
           this.broadcastState();

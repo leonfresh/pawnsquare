@@ -168,6 +168,164 @@ function HolographicPlacementText({
   );
 }
 
+function HolographicDrawOfferText({
+  originVec,
+  boardSize,
+  offeredBy,
+}: {
+  originVec: THREE.Vector3;
+  boardSize: number;
+  offeredBy: "w" | "b";
+}) {
+  const frontRef = useRef<any>(null);
+  const backRef = useRef<any>(null);
+
+  useFrame(() => {
+    if (!frontRef.current || !backRef.current) return;
+    const time = performance.now() * 0.001;
+    const y = originVec.y + 1.62 + Math.sin(time * 1.4) * 0.08;
+    frontRef.current.position.y = y;
+    backRef.current.position.y = y;
+    const opacity = 0.85 + Math.sin(time * 2.1) * 0.15;
+    if (frontRef.current.material) frontRef.current.material.opacity = opacity;
+    if (backRef.current.material) backRef.current.material.opacity = opacity;
+  });
+
+  return (
+    <group>
+      <Text
+        ref={frontRef}
+        position={[
+          originVec.x,
+          originVec.y + 1.62,
+          originVec.z - boardSize / 2 - 0.8,
+        ]}
+        fontSize={0.2}
+        color="#00d9ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.015}
+        outlineColor="#003d4d"
+        font="/fonts/Orbitron-Bold.ttf"
+      >
+        DRAW OFFERED ({offeredBy === "w" ? "WHITE" : "BLACK"})
+        <meshBasicMaterial
+          attach="material"
+          color="#00d9ff"
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </Text>
+      <Text
+        ref={backRef}
+        position={[
+          originVec.x,
+          originVec.y + 1.62,
+          originVec.z - boardSize / 2 - 0.8,
+        ]}
+        rotation={[0, Math.PI, 0]}
+        fontSize={0.2}
+        color="#00d9ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.015}
+        outlineColor="#003d4d"
+        font="/fonts/Orbitron-Bold.ttf"
+      >
+        DRAW OFFERED ({offeredBy === "w" ? "WHITE" : "BLACK"})
+        <meshBasicMaterial
+          attach="material"
+          color="#00d9ff"
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </Text>
+    </group>
+  );
+}
+
+function HolographicRematchRequestText({
+  originVec,
+  boardSize,
+  requestedBy,
+}: {
+  originVec: THREE.Vector3;
+  boardSize: number;
+  requestedBy: "w" | "b";
+}) {
+  const frontRef = useRef<any>(null);
+  const backRef = useRef<any>(null);
+
+  useFrame(() => {
+    if (!frontRef.current || !backRef.current) return;
+    const time = performance.now() * 0.001;
+    const y = originVec.y + 1.52 + Math.sin(time * 1.35) * 0.08;
+    frontRef.current.position.y = y;
+    backRef.current.position.y = y;
+    const opacity = 0.85 + Math.sin(time * 2.0) * 0.15;
+    if (frontRef.current.material) frontRef.current.material.opacity = opacity;
+    if (backRef.current.material) backRef.current.material.opacity = opacity;
+  });
+
+  const label = `REMATCH? (${requestedBy === "w" ? "WHITE" : "BLACK"})`;
+
+  return (
+    <group>
+      <Text
+        ref={frontRef}
+        position={[
+          originVec.x,
+          originVec.y + 1.52,
+          originVec.z - boardSize / 2 - 0.8,
+        ]}
+        fontSize={0.2}
+        color="#00d9ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.015}
+        outlineColor="#003d4d"
+        font="/fonts/Orbitron-Bold.ttf"
+      >
+        {label}
+        <meshBasicMaterial
+          attach="material"
+          color="#00d9ff"
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </Text>
+      <Text
+        ref={backRef}
+        position={[
+          originVec.x,
+          originVec.y + 1.52,
+          originVec.z - boardSize / 2 - 0.8,
+        ]}
+        rotation={[0, Math.PI, 0]}
+        fontSize={0.2}
+        color="#00d9ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.015}
+        outlineColor="#003d4d"
+        font="/fonts/Orbitron-Bold.ttf"
+      >
+        {label}
+        <meshBasicMaterial
+          attach="material"
+          color="#00d9ff"
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </Text>
+    </group>
+  );
+}
+
 function GooseWarningText({
   position,
   startMs,
@@ -296,11 +454,13 @@ function ControlTV({
   center,
   active,
   hintText = null,
+  badgeCount = 0,
   onClick,
 }: {
   center: THREE.Vector3;
   active: boolean;
   hintText?: string | null;
+  badgeCount?: number;
   onClick: (e: any) => void;
 }) {
   const baseY = center.y;
@@ -399,6 +559,41 @@ function ControlTV({
         >
           {active ? "CLOSE" : "CONTROLS"}
         </Text>
+
+        {badgeCount > 0 ? (
+          <group>
+            <mesh position={[0.33, 0.19, 0.056]}>
+              <circleGeometry args={[0.1, 20]} />
+              <meshBasicMaterial color={active ? "#7cffd8" : "#ffffff"} />
+            </mesh>
+            <Text
+              position={[0.33, 0.19, 0.057]}
+              fontSize={0.095}
+              color="#000000"
+              anchorX="center"
+              anchorY="middle"
+              fontWeight="bold"
+            >
+              ({badgeCount})
+            </Text>
+
+            <mesh position={[0.33, 0.19, -0.056]} rotation={[0, Math.PI, 0]}>
+              <circleGeometry args={[0.1, 20]} />
+              <meshBasicMaterial color={active ? "#7cffd8" : "#ffffff"} />
+            </mesh>
+            <Text
+              position={[0.33, 0.19, -0.057]}
+              rotation={[0, Math.PI, 0]}
+              fontSize={0.095}
+              color="#000000"
+              anchorX="center"
+              anchorY="middle"
+              fontWeight="bold"
+            >
+              ({badgeCount})
+            </Text>
+          </group>
+        ) : null}
       </group>
 
       {hintText ? (
@@ -2371,7 +2566,19 @@ function OutdoorChessChessMode({
     clickJoin,
     resultLabel,
     gooseBlocked,
+    drawOfferFrom,
+    rematch,
   } = chessGame;
+
+  const rematchRequestedBy: Side | null =
+    netState.result && rematch && rematch.w !== rematch.b
+      ? rematch.w
+        ? "w"
+        : "b"
+      : null;
+  const pendingRequestCount =
+    (drawOfferFrom && !netState.result && goosePhase !== "goose" ? 1 : 0) +
+    (rematchRequestedBy ? 1 : 0);
 
   const whiteTint = useMemo(() => {
     if (chessTheme === "chess_wood") return new THREE.Color("#e1c28b");
@@ -2783,6 +2990,7 @@ function OutdoorChessChessMode({
         center={controlPadCenter}
         active={controlsOpen}
         hintText={controlsHintOpen ? "Both seats occupied" : null}
+        badgeCount={pendingRequestCount}
         onClick={() => {
           console.log("[ControlTV Chess] Click detected", {
             isSeated,
@@ -2890,6 +3098,22 @@ function OutdoorChessChessMode({
           squareSize={squareSize}
         />
       )}
+
+      {drawOfferFrom && !netState.result && goosePhase !== "goose" ? (
+        <HolographicDrawOfferText
+          originVec={originVec}
+          boardSize={boardSize}
+          offeredBy={drawOfferFrom}
+        />
+      ) : null}
+
+      {rematchRequestedBy ? (
+        <HolographicRematchRequestText
+          originVec={originVec}
+          boardSize={boardSize}
+          requestedBy={rematchRequestedBy}
+        />
+      ) : null}
 
       {/* Startled squares handled by shader effect on pieces */}
 

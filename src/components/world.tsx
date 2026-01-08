@@ -2982,6 +2982,27 @@ type BoardControlsOpen = {
   clockRunning?: boolean;
   clockActive?: "w" | "b" | null;
   clockSnapshotAtMs?: number;
+
+  // Match UX (chess/goose only)
+  resultLabel?: string | null;
+  drawOfferFrom?: "w" | "b" | null;
+  rematch?: { w: boolean; b: boolean };
+  canResign?: boolean;
+  canOfferDraw?: boolean;
+  canAcceptDraw?: boolean;
+  canDeclineDraw?: boolean;
+  canCancelDraw?: boolean;
+  canRequestRematch?: boolean;
+  canDeclineRematch?: boolean;
+  canCancelRematch?: boolean;
+  onResign?: () => void;
+  onOfferDraw?: () => void;
+  onAcceptDraw?: () => void;
+  onDeclineDraw?: () => void;
+  onCancelDraw?: () => void;
+  onRequestRematch?: () => void;
+  onDeclineRematch?: () => void;
+  onCancelRematch?: () => void;
   chess4Variant?: "2v2" | "ffa";
   canSetChess4Variant?: boolean;
   onSetChess4Variant?: (variant: "2v2" | "ffa") => void;
@@ -3031,6 +3052,11 @@ type Board2dSync = {
   clockRunning?: boolean;
   clockActive?: "w" | "b" | null;
   clockSnapshotAtMs?: number;
+
+  // Match UX (chess/goose only)
+  resultLabel?: string | null;
+  drawOfferFrom?: "w" | "b" | null;
+  rematch?: { w: boolean; b: boolean };
   gooseSquare?: string;
   goosePhase?: "piece" | "goose";
   startledSquares?: string[];
@@ -5577,6 +5603,47 @@ export default function World({
     null
   );
 
+  const CHESS_START_PLACEMENT = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR";
+  const boardControlsInProgress = useMemo(() => {
+    if (!boardControls) return false;
+    if (boardControls.resultLabel) return false;
+
+    // Goose placement is an active gameplay phase even before the first move.
+    if (boardControls.goosePhase === "goose") return true;
+
+    const fen = boardControls.fen ?? "";
+    const placement = fen.split(" ")[0] ?? "";
+    const atStart = placement === CHESS_START_PLACEMENT;
+    return !!boardControls.clockRunning || !atStart;
+  }, [
+    boardControls,
+    boardControls?.fen,
+    boardControls?.clockRunning,
+    boardControls?.resultLabel,
+    boardControls?.goosePhase,
+  ]);
+
+  const [boardControlsSetupOpen, setBoardControlsSetupOpen] = useState(true);
+  const [boardControlsMatchOpen, setBoardControlsMatchOpen] = useState(true);
+
+  useEffect(() => {
+    if (!boardControls) return;
+    // Default: show match/actions when playing; show setup when not playing.
+    setBoardControlsSetupOpen(!boardControlsInProgress);
+    setBoardControlsMatchOpen(boardControlsInProgress);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardControls?.boardKey]);
+
+  useEffect(() => {
+    if (!boardControls) return;
+    // Intelligent collapse rules (but still user-toggleable after the fact).
+    if (boardControlsInProgress) {
+      setBoardControlsSetupOpen(false);
+    } else {
+      setBoardControlsMatchOpen(false);
+    }
+  }, [boardControlsInProgress, boardControls]);
+
   const [board2dByKey, setBoard2dByKey] = useState<Record<string, Board2dSync>>(
     {}
   );
@@ -6173,6 +6240,9 @@ export default function World({
           clockRunning: event.clockRunning ?? prev.clockRunning,
           clockActive: event.clockActive ?? prev.clockActive,
           clockSnapshotAtMs: event.clockSnapshotAtMs ?? prev.clockSnapshotAtMs,
+          resultLabel: event.resultLabel ?? prev.resultLabel,
+          drawOfferFrom: event.drawOfferFrom ?? prev.drawOfferFrom,
+          rematch: event.rematch ?? prev.rematch,
           checkersBoard: event.checkersBoard ?? prev.checkersBoard,
           onMove2d: event.onMove2d,
         };
@@ -6197,6 +6267,9 @@ export default function World({
         clockRunning: event.clockRunning,
         clockActive: event.clockActive,
         clockSnapshotAtMs: event.clockSnapshotAtMs,
+        resultLabel: event.resultLabel,
+        drawOfferFrom: event.drawOfferFrom,
+        rematch: event.rematch,
         gooseSquare: event.gooseSquare,
         goosePhase: event.goosePhase,
         startledSquares: event.startledSquares,
@@ -8175,495 +8248,831 @@ export default function World({
                   <div
                     style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}
                   >
-                    {/* Game Mode Section */}
-                    <div style={{ marginBottom: 24 }}>
-                      <div
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                      }}
+                    >
+                      <details
+                        open={boardControlsMatchOpen}
+                        onToggle={(e) => {
+                          setBoardControlsMatchOpen(
+                            (e.currentTarget as HTMLDetailsElement).open
+                          );
+                        }}
                         style={{
-                          fontSize: 13,
-                          fontWeight: 700,
-                          marginBottom: 12,
-                          opacity: 0.75,
-                          textTransform: "uppercase",
-                          letterSpacing: 0.5,
+                          borderRadius: 14,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.25)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.22)"
+                              : "rgba(255,255,255,0.55)",
+                          padding: "12px 14px",
                         }}
                       >
-                        Game Mode
-                      </div>
+                        <summary
+                          style={{
+                            cursor: "pointer",
+                            listStyle: "none",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            fontWeight: 800,
+                            fontSize: 14,
+                          }}
+                        >
+                          <span>Match</span>
+                          <span style={{ opacity: 0.7 }}>
+                            {boardControlsMatchOpen ? "–" : "+"}
+                          </span>
+                        </summary>
 
-                      {isChess4Way ? (
                         <div
                           style={{
-                            display: "grid",
-                            gridTemplateColumns:
-                              "repeat(auto-fit, minmax(140px, 1fr))",
+                            marginTop: 12,
+                            display: "flex",
+                            flexDirection: "column",
                             gap: 10,
                           }}
                         >
-                          {(
-                            [
-                              { key: "2v2", label: "2v2" },
-                              { key: "ffa", label: "FFA" },
-                            ] as const
-                          ).map((v) => {
-                            const selected =
-                              boardControls.chess4Variant === v.key;
-                            const canClick =
-                              !!boardControls.onSetChess4Variant &&
-                              (boardControls.canSetChess4Variant ?? false);
-                            const borderSelected =
-                              boardControls.lobby === "scifi"
-                                ? "2px solid rgba(0,255,255,0.6)"
-                                : "2px solid rgba(100,100,255,0.5)";
-                            const borderIdle =
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(0,255,255,0.25)"
-                                : "1px solid rgba(0,0,0,0.12)";
-                            const bgSelected =
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,255,255,0.15)"
-                                : "rgba(100,100,255,0.12)";
-                            const bgIdle =
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,0,0,0.25)"
-                                : "rgba(255,255,255,0.65)";
+                          {boardControls.resultLabel ? (
+                            <div
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: 12,
+                                border:
+                                  boardControls.lobby === "scifi"
+                                    ? "1px solid rgba(0,255,255,0.35)"
+                                    : "1px solid rgba(0,0,0,0.12)",
+                                background:
+                                  boardControls.lobby === "scifi"
+                                    ? "rgba(0,0,0,0.28)"
+                                    : "rgba(255,255,255,0.75)",
+                                fontSize: 13,
+                                fontWeight: 800,
+                              }}
+                            >
+                              Result: {boardControls.resultLabel}
+                            </div>
+                          ) : null}
 
-                            return (
+                          {boardControls.drawOfferFrom ? (
+                            <div style={{ fontSize: 12, fontWeight: 700 }}>
+                              Draw offered by{" "}
+                              {boardControls.drawOfferFrom === "w"
+                                ? "White"
+                                : "Black"}
+                            </div>
+                          ) : null}
+
+                          {boardControls.rematch ? (
+                            <div style={{ fontSize: 12, fontWeight: 700 }}>
+                              Rematch: White{" "}
+                              {boardControls.rematch.w ? "ready" : "waiting"} ·
+                              Black{" "}
+                              {boardControls.rematch.b ? "ready" : "waiting"}
+                            </div>
+                          ) : null}
+
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                              gap: 10,
+                            }}
+                          >
+                            {boardControls.onOfferDraw &&
+                            (boardControls.canOfferDraw ?? false) ? (
                               <button
-                                key={v.key}
-                                onClick={() => {
-                                  if (!canClick) return;
-                                  boardControls.onSetChess4Variant?.(v.key);
-                                  setBoardControls(null);
-                                }}
-                                disabled={!canClick}
+                                onClick={boardControls.onOfferDraw}
                                 style={{
                                   padding: "14px",
                                   borderRadius: 12,
-                                  border: selected
-                                    ? borderSelected
-                                    : borderIdle,
-                                  background: selected ? bgSelected : bgIdle,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
                                   color: "inherit",
-                                  cursor: canClick ? "pointer" : "not-allowed",
-                                  fontWeight: selected ? 800 : 600,
-                                  fontSize: 14,
-                                  transition: "all 0.2s",
-                                  width: "100%",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  gap: 6,
-                                  opacity: canClick ? 1 : 0.4,
+                                  cursor: "pointer",
+                                  fontWeight: 700,
                                 }}
                               >
-                                {v.label}
+                                Request Draw
                               </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
+                            ) : null}
 
-                      {isChess4Way ? (
-                        boardControls.chess4CanClaimWin ? (
-                          <div style={{ marginTop: 14 }}>
+                            {boardControls.onAcceptDraw &&
+                            (boardControls.canAcceptDraw ?? false) ? (
+                              <button
+                                onClick={boardControls.onAcceptDraw}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,180,0.35)"
+                                      : "1px solid rgba(0,120,90,0.35)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,50,40,0.4)"
+                                      : "rgba(210,255,245,0.85)",
+                                  color:
+                                    boardControls.lobby === "scifi"
+                                      ? "#7cffd8"
+                                      : "#0d2a32",
+                                  cursor: "pointer",
+                                  fontWeight: 800,
+                                }}
+                              >
+                                Accept Draw
+                              </button>
+                            ) : null}
+
+                            {boardControls.onDeclineDraw &&
+                            (boardControls.canDeclineDraw ?? false) ? (
+                              <button
+                                onClick={boardControls.onDeclineDraw}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(255,90,90,0.5)"
+                                      : "1px solid rgba(200,40,40,0.35)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(50,0,0,0.45)"
+                                      : "rgba(255,230,230,0.8)",
+                                  color:
+                                    boardControls.lobby === "scifi"
+                                      ? "#ffb3b3"
+                                      : "#5c0f0f",
+                                  cursor: "pointer",
+                                  fontWeight: 800,
+                                }}
+                              >
+                                Decline Draw
+                              </button>
+                            ) : null}
+
+                            {boardControls.onCancelDraw &&
+                            (boardControls.canCancelDraw ?? false) ? (
+                              <button
+                                onClick={boardControls.onCancelDraw}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: "pointer",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Cancel Draw
+                              </button>
+                            ) : null}
+
+                            {boardControls.onRequestRematch &&
+                            (boardControls.canRequestRematch ?? false) ? (
+                              <button
+                                onClick={boardControls.onRequestRematch}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: "pointer",
+                                  fontWeight: 800,
+                                }}
+                              >
+                                {(() => {
+                                  const my = boardControls.mySide;
+                                  const r = boardControls.rematch;
+                                  const otherRequested =
+                                    !!my &&
+                                    !!r &&
+                                    r[my === "w" ? "b" : "w"] === true &&
+                                    r[my] !== true;
+                                  return otherRequested
+                                    ? "Accept Rematch"
+                                    : "Request Rematch";
+                                })()}
+                              </button>
+                            ) : null}
+
+                            {boardControls.onDeclineRematch &&
+                            (boardControls.canDeclineRematch ?? false) ? (
+                              <button
+                                onClick={boardControls.onDeclineRematch}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(255,90,90,0.5)"
+                                      : "1px solid rgba(200,40,40,0.35)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(50,0,0,0.45)"
+                                      : "rgba(255,230,230,0.8)",
+                                  color:
+                                    boardControls.lobby === "scifi"
+                                      ? "#ffb3b3"
+                                      : "#5c0f0f",
+                                  cursor: "pointer",
+                                  fontWeight: 800,
+                                }}
+                              >
+                                Decline Rematch
+                              </button>
+                            ) : null}
+
+                            {boardControls.onCancelRematch &&
+                            (boardControls.canCancelRematch ?? false) ? (
+                              <button
+                                onClick={boardControls.onCancelRematch}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: "pointer",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Cancel Rematch
+                              </button>
+                            ) : null}
+
+                            {boardControls.onResign &&
+                            (boardControls.canResign ?? false) ? (
+                              <button
+                                onClick={boardControls.onResign}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(255,90,90,0.5)"
+                                      : "1px solid rgba(200,40,40,0.35)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(50,0,0,0.45)"
+                                      : "rgba(255,230,230,0.8)",
+                                  color:
+                                    boardControls.lobby === "scifi"
+                                      ? "#ffb3b3"
+                                      : "#5c0f0f",
+                                  cursor: "pointer",
+                                  fontWeight: 900,
+                                }}
+                              >
+                                Resign
+                              </button>
+                            ) : null}
+                          </div>
+
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                              gap: 10,
+                            }}
+                          >
                             <button
                               onClick={() => {
-                                boardControls.onChess4ClaimWin?.();
+                                boardControls.onCenter();
                                 setBoardControls(null);
                               }}
+                              disabled={!boardControls.canCenter}
                               style={{
-                                width: "100%",
                                 padding: "14px",
                                 borderRadius: 12,
                                 border:
                                   boardControls.lobby === "scifi"
-                                    ? "2px solid rgba(0,255,255,0.45)"
-                                    : "2px solid rgba(100,100,255,0.35)",
+                                    ? "1px solid rgba(0,255,180,0.35)"
+                                    : "1px solid rgba(0,120,90,0.35)",
                                 background:
                                   boardControls.lobby === "scifi"
-                                    ? "linear-gradient(135deg, rgba(0,255,255,0.18), rgba(0,200,255,0.12))"
-                                    : "linear-gradient(135deg, rgba(100,100,255,0.14), rgba(150,150,255,0.09))",
-                                color: "inherit",
-                                cursor: "pointer",
-                                fontWeight: 800,
+                                    ? "rgba(0,50,40,0.4)"
+                                    : "rgba(210,255,245,0.85)",
+                                color:
+                                  boardControls.lobby === "scifi"
+                                    ? "#7cffd8"
+                                    : "#0d2a32",
+                                cursor: boardControls.canCenter
+                                  ? "pointer"
+                                  : "not-allowed",
+                                opacity: boardControls.canCenter ? 1 : 0.4,
+                                fontWeight: 600,
                                 fontSize: 14,
-                                letterSpacing: 0.4,
                               }}
                             >
-                              Claim Win
+                              🎯 Center Camera
+                            </button>
+                            <button
+                              onClick={boardControls.onReset}
+                              disabled={!boardControls.canReset}
+                              style={{
+                                padding: "14px",
+                                borderRadius: 12,
+                                border:
+                                  boardControls.lobby === "scifi"
+                                    ? "1px solid rgba(255,90,90,0.5)"
+                                    : "1px solid rgba(200,40,40,0.35)",
+                                background:
+                                  boardControls.lobby === "scifi"
+                                    ? "rgba(50,0,0,0.45)"
+                                    : "rgba(255,230,230,0.8)",
+                                color:
+                                  boardControls.lobby === "scifi"
+                                    ? "#ffb3b3"
+                                    : "#5c0f0f",
+                                cursor: boardControls.canReset
+                                  ? "pointer"
+                                  : "not-allowed",
+                                opacity: boardControls.canReset ? 1 : 0.4,
+                                fontWeight: 600,
+                                fontSize: 14,
+                              }}
+                            >
+                              ↺ Reset Game
                             </button>
                           </div>
-                        ) : null
-                      ) : (
-                        <>
-                          {/*
-                            Unification note:
-                            - This list is rendered from `BOARD_MODE_DEFS` (see `src/lib/boardModes.ts`).
-                            - Adding a new mode should only require adding it to the registry.
-                            - The “Open 2D Board” button is intentionally restricted to chess-engine modes
-                              (`engineForMode(mode) === "chess"`).
-                          */}
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns:
-                                "repeat(auto-fit, minmax(140px, 1fr))",
-                              gap: 10,
-                            }}
-                          >
-                            {BOARD_MODE_DEFS.map((def) => {
-                              const selected = mode === def.key;
-                              const isGoose = def.key === "goose";
-                              const borderSelected = isGoose
-                                ? boardControls.lobby === "scifi"
-                                  ? "2px solid rgba(255,200,0,0.6)"
-                                  : "2px solid rgba(255,180,0,0.5)"
-                                : boardControls.lobby === "scifi"
-                                ? "2px solid rgba(0,255,255,0.6)"
-                                : "2px solid rgba(100,100,255,0.5)";
-                              const borderIdle =
-                                boardControls.lobby === "scifi"
-                                  ? "1px solid rgba(0,255,255,0.25)"
-                                  : "1px solid rgba(0,0,0,0.12)";
-                              const bgSelected = isGoose
-                                ? boardControls.lobby === "scifi"
-                                  ? "rgba(255,200,0,0.15)"
-                                  : "rgba(255,180,0,0.12)"
-                                : boardControls.lobby === "scifi"
-                                ? "rgba(0,255,255,0.15)"
-                                : "rgba(100,100,255,0.12)";
-                              const bgIdle =
-                                boardControls.lobby === "scifi"
-                                  ? "rgba(0,0,0,0.25)"
-                                  : "rgba(255,255,255,0.65)";
+                        </div>
+                      </details>
 
-                              const button = (
-                                <button
-                                  key={def.key}
-                                  onClick={() => {
-                                    setBoardMode(
-                                      boardControls.boardKey,
-                                      def.key
-                                    );
-                                    setJoinedBoardKey((prev) =>
-                                      prev === boardControls.boardKey
-                                        ? null
-                                        : prev
-                                    );
-                                    setPendingJoinBoardKey(null);
-                                    setBoardControls(null);
-                                  }}
-                                  style={{
-                                    padding: "14px",
-                                    borderRadius: 12,
-                                    border: selected
-                                      ? borderSelected
-                                      : borderIdle,
-                                    background: selected ? bgSelected : bgIdle,
-                                    color: "inherit",
-                                    cursor: "pointer",
-                                    fontWeight: selected ? 800 : 600,
-                                    fontSize: 14,
-                                    transition: "all 0.2s",
-                                    width: "100%",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    gap: 6,
-                                  }}
-                                >
-                                  {def.icon} {def.label}
-                                </button>
-                              );
+                      <details
+                        open={boardControlsSetupOpen}
+                        onToggle={(e) => {
+                          setBoardControlsSetupOpen(
+                            (e.currentTarget as HTMLDetailsElement).open
+                          );
+                        }}
+                        style={{
+                          borderRadius: 14,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.25)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.22)"
+                              : "rgba(255,255,255,0.55)",
+                          padding: "12px 14px",
+                        }}
+                      >
+                        <summary
+                          style={{
+                            cursor: "pointer",
+                            listStyle: "none",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            fontWeight: 800,
+                            fontSize: 14,
+                          }}
+                        >
+                          <span>Setup</span>
+                          <span style={{ opacity: 0.7 }}>
+                            {boardControlsSetupOpen ? "–" : "+"}
+                          </span>
+                        </summary>
 
-                              if (def.key !== "goose") return button;
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ marginBottom: 24 }}>
+                            {isChess4Way ? (
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns:
+                                    "repeat(auto-fit, minmax(140px, 1fr))",
+                                  gap: 10,
+                                }}
+                              >
+                                {(
+                                  [
+                                    { key: "2v2", label: "2v2" },
+                                    { key: "ffa", label: "FFA" },
+                                  ] as const
+                                ).map((v) => {
+                                  const selected =
+                                    boardControls.chess4Variant === v.key;
+                                  const canClick =
+                                    !!boardControls.onSetChess4Variant &&
+                                    (boardControls.canSetChess4Variant ??
+                                      false);
+                                  const borderSelected =
+                                    boardControls.lobby === "scifi"
+                                      ? "2px solid rgba(0,255,255,0.6)"
+                                      : "2px solid rgba(100,100,255,0.5)";
+                                  const borderIdle =
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.25)"
+                                      : "1px solid rgba(0,0,0,0.12)";
+                                  const bgSelected =
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,255,255,0.15)"
+                                      : "rgba(100,100,255,0.12)";
+                                  const bgIdle =
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.25)"
+                                      : "rgba(255,255,255,0.65)";
 
-                              return (
-                                <div
-                                  key={def.key}
-                                  style={{ position: "relative" }}
-                                >
-                                  {button}
+                                  return (
+                                    <button
+                                      key={v.key}
+                                      onClick={() => {
+                                        if (!canClick) return;
+                                        boardControls.onSetChess4Variant?.(
+                                          v.key
+                                        );
+                                        setBoardControls(null);
+                                      }}
+                                      disabled={!canClick}
+                                      style={{
+                                        padding: "14px",
+                                        borderRadius: 12,
+                                        border: selected
+                                          ? borderSelected
+                                          : borderIdle,
+                                        background: selected
+                                          ? bgSelected
+                                          : bgIdle,
+                                        color: "inherit",
+                                        cursor: canClick
+                                          ? "pointer"
+                                          : "not-allowed",
+                                        fontWeight: selected ? 800 : 600,
+                                        fontSize: 14,
+                                        transition: "all 0.2s",
+                                        width: "100%",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        gap: 6,
+                                        opacity: canClick ? 1 : 0.4,
+                                      }}
+                                    >
+                                      {v.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+
+                            {isChess4Way ? (
+                              boardControls.chess4CanClaimWin ? (
+                                <div style={{ marginTop: 14 }}>
                                   <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setShowGooseInfo(true);
+                                    onClick={() => {
+                                      boardControls.onChess4ClaimWin?.();
+                                      setBoardControls(null);
                                     }}
                                     style={{
-                                      position: "absolute",
-                                      top: 4,
-                                      right: 4,
-                                      border: "none",
-                                      background: "rgba(0,0,0,0.2)",
+                                      width: "100%",
+                                      padding: "14px",
+                                      borderRadius: 12,
+                                      border:
+                                        boardControls.lobby === "scifi"
+                                          ? "2px solid rgba(0,255,255,0.45)"
+                                          : "2px solid rgba(100,100,255,0.35)",
+                                      background:
+                                        boardControls.lobby === "scifi"
+                                          ? "linear-gradient(135deg, rgba(0,255,255,0.18), rgba(0,200,255,0.12))"
+                                          : "linear-gradient(135deg, rgba(100,100,255,0.14), rgba(150,150,255,0.09))",
                                       color: "inherit",
-                                      width: 18,
-                                      height: 18,
-                                      borderRadius: "50%",
                                       cursor: "pointer",
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      display: "flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
+                                      fontWeight: 800,
+                                      fontSize: 14,
+                                      letterSpacing: 0.4,
                                     }}
-                                    title="Learn about Goose Chess"
                                   >
-                                    ?
+                                    Claim Win
                                   </button>
                                 </div>
-                              );
-                            })}
+                              ) : null
+                            ) : (
+                              <>
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns:
+                                      "repeat(auto-fit, minmax(140px, 1fr))",
+                                    gap: 10,
+                                  }}
+                                >
+                                  {BOARD_MODE_DEFS.map((def) => {
+                                    const selected = mode === def.key;
+                                    const isGoose = def.key === "goose";
+                                    const borderSelected = isGoose
+                                      ? boardControls.lobby === "scifi"
+                                        ? "2px solid rgba(255,200,0,0.6)"
+                                        : "2px solid rgba(255,180,0,0.5)"
+                                      : boardControls.lobby === "scifi"
+                                      ? "2px solid rgba(0,255,255,0.6)"
+                                      : "2px solid rgba(100,100,255,0.5)";
+                                    const borderIdle =
+                                      boardControls.lobby === "scifi"
+                                        ? "1px solid rgba(0,255,255,0.25)"
+                                        : "1px solid rgba(0,0,0,0.12)";
+                                    const bgSelected = isGoose
+                                      ? boardControls.lobby === "scifi"
+                                        ? "rgba(255,200,0,0.15)"
+                                        : "rgba(255,180,0,0.12)"
+                                      : boardControls.lobby === "scifi"
+                                      ? "rgba(0,255,255,0.15)"
+                                      : "rgba(100,100,255,0.12)";
+                                    const bgIdle =
+                                      boardControls.lobby === "scifi"
+                                        ? "rgba(0,0,0,0.25)"
+                                        : "rgba(255,255,255,0.65)";
+
+                                    const button = (
+                                      <button
+                                        key={def.key}
+                                        onClick={() => {
+                                          setBoardMode(
+                                            boardControls.boardKey,
+                                            def.key
+                                          );
+                                          setJoinedBoardKey((prev) =>
+                                            prev === boardControls.boardKey
+                                              ? null
+                                              : prev
+                                          );
+                                          setPendingJoinBoardKey(null);
+                                          setBoardControls(null);
+                                        }}
+                                        style={{
+                                          padding: "14px",
+                                          borderRadius: 12,
+                                          border: selected
+                                            ? borderSelected
+                                            : borderIdle,
+                                          background: selected
+                                            ? bgSelected
+                                            : bgIdle,
+                                          color: "inherit",
+                                          cursor: "pointer",
+                                          fontWeight: selected ? 800 : 600,
+                                          fontSize: 14,
+                                          transition: "all 0.2s",
+                                          width: "100%",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          justifyContent: "center",
+                                          gap: 6,
+                                        }}
+                                      >
+                                        {def.icon} {def.label}
+                                      </button>
+                                    );
+
+                                    if (def.key !== "goose") return button;
+
+                                    return (
+                                      <div
+                                        key={def.key}
+                                        style={{ position: "relative" }}
+                                      >
+                                        {button}
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setShowGooseInfo(true);
+                                          }}
+                                          style={{
+                                            position: "absolute",
+                                            top: 4,
+                                            right: 4,
+                                            border: "none",
+                                            background: "rgba(0,0,0,0.2)",
+                                            color: "inherit",
+                                            width: 18,
+                                            height: 18,
+                                            borderRadius: "50%",
+                                            cursor: "pointer",
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                          }}
+                                          title="Learn about Goose Chess"
+                                        >
+                                          ?
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 700,
+                                marginTop: 16,
+                                marginBottom: 8,
+                                opacity: 0.65,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.5,
+                              }}
+                            >
+                              Time
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 700,
+                                marginBottom: 10,
+                                opacity: 0.75,
+                              }}
+                            >
+                              Current: {boardControls.timeMinutes}min
+                            </div>
+                            <div
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns:
+                                  "repeat(2, minmax(0, 1fr))",
+                                gap: 10,
+                              }}
+                            >
+                              <button
+                                onClick={boardControls.onDec}
+                                disabled={!boardControls.canDec}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: boardControls.canDec
+                                    ? "pointer"
+                                    : "not-allowed",
+                                  opacity: boardControls.canDec ? 1 : 0.4,
+                                  fontWeight: 600,
+                                  fontSize: 14,
+                                }}
+                              >
+                                ⏱ Decrease Time
+                              </button>
+                              <button
+                                onClick={boardControls.onInc}
+                                disabled={!boardControls.canInc}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: boardControls.canInc
+                                    ? "pointer"
+                                    : "not-allowed",
+                                  opacity: boardControls.canInc ? 1 : 0.4,
+                                  fontWeight: 600,
+                                  fontSize: 14,
+                                }}
+                              >
+                                ⏱ Increase Time
+                              </button>
+                            </div>
+
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 700,
+                                marginTop: 16,
+                                marginBottom: 8,
+                                opacity: 0.65,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.5,
+                              }}
+                            >
+                              Increment
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 700,
+                                marginBottom: 10,
+                                opacity: 0.75,
+                              }}
+                            >
+                              Current: {boardControls.incrementSeconds}s
+                            </div>
+                            <div
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns:
+                                  "repeat(2, minmax(0, 1fr))",
+                                gap: 10,
+                              }}
+                            >
+                              <button
+                                onClick={boardControls.onDecIncrement}
+                                disabled={!boardControls.canDecIncrement}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: boardControls.canDecIncrement
+                                    ? "pointer"
+                                    : "not-allowed",
+                                  opacity: boardControls.canDecIncrement
+                                    ? 1
+                                    : 0.4,
+                                  fontWeight: 600,
+                                  fontSize: 14,
+                                }}
+                              >
+                                ➖ Decrease
+                              </button>
+                              <button
+                                onClick={boardControls.onIncIncrement}
+                                disabled={!boardControls.canIncIncrement}
+                                style={{
+                                  padding: "14px",
+                                  borderRadius: 12,
+                                  border:
+                                    boardControls.lobby === "scifi"
+                                      ? "1px solid rgba(0,255,255,0.35)"
+                                      : "1px solid rgba(0,0,0,0.12)",
+                                  background:
+                                    boardControls.lobby === "scifi"
+                                      ? "rgba(0,0,0,0.3)"
+                                      : "rgba(255,255,255,0.8)",
+                                  color: "inherit",
+                                  cursor: boardControls.canIncIncrement
+                                    ? "pointer"
+                                    : "not-allowed",
+                                  opacity: boardControls.canIncIncrement
+                                    ? 1
+                                    : 0.4,
+                                  fontWeight: 600,
+                                  fontSize: 14,
+                                }}
+                              >
+                                ➕ Increase
+                              </button>
+                            </div>
                           </div>
-                        </>
-                      )}
-
-                      <div
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 700,
-                          marginTop: 16,
-                          marginBottom: 8,
-                          opacity: 0.65,
-                          textTransform: "uppercase",
-                          letterSpacing: 0.5,
-                        }}
-                      >
-                        Time
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 700,
-                          marginBottom: 10,
-                          opacity: 0.75,
-                        }}
-                      >
-                        Current: {boardControls.timeMinutes}min
-                      </div>
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                          gap: 10,
-                        }}
-                      >
-                        <button
-                          onClick={boardControls.onDec}
-                          disabled={!boardControls.canDec}
-                          style={{
-                            padding: "14px",
-                            borderRadius: 12,
-                            border:
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(0,255,255,0.35)"
-                                : "1px solid rgba(0,0,0,0.12)",
-                            background:
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,0,0,0.3)"
-                                : "rgba(255,255,255,0.8)",
-                            color: "inherit",
-                            cursor: boardControls.canDec
-                              ? "pointer"
-                              : "not-allowed",
-                            opacity: boardControls.canDec ? 1 : 0.4,
-                            fontWeight: 600,
-                            fontSize: 14,
-                          }}
-                        >
-                          ⏱ Decrease Time
-                        </button>
-                        <button
-                          onClick={boardControls.onInc}
-                          disabled={!boardControls.canInc}
-                          style={{
-                            padding: "14px",
-                            borderRadius: 12,
-                            border:
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(0,255,255,0.35)"
-                                : "1px solid rgba(0,0,0,0.12)",
-                            background:
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,0,0,0.3)"
-                                : "rgba(255,255,255,0.8)",
-                            color: "inherit",
-                            cursor: boardControls.canInc
-                              ? "pointer"
-                              : "not-allowed",
-                            opacity: boardControls.canInc ? 1 : 0.4,
-                            fontWeight: 600,
-                            fontSize: 14,
-                          }}
-                        >
-                          ⏱ Increase Time
-                        </button>
-                      </div>
-
-                      <div
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 700,
-                          marginTop: 16,
-                          marginBottom: 8,
-                          opacity: 0.65,
-                          textTransform: "uppercase",
-                          letterSpacing: 0.5,
-                        }}
-                      >
-                        Increment
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 700,
-                          marginBottom: 10,
-                          opacity: 0.75,
-                        }}
-                      >
-                        Current: {boardControls.incrementSeconds}s
-                      </div>
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                          gap: 10,
-                        }}
-                      >
-                        <button
-                          onClick={boardControls.onDecIncrement}
-                          disabled={!boardControls.canDecIncrement}
-                          style={{
-                            padding: "14px",
-                            borderRadius: 12,
-                            border:
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(0,255,255,0.35)"
-                                : "1px solid rgba(0,0,0,0.12)",
-                            background:
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,0,0,0.3)"
-                                : "rgba(255,255,255,0.8)",
-                            color: "inherit",
-                            cursor: boardControls.canDecIncrement
-                              ? "pointer"
-                              : "not-allowed",
-                            opacity: boardControls.canDecIncrement ? 1 : 0.4,
-                            fontWeight: 600,
-                            fontSize: 14,
-                          }}
-                        >
-                          ➖ Decrease
-                        </button>
-                        <button
-                          onClick={boardControls.onIncIncrement}
-                          disabled={!boardControls.canIncIncrement}
-                          style={{
-                            padding: "14px",
-                            borderRadius: 12,
-                            border:
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(0,255,255,0.35)"
-                                : "1px solid rgba(0,0,0,0.12)",
-                            background:
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,0,0,0.3)"
-                                : "rgba(255,255,255,0.8)",
-                            color: "inherit",
-                            cursor: boardControls.canIncIncrement
-                              ? "pointer"
-                              : "not-allowed",
-                            opacity: boardControls.canIncIncrement ? 1 : 0.4,
-                            fontWeight: 600,
-                            fontSize: 14,
-                          }}
-                        >
-                          ➕ Increase
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Actions Section */}
-                    <div style={{ marginBottom: 20 }}>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 700,
-                          marginBottom: 12,
-                          opacity: 0.75,
-                          textTransform: "uppercase",
-                          letterSpacing: 0.5,
-                        }}
-                      >
-                        Actions
-                      </div>
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                          gap: 10,
-                        }}
-                      >
-                        <button
-                          onClick={() => {
-                            boardControls.onCenter();
-                            setBoardControls(null);
-                          }}
-                          disabled={!boardControls.canCenter}
-                          style={{
-                            padding: "14px",
-                            borderRadius: 12,
-                            border:
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(0,255,180,0.35)"
-                                : "1px solid rgba(0,120,90,0.35)",
-                            background:
-                              boardControls.lobby === "scifi"
-                                ? "rgba(0,50,40,0.4)"
-                                : "rgba(210,255,245,0.85)",
-                            color:
-                              boardControls.lobby === "scifi"
-                                ? "#7cffd8"
-                                : "#0d2a32",
-                            cursor: boardControls.canCenter
-                              ? "pointer"
-                              : "not-allowed",
-                            opacity: boardControls.canCenter ? 1 : 0.4,
-                            fontWeight: 600,
-                            fontSize: 14,
-                          }}
-                        >
-                          🎯 Center Camera
-                        </button>
-                        <button
-                          onClick={boardControls.onReset}
-                          disabled={!boardControls.canReset}
-                          style={{
-                            padding: "14px",
-                            borderRadius: 12,
-                            border:
-                              boardControls.lobby === "scifi"
-                                ? "1px solid rgba(255,90,90,0.5)"
-                                : "1px solid rgba(200,40,40,0.35)",
-                            background:
-                              boardControls.lobby === "scifi"
-                                ? "rgba(50,0,0,0.45)"
-                                : "rgba(255,230,230,0.8)",
-                            color:
-                              boardControls.lobby === "scifi"
-                                ? "#ffb3b3"
-                                : "#5c0f0f",
-                            cursor: boardControls.canReset
-                              ? "pointer"
-                              : "not-allowed",
-                            opacity: boardControls.canReset ? 1 : 0.4,
-                            fontWeight: 600,
-                            fontSize: 14,
-                          }}
-                        >
-                          ↺ Reset Game
-                        </button>
-                      </div>
+                        </div>
+                      </details>
                     </div>
                   </div>
                 </>
