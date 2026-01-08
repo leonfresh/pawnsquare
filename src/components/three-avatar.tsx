@@ -42,6 +42,17 @@ function getCachedAvatarData(url: string): Promise<Uint8Array> {
   return p;
 }
 
+export function preloadAvatarUrl(url: string) {
+  // Start network fetch (and animation preload) early so shop previews feel instant.
+  // Safe to call multiple times; internal caches dedupe.
+  void getCachedAvatarData(url).catch(() => {
+    // ignore
+  });
+  void ensureAnimationsLoaded().catch(() => {
+    // ignore
+  });
+}
+
 type EnqueuedTask<T> = {
   run: () => Promise<T>;
   resolve: (value: T) => void;

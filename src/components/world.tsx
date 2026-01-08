@@ -31,6 +31,7 @@ import { OutdoorChess4P } from "@/components/outdoor-chess-4way";
 import { VrmPreview } from "@/components/vrm-preview";
 import { CoinIcon } from "@/components/coin-icon";
 import { ChessSetPreview } from "@/components/chess-set-preview";
+import { preloadAvatarUrl } from "@/components/three-avatar";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import type { User } from "@supabase/supabase-js";
 import { BOARD_MODE_DEFS, engineForMode } from "@/lib/boardModes";
@@ -2977,6 +2978,10 @@ type BoardControlsOpen = {
   turn: "w" | "b";
   boardOrientation: "white" | "black";
   canMove2d: boolean;
+  clockRemainingMs?: { w: number; b: number };
+  clockRunning?: boolean;
+  clockActive?: "w" | "b" | null;
+  clockSnapshotAtMs?: number;
   chess4Variant?: "2v2" | "ffa";
   canSetChess4Variant?: boolean;
   onSetChess4Variant?: (variant: "2v2" | "ffa") => void;
@@ -3022,6 +3027,10 @@ type Board2dSync = {
   turn: "w" | "b";
   boardOrientation: "white" | "black";
   canMove2d: boolean;
+  clockRemainingMs?: { w: number; b: number };
+  clockRunning?: boolean;
+  clockActive?: "w" | "b" | null;
+  clockSnapshotAtMs?: number;
   gooseSquare?: string;
   goosePhase?: "piece" | "goose";
   startledSquares?: string[];
@@ -3039,6 +3048,16 @@ type BoardControlsEvent =
   | BoardControlsOpen
   | Board2dSync
   | { type: "close"; boardKey?: string };
+
+function formatClockMs(ms: number) {
+  const safe = Math.max(0, Math.floor(ms));
+  const totalSec = Math.floor(safe / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
 
 function toLegacyOwnedAvatarsValues(ownedItemIds: string[]): string[] {
   const out: string[] = [];
@@ -3346,11 +3365,19 @@ function getTvBoardRectPx(W: number, H: number) {
     w: W - pad * 2,
     h: H - pad * 2,
   };
-  const boardSize = Math.min(inner.w, inner.h) - 12;
-  const boardX = inner.x + (inner.w - boardSize) / 2;
+  // Allocate a right-hand column for clocks.
+  const clockW = 240;
+  const gap = 18;
+  const boardAvailW = inner.w - clockW - gap;
+  const boardSize = Math.min(boardAvailW, inner.h) - 12;
+  const totalW = boardSize + gap + clockW;
+  const boardX = inner.x + (inner.w - totalW) / 2;
   // Slightly bias down to leave room for the header badge.
   const boardY = inner.y + (inner.h - boardSize) / 2 + 8;
-  return { inner, boardX, boardY, boardSize };
+  const clockX = boardX + boardSize + gap;
+  const clockY = boardY;
+  const clockH = boardSize;
+  return { inner, boardX, boardY, boardSize, clockX, clockY, clockW, clockH };
 }
 
 const TV_SPACE_VERTEX = /* glsl */ `
@@ -3716,6 +3743,7 @@ const InWorldTv = memo(function InWorldTv({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [imageVersion, setImageVersion] = useState(0);
+  const [clockVersion, setClockVersion] = useState(0);
 
   const canvas = useMemo(() => {
     const c = document.createElement("canvas");
@@ -3812,6 +3840,13 @@ const InWorldTv = memo(function InWorldTv({
   }, [sync?.fen, screen.boardKey]);
 
   useEffect(() => {
+    // Live clock ticking: redraw the TV canvas while running.
+    if (!sync?.clockRunning || !sync.clockRemainingMs) return;
+    const id = window.setInterval(() => setClockVersion((v) => v + 1), 250);
+    return () => window.clearInterval(id);
+  }, [sync?.clockRunning, sync?.clockRemainingMs]);
+
+  useEffect(() => {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -3820,7 +3855,8 @@ const InWorldTv = memo(function InWorldTv({
     ctx.clearRect(0, 0, W, H);
 
     // Transparent canvas; the background is handled by the space shader mesh.
-    const { inner, boardX, boardY, boardSize } = getTvBoardRectPx(W, H);
+    const { inner, boardX, boardY, boardSize, clockX, clockY, clockW, clockH } =
+      getTvBoardRectPx(W, H);
 
     // Header badge
     ctx.save();
@@ -3884,6 +3920,90 @@ const InWorldTv = memo(function InWorldTv({
       ctx.textBaseline = "alphabetic";
       texture.needsUpdate = true;
       return;
+    }
+
+    // Right-side clocks panel (chess/goose only)
+    if (
+      (engine === "chess" || engine === "checkers") &&
+      sync.clockRemainingMs
+    ) {
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(clockX, clockY, clockW, clockH, 18);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      const boxPad = 10;
+      const clockGap = 10;
+      const desiredBoxH = 108;
+      const boxH = Math.min(desiredBoxH, (clockH - boxPad * 2 - clockGap) / 2);
+      const stackH = boxH * 2 + clockGap;
+      const stackY = clockY + boxPad + (clockH - boxPad * 2 - stackH) / 2;
+
+      const nowMs = Date.now();
+      const activeSide: "w" | "b" =
+        (sync.clockActive ?? sync.turn) === "b" ? "b" : "w";
+      const elapsedMs =
+        sync.clockRunning && typeof sync.clockSnapshotAtMs === "number"
+          ? Math.max(0, nowMs - sync.clockSnapshotAtMs)
+          : 0;
+
+      const remainingFor = (side: "w" | "b") => {
+        const baseMs = sync.clockRemainingMs?.[side] ?? 0;
+        if (!sync.clockRunning) return baseMs;
+        if (elapsedMs <= 0) return baseMs;
+        return side === activeSide ? Math.max(0, baseMs - elapsedMs) : baseMs;
+      };
+
+      const drawClockBox = (side: "w" | "b", y: number, active: boolean) => {
+        const x = clockX + 10;
+        const w = clockW - 20;
+        const h = boxH;
+
+        const time = formatClockMs(remainingFor(side));
+        const label = side === "w" ? "WHITE" : "BLACK";
+
+        ctx.save();
+        ctx.fillStyle = active ? "rgba(0,0,0,0.72)" : "rgba(0,0,0,0.55)";
+        ctx.strokeStyle = active
+          ? "rgba(120,255,216,0.35)"
+          : "rgba(255,255,255,0.12)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, 16);
+        ctx.fill();
+        ctx.stroke();
+
+        // Side label
+        ctx.fillStyle = "rgba(255,255,255,0.72)";
+        ctx.font = "700 14px system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(label, x + 14, y + 22);
+
+        // Big time
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.font = "900 38px system-ui, sans-serif";
+        ctx.fillText(time, x + 14, y + 66);
+
+        // Active indicator dot
+        if (active) {
+          ctx.fillStyle = "rgba(120,255,216,0.9)";
+          ctx.beginPath();
+          ctx.arc(x + w - 18, y + 18, 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
+      };
+
+      // Lichess-style: black on top, white on bottom.
+      drawClockBox("b", stackY, activeSide === "b");
+      drawClockBox("w", stackY + boxH + clockGap, activeSide === "w");
     }
 
     const sq = boardSize / 8;
@@ -4057,6 +4177,7 @@ const InWorldTv = memo(function InWorldTv({
     mode,
     chessPieceImages,
     imageVersion,
+    clockVersion,
   ]);
 
   const handlePointerDown = useCallback(
@@ -4638,6 +4759,42 @@ export default function World({
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Preload avatar VRM bytes (and animation data) during idle time so the shop VRM
+  // viewer doesn't wait on network when the user clicks an avatar.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const urls = SHOP_ITEMS.filter((i) => i.type === "avatar")
+      .map((i) => (i as any).url as string | undefined)
+      .filter((u): u is string => typeof u === "string" && u.length > 0);
+
+    if (urls.length === 0) return;
+
+    let cancelled = false;
+    let timeoutId: number | null = null;
+    let idleId: number | null = null;
+
+    const run = () => {
+      if (cancelled) return;
+      for (const u of urls) preloadAvatarUrl(u);
+    };
+
+    const w = window as any;
+    if (typeof w.requestIdleCallback === "function") {
+      idleId = w.requestIdleCallback(run, { timeout: 4000 });
+    } else {
+      timeoutId = window.setTimeout(run, 600);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      if (idleId !== null && typeof w.cancelIdleCallback === "function") {
+        w.cancelIdleCallback(idleId);
+      }
+    };
   }, []);
 
   const submitChat = useCallback(() => {
@@ -6012,6 +6169,10 @@ export default function World({
           turn: event.turn,
           boardOrientation: event.boardOrientation,
           canMove2d: event.canMove2d,
+          clockRemainingMs: event.clockRemainingMs ?? prev.clockRemainingMs,
+          clockRunning: event.clockRunning ?? prev.clockRunning,
+          clockActive: event.clockActive ?? prev.clockActive,
+          clockSnapshotAtMs: event.clockSnapshotAtMs ?? prev.clockSnapshotAtMs,
           checkersBoard: event.checkersBoard ?? prev.checkersBoard,
           onMove2d: event.onMove2d,
         };
@@ -6032,6 +6193,10 @@ export default function World({
         turn: event.turn,
         boardOrientation: event.boardOrientation,
         canMove2d: event.canMove2d,
+        clockRemainingMs: event.clockRemainingMs,
+        clockRunning: event.clockRunning,
+        clockActive: event.clockActive,
+        clockSnapshotAtMs: event.clockSnapshotAtMs,
         gooseSquare: event.gooseSquare,
         goosePhase: event.goosePhase,
         startledSquares: event.startledSquares,

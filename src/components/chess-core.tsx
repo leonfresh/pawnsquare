@@ -90,6 +90,10 @@ export type BoardControlsEvent =
       turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
+      clockRemainingMs?: { w: number; b: number };
+      clockRunning?: boolean;
+      clockActive?: Side | null;
+      clockSnapshotAtMs?: number;
       gooseSquare?: string;
       goosePhase?: "piece" | "goose";
       canPlaceGoose?: boolean;
@@ -122,6 +126,10 @@ export type BoardControlsEvent =
       turn: Side;
       boardOrientation: "white" | "black";
       canMove2d: boolean;
+      clockRemainingMs?: { w: number; b: number };
+      clockRunning?: boolean;
+      clockActive?: Side | null;
+      clockSnapshotAtMs?: number;
       gooseSquare?: string;
       goosePhase?: "piece" | "goose";
       canPlaceGoose?: boolean;
@@ -1986,6 +1994,10 @@ export function useChessGame({
       turn,
       boardOrientation,
       canMove2d,
+      clockRemainingMs: clocks.remaining,
+      clockRunning: clocks.running,
+      clockActive: clocks.active,
+      clockSnapshotAtMs: Date.now(),
       gooseSquare: gooseSquare ?? undefined,
       goosePhase: goosePhase ?? undefined,
       canPlaceGoose: canPlaceGoose || undefined,
@@ -2019,6 +2031,10 @@ export function useChessGame({
       turn,
       boardOrientation,
       canMove2d,
+      clockRemainingMs: clocks.remaining,
+      clockRunning: clocks.running,
+      clockActive: clocks.active,
+      clockSnapshotAtMs: Date.now(),
       gooseSquare: gooseSquare ?? undefined,
       goosePhase: goosePhase ?? undefined,
       canPlaceGoose: canPlaceGoose || undefined,

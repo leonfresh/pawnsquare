@@ -1,6 +1,6 @@
 "use client";
 
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { ThreeAvatar } from "@/components/three-avatar";
@@ -30,67 +30,6 @@ function CameraResetOnUrlChange({
   return null;
 }
 
-function WarmupFrames({
-  enabled,
-  frames = 8,
-  onDone,
-}: {
-  enabled: boolean;
-  frames?: number;
-  onDone: () => void;
-}) {
-  const leftRef = useRef(frames);
-  useEffect(() => {
-    leftRef.current = frames;
-  }, [enabled, frames]);
-
-  useFrame(() => {
-    if (!enabled) return;
-    leftRef.current -= 1;
-    if (leftRef.current <= 0) onDone();
-  });
-
-  return null;
-}
-
-function SpinnerOverlay({ visible }: { visible: boolean }) {
-  if (!visible) return null;
-  return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.15)",
-        backdropFilter: "blur(2px)",
-      }}
-    >
-      <div
-        style={{
-          width: 26,
-          height: 26,
-          borderRadius: 999,
-          border: "3px solid rgba(255,255,255,0.25)",
-          borderTopColor: "rgba(255,255,255,0.9)",
-          animation: "vrmspin 0.9s linear infinite",
-        }}
-      />
-      <style jsx>{`
-        @keyframes vrmspin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
-    </div>
-  );
-}
-
 export function VrmPreview({
   url,
   width = 220,
@@ -101,10 +40,6 @@ export function VrmPreview({
   height?: number;
 }) {
   const [autoRotate, setAutoRotate] = useState(true);
-  const [everReady, setEverReady] = useState(false);
-  const [phase, setPhase] = useState<"loading" | "warming" | "ready">(
-    "loading"
-  );
   const [yOffset, setYOffset] = useState(0);
   const controlsRef = useRef<any>(null);
   const resumeTimerRef = useRef<number | null>(null);
@@ -122,8 +57,6 @@ export function VrmPreview({
   );
 
   useEffect(() => {
-    // Hide the model during swaps so you don't see a pose reset flash.
-    setPhase("loading");
     setYOffset(0);
     setAutoRotate(true);
     if (resumeTimerRef.current !== null) {
@@ -143,7 +76,6 @@ export function VrmPreview({
 
   return (
     <div style={style}>
-      <SpinnerOverlay visible={!everReady && phase !== "ready"} />
       <Canvas
         key="vrm-preview-canvas"
         dpr={[1, 1.25]}
@@ -155,22 +87,13 @@ export function VrmPreview({
         <directionalLight position={[2, 3, 2]} intensity={0.9} />
         <directionalLight position={[-2, 2, -3]} intensity={0.35} />
 
-        <WarmupFrames
-          enabled={phase === "warming"}
-          frames={10}
-          onDone={() => {
-            setPhase("ready");
-            setEverReady(true);
-          }}
-        />
-
         <Suspense fallback={null}>
-          <group position={[0, yOffset, 0]} visible={phase === "ready"}>
+          <group position={[0, yOffset, 0]}>
             <ThreeAvatar
               url={url}
               movingSpeed={0}
               pose="stand"
-              idleWiggle={phase === "ready"}
+              idleWiggle
               idleWiggleStrength={autoRotate ? 1.15 : 0.95}
               onLoaded={(obj) => {
                 try {
@@ -188,7 +111,6 @@ export function VrmPreview({
                 } catch {
                   // ignore bbox failures
                 }
-                setPhase("warming");
               }}
             />
           </group>
