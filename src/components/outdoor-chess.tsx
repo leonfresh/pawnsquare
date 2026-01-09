@@ -18,6 +18,7 @@ import {
   isGooseMode,
 } from "@/lib/boardModes";
 import { useChessSounds } from "./chess-sounds";
+import { LocalArrow3D, useLocalArrows } from "./local-arrows";
 import { useCheckersGame } from "./checkers-core";
 import {
   applyChessThemeToMaterial,
@@ -2310,6 +2311,7 @@ export type OutdoorChessProps = {
   chessTheme?: string;
   chessBoardTheme?: string;
   gameMode?: BoardMode;
+  suppressCameraRotateRef?: React.MutableRefObject<boolean>;
 };
 
 function OutdoorChessChessMode({
@@ -2336,6 +2338,7 @@ function OutdoorChessChessMode({
   chessTheme,
   chessBoardTheme,
   gameMode = "chess",
+  suppressCameraRotateRef,
 }: OutdoorChessProps) {
   const [showCoordinates, setShowCoordinates] = useState(() => {
     if (typeof window !== "undefined") {
@@ -2376,6 +2379,10 @@ function OutdoorChessChessMode({
     playClick,
     playHonk,
   } = useChessSounds();
+  const localArrows = useLocalArrows({
+    enabled: true,
+    suppressRightDragRef: suppressCameraRotateRef,
+  });
 
   const chessGame = useChessGame({
     enabled: true,
@@ -2564,11 +2571,60 @@ function OutdoorChessChessMode({
     onPickSquare,
     onPickPiece,
     clickJoin,
+    devModeEnabled,
+    devJoinLog,
     resultLabel,
     gooseBlocked,
     drawOfferFrom,
     rematch,
   } = chessGame;
+
+  const [devJoinModalOpen, setDevJoinModalOpen] = useState(false);
+  const [devJoinModalSide, setDevJoinModalSide] = useState<Side | null>(null);
+  const lastPendingJoinSideRef = useRef<Side | null>(null);
+  useEffect(() => {
+    if (!devModeEnabled) {
+      setDevJoinModalOpen(false);
+      setDevJoinModalSide(null);
+      lastPendingJoinSideRef.current = pendingJoinSide;
+      return;
+    }
+
+    const prev = lastPendingJoinSideRef.current;
+    lastPendingJoinSideRef.current = pendingJoinSide;
+
+    // Auto-open when a join starts.
+    if (pendingJoinSide && pendingJoinSide !== prev) {
+      setDevJoinModalOpen(true);
+      setDevJoinModalSide(pendingJoinSide);
+    }
+
+    // Also open if we have fresh logs while joining.
+    if (pendingJoinSide && devJoinLog.length > 0) {
+      setDevJoinModalOpen(true);
+    }
+  }, [devModeEnabled, pendingJoinSide, devJoinLog.length]);
+
+  const devClickJoin = useCallback(
+    (side: Side) => {
+      if (devModeEnabled) {
+        setDevJoinModalSide(side);
+        setDevJoinModalOpen(true);
+      }
+      clickJoin(side);
+    },
+    [devModeEnabled, clickJoin]
+  );
+
+  const lastMoveKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const lm = netState.lastMove as any;
+    const key = lm ? `${lm.from}-${lm.to}` : null;
+    if (key !== lastMoveKeyRef.current) {
+      if (localArrows.arrows.length > 0) localArrows.clearArrows();
+      lastMoveKeyRef.current = key;
+    }
+  }, [netState.lastMove, localArrows.arrows.length, localArrows.clearArrows]);
 
   const rematchRequestedBy: Side | null =
     netState.result && rematch && rematch.w !== rematch.b
@@ -2796,11 +2852,22 @@ function OutdoorChessChessMode({
               key={square}
               position={[x, 0, z]}
               onPointerDown={(e) => {
+                if (e.button === 2) {
+                  e.stopPropagation();
+                  e.nativeEvent?.preventDefault?.();
+                  localArrows.onRightDownSquare(square as Square);
+                  return;
+                }
                 if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
                 onPickSquare(square as any);
               }}
+              onContextMenu={(e) => {
+                e.stopPropagation();
+                e.nativeEvent?.preventDefault?.();
+              }}
               onPointerEnter={() => {
+                localArrows.onRightEnterSquare(square as Square);
                 setHoveredSquare(square as Square);
                 if (canInteract) document.body.style.cursor = "pointer";
               }}
@@ -2947,6 +3014,108 @@ function OutdoorChessChessMode({
         })}
       </group>
 
+      {/* Local-only arrows (right-drag). */}
+      {localArrows.arrows.map((a, idx) => (
+        <LocalArrow3D
+          key={`${a.from}-${a.to}-${idx}`}
+          arrow={a}
+          origin={originVec}
+          squareSize={squareSize}
+        />
+      ))}
+
+      {/* Dev Mode: join modal log */}
+      {devModeEnabled && devJoinModalOpen ? (
+        <Html position={[0, 0, 0]} center style={{ pointerEvents: "none" }}>
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0, 0, 0, 0.55)",
+              zIndex: 100000,
+              pointerEvents: "auto",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "18px",
+            }}
+            onClick={() => setDevJoinModalOpen(false)}
+          >
+            <div
+              style={{
+                width: "min(780px, 92vw)",
+                maxHeight: "min(520px, 82vh)",
+                background: "rgba(0, 0, 0, 0.92)",
+                color: "white",
+                borderRadius: "12px",
+                padding: "14px",
+                fontFamily: "monospace",
+                boxSizing: "border-box",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  marginBottom: "10px",
+                }}
+              >
+                <div style={{ fontWeight: "bold" }}>
+                  Dev Mode Join Log (joining{" "}
+                  {devJoinModalSide
+                    ? devJoinModalSide === "w"
+                      ? "White"
+                      : "Black"
+                    : "?"}
+                  )
+                </div>
+                <button
+                  type="button"
+                  style={{
+                    background: "transparent",
+                    color: "white",
+                    border: "1px solid rgba(255,255,255,0.25)",
+                    borderRadius: "8px",
+                    padding: "6px 10px",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => setDevJoinModalOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+              <div
+                style={{
+                  opacity: 0.75,
+                  fontSize: "11px",
+                  marginBottom: "10px",
+                }}
+              >
+                Tip: This join flow is intentionally slowed down in dev mode.
+              </div>
+              <pre
+                style={{
+                  margin: 0,
+                  whiteSpace: "pre-wrap",
+                  overflow: "auto",
+                  maxHeight: "min(400px, 62vh)",
+                  padding: "10px",
+                  borderRadius: "10px",
+                  background: "rgba(255,255,255,0.06)",
+                }}
+              >
+                {devJoinLog.length > 0
+                  ? devJoinLog.join("\n")
+                  : "(waiting for logs…)"}
+              </pre>
+            </div>
+          </div>
+        </Html>
+      ) : null}
+
       {/* Join pads */}
       <JoinPad
         label={`${formatClock(clocks.remaining.w)}\n${
@@ -2964,7 +3133,7 @@ function OutdoorChessChessMode({
           pendingJoinSide === "b" ||
           (!!netState.seats.w && netState.seats.w.connId !== chessSelfId)
         }
-        onClick={() => clickJoin("w")}
+        onClick={() => devClickJoin("w")}
       />
       <JoinPad
         label={`${formatClock(clocks.remaining.b)}\n${
@@ -2982,7 +3151,7 @@ function OutdoorChessChessMode({
           pendingJoinSide === "w" ||
           (!!netState.seats.b && netState.seats.b.connId !== chessSelfId)
         }
-        onClick={() => clickJoin("b")}
+        onClick={() => devClickJoin("b")}
       />
 
       {/* Control TV */}
@@ -3184,6 +3353,7 @@ function OutdoorChessCheckersMode({
   board2dOpen = false,
   chessTheme,
   chessBoardTheme,
+  suppressCameraRotateRef,
 }: OutdoorChessProps) {
   const [showCoordinates, setShowCoordinates] = useState(() => {
     if (typeof window !== "undefined") {
@@ -3307,6 +3477,21 @@ function OutdoorChessCheckersMode({
     [originVec, padOffset]
   );
 
+  const localArrows = useLocalArrows({
+    enabled: true,
+    suppressRightDragRef: suppressCameraRotateRef,
+  });
+
+  const lastMoveKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const lm = netState.lastMove as any;
+    const key = lm ? `${lm.from}-${lm.to}` : null;
+    if (key !== lastMoveKeyRef.current) {
+      if (localArrows.arrows.length > 0) localArrows.clearArrows();
+      lastMoveKeyRef.current = key;
+    }
+  }, [netState.lastMove, localArrows.arrows.length, localArrows.clearArrows]);
+
   const controlsHintTimerRef = useRef<number | null>(null);
   const [controlsHintOpen, setControlsHintOpen] = useState(false);
 
@@ -3377,10 +3562,22 @@ function OutdoorChessCheckersMode({
               key={square}
               position={[x, 0, z]}
               onPointerDown={(e) => {
+                if (e.button === 2) {
+                  e.stopPropagation();
+                  e.nativeEvent?.preventDefault?.();
+                  localArrows.onRightDownSquare(square as Square);
+                  return;
+                }
+                if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
                 onPickSquare(square as any);
               }}
+              onContextMenu={(e) => {
+                e.stopPropagation();
+                e.nativeEvent?.preventDefault?.();
+              }}
               onPointerEnter={() => {
+                localArrows.onRightEnterSquare(square as Square);
                 if (canInteract) document.body.style.cursor = "pointer";
               }}
               onPointerLeave={() => {
@@ -3492,6 +3689,16 @@ function OutdoorChessCheckersMode({
           );
         })}
       </group>
+
+      {/* Local-only arrows (right-drag). */}
+      {localArrows.arrows.map((a, idx) => (
+        <LocalArrow3D
+          key={`${a.from}-${a.to}-${idx}`}
+          arrow={a}
+          origin={originVec}
+          squareSize={squareSize}
+        />
+      ))}
 
       {/* Join pads */}
       <JoinPad
@@ -3832,7 +4039,7 @@ export function OutdoorChess(props: OutdoorChessProps) {
   const engine = engineForMode(props.gameMode ?? "chess");
 
   return (
-    <group>
+    <group userData={{ blocksClickToMove: true }}>
       <OutdoorBenches
         origin={props.origin}
         padOffset={padOffset}

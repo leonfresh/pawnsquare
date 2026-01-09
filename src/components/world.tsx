@@ -4354,6 +4354,7 @@ export default function World({
   onExit,
   initialName,
   initialGender = "male",
+  initialAvatarUrl,
   lobbyType = "park",
   onLobbyChange,
 }: {
@@ -4361,6 +4362,7 @@ export default function World({
   onExit: () => void;
   initialName?: string;
   initialGender?: "male" | "female";
+  initialAvatarUrl?: string;
   lobbyType?: "park" | "scifi";
   onLobbyChange?: (type: "park" | "scifi") => void;
 }) {
@@ -4426,9 +4428,10 @@ export default function World({
       () => ({
         initialName,
         initialGender,
+        initialAvatarUrl,
         paused: isDuplicateSession,
       }),
-      [initialName, initialGender, isDuplicateSession]
+      [initialName, initialGender, initialAvatarUrl, isDuplicateSession]
     )
   );
 
@@ -4691,8 +4694,23 @@ export default function World({
       }),
     []
   );
+
+  const EQUIPPED_AVATAR_URL_STORAGE_KEY = "pawnsquare:equippedAvatarUrl";
   const [debugAvatarUrl, setDebugAvatarUrl] = useState<string>(() =>
-    defaultAvatarUrlForGender(initialGender ?? "male")
+    (() => {
+      try {
+        const cached =
+          typeof window !== "undefined"
+            ? window.localStorage.getItem(EQUIPPED_AVATAR_URL_STORAGE_KEY)
+            : null;
+        if (cached && typeof cached === "string" && cached.trim()) {
+          return cached.trim();
+        }
+      } catch {
+        // ignore
+      }
+      return defaultAvatarUrlForGender(initialGender ?? "male");
+    })()
   );
 
   const resetToDefaults = () => {
@@ -4779,13 +4797,31 @@ export default function World({
   const mustChooseUsername = !!supabaseUser && !supabaseUsername;
 
   const [isMobile, setIsMobile] = useState(false);
+  const [isTablet, setIsTablet] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const onResize = () => setIsMobile(window.innerWidth < 640);
+    const onResize = () => {
+      const w = window.innerWidth;
+      setIsMobile(w < 640);
+      setIsTablet(w >= 640 && w < 1024);
+    };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  const MOBILE_BOTTOM_NAV_HEIGHT = 56;
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [mobileMenuSheetOpen, setMobileMenuSheetOpen] = useState(false);
+  const [mobileHudExpanded, setMobileHudExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileChatOpen(false);
+      setMobileMenuSheetOpen(false);
+      setMobileHudExpanded(false);
+    }
+  }, [isMobile]);
 
   // Preload avatar VRM bytes (and animation data) during idle time so the shop VRM
   // viewer doesn't wait on network when the user clicks an avatar.
@@ -5985,12 +6021,23 @@ export default function World({
 
   const maxPlayersPerRoom = 16;
 
+  type RoomChannelEntry = {
+    roomId: string;
+    playerCount: number;
+    ch: number;
+  };
+
+  const roomIdForUiChannel = useCallback((base: string, uiCh: number) => {
+    // Canonical channel scheme:
+    // - CH.N => base-chN
+    const n = Math.max(1, Math.floor(uiCh));
+    return `${base}-ch${n}`;
+  }, []);
+
   const getChannelNumberForRoomId = useCallback(
     (base: string, fullRoomId: string) => {
-      // UI channel numbering:
-      // - base itself -> CH.1
-      // - base-ch1 -> CH.2
-      // - base-ch2 -> CH.3 ...
+      // Canonical channel scheme: base-chN => CH.N
+      // Legacy fallback: base with no suffix => CH.1
       if (fullRoomId === base) return 1;
       const m = fullRoomId.match(
         new RegExp(
@@ -6001,35 +6048,76 @@ export default function World({
       if (!m) return null;
       const n = parseInt(m[1]!, 10);
       if (!Number.isFinite(n)) return null;
-      return n + 1;
+      return n;
     },
     []
   );
 
-  const listOccupiedChannels = useCallback(
-    (base: string) => {
-      // Only show channels with people in them.
-      const entries = (allRooms || [])
-        .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
-        .filter((r) => r.playerCount > 0)
-        .map((r) => {
-          const ch = getChannelNumberForRoomId(base, r.roomId);
-          return { ...r, ch };
-        })
-        .filter((r) => typeof r.ch === "number")
-        .sort((a, b) => a.ch! - b.ch!);
+  const listSelectableChannels = useCallback(
+    (base: string): RoomChannelEntry[] => {
+      // Always show CH.1-CH.3. Hide CH.4+ until CH.1-CH.3 are all full.
+      const known = (allRooms || []).filter((r) =>
+        r.roomId.startsWith(`${base}-ch`)
+      );
+      const byId = new Map<string, number>();
+      for (const r of known) byId.set(r.roomId, r.playerCount);
+      const countFor = (roomId: string) => byId.get(roomId) ?? 0;
 
-      return entries as Array<{
-        roomId: string;
-        playerCount: number;
-        ch: number;
-      }>;
+      const firstThree: RoomChannelEntry[] = [1, 2, 3].map((ch) => {
+        const roomId = roomIdForUiChannel(base, ch);
+        return { roomId, playerCount: countFor(roomId), ch };
+      });
+
+      const allThreeFull = firstThree.every(
+        (r) => r.playerCount >= maxPlayersPerRoom
+      );
+      if (!allThreeFull) return firstThree;
+
+      const extras: RoomChannelEntry[] = known
+        .map((r) => ({
+          roomId: r.roomId,
+          playerCount: r.playerCount,
+          ch: getChannelNumberForRoomId(base, r.roomId),
+        }))
+        .filter(
+          (r): r is { roomId: string; playerCount: number; ch: number } =>
+            typeof r.ch === "number" && r.ch >= 4
+        )
+        .sort((a, b) => a.ch - b.ch)
+        .filter((r) => r.playerCount > 0);
+
+      const ch4: RoomChannelEntry = {
+        roomId: roomIdForUiChannel(base, 4),
+        playerCount: countFor(roomIdForUiChannel(base, 4)),
+        ch: 4,
+      };
+
+      const out: RoomChannelEntry[] = [...firstThree, ch4];
+      for (const e of extras) {
+        if (e.ch === 4) continue;
+        out.push(e);
+      }
+      return out;
     },
-    [allRooms, getChannelNumberForRoomId]
+    [allRooms, getChannelNumberForRoomId, maxPlayersPerRoom, roomIdForUiChannel]
   );
 
   const pickBestRoomForBase = useCallback(
     (base: string) => {
+      // Prefer CH.1-CH.3 until they're all full.
+      const firstThree = [1, 2, 3]
+        .map((ch) => {
+          const roomId = roomIdForUiChannel(base, ch);
+          const match = (allRooms || []).find((r) => r.roomId === roomId);
+          return { roomId, playerCount: match?.playerCount ?? 0 };
+        })
+        .sort((a, b) => b.playerCount - a.playerCount);
+
+      const availableFirstThree = firstThree.filter(
+        (r) => r.playerCount < maxPlayersPerRoom
+      );
+      if (availableFirstThree[0]) return availableFirstThree[0].roomId;
+
       const existing = (allRooms || [])
         .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
         .sort((a, b) => b.playerCount - a.playerCount);
@@ -6051,18 +6139,33 @@ export default function World({
       const nextUiCh = maxCh + 1;
       return nextUiCh <= 1 ? base : `${base}-ch${nextUiCh - 1}`;
     },
-    [allRooms, getChannelNumberForRoomId]
+    [allRooms, getChannelNumberForRoomId, maxPlayersPerRoom, roomIdForUiChannel]
   );
 
-  const goToRoom = useCallback((nextRoomId: string) => {
-    if (typeof window === "undefined") return;
-    const targetPath = `/room/${encodeURIComponent(nextRoomId)}`;
-    if (window.location.pathname === targetPath) {
-      setShowRoomsModal(false);
-      return;
-    }
-    window.location.assign(targetPath);
-  }, []);
+  const goToRoom = useCallback(
+    (nextRoomId: string) => {
+      if (typeof window === "undefined") return;
+
+      // Ensure equipped avatar survives full page navigation to /room/*.
+      try {
+        const key = "pawnsquare:equippedAvatarUrl";
+        const current = (self?.avatarUrl ?? debugAvatarUrl ?? "")
+          .toString()
+          .trim();
+        if (current) window.localStorage.setItem(key, current);
+      } catch {
+        // ignore
+      }
+
+      const targetPath = `/room/${encodeURIComponent(nextRoomId)}`;
+      if (window.location.pathname === targetPath) {
+        setShowRoomsModal(false);
+        return;
+      }
+      window.location.assign(targetPath);
+    },
+    [debugAvatarUrl, self?.avatarUrl]
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6372,6 +6475,7 @@ export default function World({
         onBoardControls: handleBoardControls,
         controlsOpen,
         board2dOpen,
+        suppressCameraRotateRef: suppressCameraRightDragRef,
       };
 
       return lobbyType === "scifi" ? (
@@ -6431,6 +6535,15 @@ export default function World({
             // (chess squares, join pads, benches already stopPropagation).
             if (e.button !== 0) return;
             if (!self) return;
+
+            // Boards should never trigger click-to-move (even if a child handler
+            // forgets to stopPropagation).
+            const hitObj: THREE.Object3D | null = (e.object as any) ?? null;
+            let cur: THREE.Object3D | null = hitObj;
+            while (cur) {
+              if ((cur as any).userData?.blocksClickToMove) return;
+              cur = cur.parent;
+            }
 
             const planeY = selfPosRef.current.y;
             const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
@@ -6946,286 +7059,556 @@ export default function World({
           pointerEvents: "none", // Let clicks pass through to canvas where possible
         }}
       >
-        <div style={{ display: "flex", gap: 8, pointerEvents: "none" }}>
-          {/* POV (first-person) toggle */}
-          <button
-            onClick={() => setPovMode((prev) => !prev)}
-            title={povMode ? "Exit POV mode" : "Enter POV mode"}
-            style={{
-              pointerEvents: "auto",
-              height: 38,
-              borderRadius: 12,
-              background: povMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.4)",
-              backdropFilter: "blur(8px)",
-              border: povMode
-                ? "1px solid rgba(255,255,255,0.22)"
-                : "1px solid rgba(255,255,255,0.1)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              padding: "0 10px",
-              color: "white",
-              touchAction: "manipulation",
-              userSelect: "none",
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: 600,
-            }}
-          >
-            <UserIcon size={16} />
-            <span style={{ lineHeight: 1 }}>POV</span>
-          </button>
-
-          {/* Camera rotate toggle */}
-          <button
-            onClick={() => {
-              setCameraRotateMode((prev) => {
-                const next = !prev;
-                cameraRotateModeRef.current = next;
-                setCameraRotateToast(next ? "on" : "off");
-                window.setTimeout(() => setCameraRotateToast(""), 1200);
-                return next;
-              });
-            }}
-            title={cameraRotateMode ? "Stop rotating camera" : "Rotate camera"}
-            style={{
-              pointerEvents: "auto",
-              height: 38,
-              borderRadius: 12,
-              background: cameraRotateMode
-                ? "rgba(0,0,0,0.6)"
-                : "rgba(0,0,0,0.4)",
-              backdropFilter: "blur(8px)",
-              border: cameraRotateMode
-                ? "1px solid rgba(255,255,255,0.22)"
-                : "1px solid rgba(255,255,255,0.1)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              padding: "0 10px",
-              color: "white",
-              touchAction: "manipulation",
-              userSelect: "none",
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: 600,
-            }}
-          >
-            <RotateArrowsIcon size={16} />
-            <span style={{ lineHeight: 1 }}>Camera</span>
-          </button>
-        </div>
-
-        {/* Room Info Card */}
-        <div
-          style={{
-            pointerEvents: "auto",
-            padding: "10px 14px",
-            borderRadius: 12,
-            background: "rgba(0,0,0,0.4)",
-            backdropFilter: "blur(8px)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-            color: "white",
-            minWidth: 180,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{roomId}</div>
-            <div
-              style={{
-                fontSize: 12,
-                opacity: 0.8,
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-              }}
-            >
-              <UserIcon size={12} />
-              {peerCount + 1}
-            </div>
-          </div>
-
-          {avatarSystem === "three-avatar" ? (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 13,
-                color: "#ffd700",
-                fontWeight: 500,
-                marginTop: 2,
-              }}
-            >
-              <CoinsIcon size={14} />
-              {coins}
+        {isMobile ? (
+          <>
+            <div style={{ display: "flex", gap: 8, pointerEvents: "none" }}>
+              {/* POV (first-person) toggle */}
               <button
-                onClick={() => {
-                  setShopTab("coins");
-                  setShopOpen(true);
-                }}
+                onClick={() => setPovMode((prev) => !prev)}
+                title={povMode ? "Exit POV mode" : "Enter POV mode"}
                 style={{
-                  background: "#667eea",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 18,
-                  height: 18,
+                  pointerEvents: "auto",
+                  height: 38,
+                  borderRadius: 12,
+                  background: povMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: povMode
+                    ? "1px solid rgba(255,255,255,0.22)"
+                    : "1px solid rgba(255,255,255,0.1)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
+                  gap: 6,
+                  padding: "0 10px",
                   color: "white",
+                  touchAction: "manipulation",
+                  userSelect: "none",
                   cursor: "pointer",
-                  marginLeft: 4,
-                  fontSize: 14,
-                  lineHeight: 1,
+                  fontSize: 12,
+                  fontWeight: 600,
                 }}
-                title="Buy more coins"
               >
-                +
+                <UserIcon size={16} />
+                <span style={{ lineHeight: 1 }}>POV</span>
               </button>
-            </div>
-          ) : null}
-        </div>
 
-        {/* Player List (Desktop only or collapsible) */}
-        <div
-          style={{
-            pointerEvents: "auto",
-            padding: "10px 14px",
-            borderRadius: 12,
-            background: "rgba(0,0,0,0.4)",
-            backdropFilter: "blur(8px)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            color: "white",
-            maxHeight: "40vh",
-            overflowY: "auto",
-            width: 180,
-          }}
-        >
-          <div
-            style={{
-              fontSize: 11,
-              opacity: 0.6,
-              textTransform: "uppercase",
-              letterSpacing: 0.5,
-            }}
-          >
-            Players ({hudPlayers.length})
-          </div>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              overflowY: "auto",
-            }}
-          >
-            {hudPlayers.map((p) => (
-              <div
-                key={p.id}
+              {/* Camera rotate toggle */}
+              <button
+                onClick={() => {
+                  setCameraRotateMode((prev) => {
+                    const next = !prev;
+                    cameraRotateModeRef.current = next;
+                    setCameraRotateToast(next ? "on" : "off");
+                    window.setTimeout(() => setCameraRotateToast(""), 1200);
+                    return next;
+                  });
+                }}
+                title={
+                  cameraRotateMode ? "Stop rotating camera" : "Rotate camera"
+                }
                 style={{
+                  pointerEvents: "auto",
+                  height: 38,
+                  borderRadius: 12,
+                  background: cameraRotateMode
+                    ? "rgba(0,0,0,0.6)"
+                    : "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: cameraRotateMode
+                    ? "1px solid rgba(255,255,255,0.22)"
+                    : "1px solid rgba(255,255,255,0.1)",
                   display: "flex",
                   alignItems: "center",
-                  gap: 8,
-                  fontSize: 13,
+                  justifyContent: "center",
+                  gap: 6,
+                  padding: "0 10px",
+                  color: "white",
+                  touchAction: "manipulation",
+                  userSelect: "none",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
                 }}
               >
-                <div
+                <RotateArrowsIcon size={16} />
+                <span style={{ lineHeight: 1 }}>Camera</span>
+              </button>
+            </div>
+
+            {/* Room / Players (collapsed on mobile) */}
+            <div style={{ pointerEvents: "auto" }}>
+              <button
+                onClick={() => setMobileHudExpanded((v) => !v)}
+                style={{
+                  height: 38,
+                  borderRadius: 999,
+                  background: "rgba(0,0,0,0.45)",
+                  backdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "0 12px",
+                  color: "white",
+                  cursor: "pointer",
+                  touchAction: "manipulation",
+                  userSelect: "none",
+                  maxWidth: "min(calc(100vw - 24px), 320px)",
+                }}
+                aria-label={
+                  mobileHudExpanded ? "Collapse room info" : "Expand room info"
+                }
+                title={mobileHudExpanded ? "Collapse" : "Room info"}
+              >
+                <span
                   style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: p.color,
-                    boxShadow: `0 0 4px ${p.color}`,
-                  }}
-                />
-                <div
-                  style={{
+                    fontSize: 13,
+                    fontWeight: 700,
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
-                    opacity: 0.9,
+                    maxWidth: 160,
                   }}
                 >
-                  {p.name || "Guest"}
-                  {self?.id === p.id ? " (You)" : ""}
+                  {roomId}
+                </span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 12,
+                    opacity: 0.85,
+                    flex: "0 0 auto",
+                  }}
+                >
+                  <UserIcon size={12} />
+                  {peerCount + 1}
+                </span>
+                {avatarSystem === "three-avatar" ? (
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 12,
+                      opacity: 0.9,
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    <CoinsIcon size={13} />
+                    {coins}
+                  </span>
+                ) : null}
+              </button>
+
+              {mobileHudExpanded ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "10px 14px",
+                    borderRadius: 12,
+                    background: "rgba(0,0,0,0.4)",
+                    backdropFilter: "blur(8px)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    color: "white",
+                    maxWidth: "min(calc(100vw - 24px), 320px)",
+                  }}
+                >
+                  {avatarSystem === "three-avatar" ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 13,
+                        fontWeight: 700,
+                      }}
+                    >
+                      <span style={{ opacity: 0.8 }}>Coins</span>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          color: "#ffd700",
+                          fontWeight: 800,
+                        }}
+                      >
+                        <CoinsIcon size={14} />
+                        {coins}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setShopTab("coins");
+                          setShopOpen(true);
+                          setMobileHudExpanded(false);
+                        }}
+                        style={{
+                          marginLeft: "auto",
+                          height: 28,
+                          padding: "0 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.16)",
+                          background: "rgba(255,255,255,0.06)",
+                          color: "white",
+                          cursor: "pointer",
+                          fontWeight: 800,
+                          fontSize: 12,
+                        }}
+                        title="Buy more coins"
+                        aria-label="Buy more coins"
+                      >
+                        +
+                      </button>
+                    </div>
+                  ) : null}
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      opacity: 0.6,
+                      textTransform: "uppercase",
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    Players ({hudPlayers.length})
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      maxHeight: "24vh",
+                      overflowY: "auto",
+                    }}
+                  >
+                    {hudPlayers.map((p) => (
+                      <div
+                        key={p.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: 13,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            background: p.color,
+                            boxShadow: `0 0 4px ${p.color}`,
+                          }}
+                        />
+                        <div
+                          style={{
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            opacity: 0.9,
+                          }}
+                        >
+                          {p.name || "Guest"}
+                          {self?.id === p.id ? " (You)" : ""}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 8, pointerEvents: "none" }}>
+              {/* POV (first-person) toggle */}
+              <button
+                onClick={() => setPovMode((prev) => !prev)}
+                title={povMode ? "Exit POV mode" : "Enter POV mode"}
+                style={{
+                  pointerEvents: "auto",
+                  height: 38,
+                  borderRadius: 12,
+                  background: povMode ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: povMode
+                    ? "1px solid rgba(255,255,255,0.22)"
+                    : "1px solid rgba(255,255,255,0.1)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  padding: "0 10px",
+                  color: "white",
+                  touchAction: "manipulation",
+                  userSelect: "none",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                <UserIcon size={16} />
+                <span style={{ lineHeight: 1 }}>POV</span>
+              </button>
 
-        {/* Controls / Actions */}
-        <div style={{ display: "flex", gap: 8, pointerEvents: "auto" }}>
-          <button
-            onClick={() => setShowRoomsModal(true)}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              background: "rgba(0,0,0,0.4)",
-              backdropFilter: "blur(8px)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              color: "white",
-              fontSize: 12,
-              cursor: "pointer",
-              transition: "background 0.2s",
-            }}
-          >
-            Rooms
-          </button>
+              {/* Camera rotate toggle */}
+              <button
+                onClick={() => {
+                  setCameraRotateMode((prev) => {
+                    const next = !prev;
+                    cameraRotateModeRef.current = next;
+                    setCameraRotateToast(next ? "on" : "off");
+                    window.setTimeout(() => setCameraRotateToast(""), 1200);
+                    return next;
+                  });
+                }}
+                title={
+                  cameraRotateMode ? "Stop rotating camera" : "Rotate camera"
+                }
+                style={{
+                  pointerEvents: "auto",
+                  height: 38,
+                  borderRadius: 12,
+                  background: cameraRotateMode
+                    ? "rgba(0,0,0,0.6)"
+                    : "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: cameraRotateMode
+                    ? "1px solid rgba(255,255,255,0.22)"
+                    : "1px solid rgba(255,255,255,0.1)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  padding: "0 10px",
+                  color: "white",
+                  touchAction: "manipulation",
+                  userSelect: "none",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                <RotateArrowsIcon size={16} />
+                <span style={{ lineHeight: 1 }}>Camera</span>
+              </button>
+            </div>
 
-          {!is4pRoom ? (
-            <button
-              onClick={startQuickPlay}
+            {/* Room Info Card */}
+            <div
               style={{
-                padding: "8px 12px",
-                borderRadius: 8,
+                pointerEvents: "auto",
+                padding: "10px 14px",
+                borderRadius: 12,
                 background: "rgba(0,0,0,0.4)",
                 backdropFilter: "blur(8px)",
                 border: "1px solid rgba(255,255,255,0.1)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
                 color: "white",
-                fontSize: 12,
-                cursor: "pointer",
-                transition: "background 0.2s",
+                minWidth: 180,
               }}
-              title="Join a fresh chess game"
             >
-              Quick Play
-            </button>
-          ) : null}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{roomId}</div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    opacity: 0.8,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <UserIcon size={12} />
+                  {peerCount + 1}
+                </div>
+              </div>
 
-          <button
-            onClick={onExit}
-            style={{
-              padding: "8px 12px",
-              borderRadius: 8,
-              background: "rgba(255, 59, 48, 0.2)",
-              backdropFilter: "blur(8px)",
-              border: "1px solid rgba(255, 59, 48, 0.3)",
-              color: "#ff6b6b",
-              fontSize: 12,
-              cursor: "pointer",
-              fontWeight: 500,
-            }}
-          >
-            Exit
-          </button>
-        </div>
+              {avatarSystem === "three-avatar" ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 13,
+                    color: "#ffd700",
+                    fontWeight: 500,
+                    marginTop: 2,
+                  }}
+                >
+                  <CoinsIcon size={14} />
+                  {coins}
+                  <button
+                    onClick={() => {
+                      setShopTab("coins");
+                      setShopOpen(true);
+                    }}
+                    style={{
+                      background: "#667eea",
+                      border: "none",
+                      borderRadius: "50%",
+                      width: 18,
+                      height: 18,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "white",
+                      cursor: "pointer",
+                      marginLeft: 4,
+                      fontSize: 14,
+                      lineHeight: 1,
+                    }}
+                    title="Buy more coins"
+                  >
+                    +
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Player List */}
+            <div
+              style={{
+                pointerEvents: "auto",
+                padding: "10px 14px",
+                borderRadius: 12,
+                background: "rgba(0,0,0,0.4)",
+                backdropFilter: "blur(8px)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                color: "white",
+                maxHeight: "40vh",
+                overflowY: "auto",
+                width: 180,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  opacity: 0.6,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                }}
+              >
+                Players ({hudPlayers.length})
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  overflowY: "auto",
+                }}
+              >
+                {hudPlayers.map((p) => (
+                  <div
+                    key={p.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 13,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: p.color,
+                        boxShadow: `0 0 4px ${p.color}`,
+                      }}
+                    />
+                    <div
+                      style={{
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        opacity: 0.9,
+                      }}
+                    >
+                      {p.name || "Guest"}
+                      {self?.id === p.id ? " (You)" : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Controls / Actions (desktop only; mobile uses bottom nav/menu) */}
+            <div style={{ display: "flex", gap: 8, pointerEvents: "auto" }}>
+              <button
+                onClick={() => setShowRoomsModal(true)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "rgba(0,0,0,0.4)",
+                  backdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  color: "white",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  transition: "background 0.2s",
+                }}
+              >
+                Rooms
+              </button>
+
+              {!is4pRoom ? (
+                <button
+                  onClick={startQuickPlay}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    background: "rgba(0,0,0,0.4)",
+                    backdropFilter: "blur(8px)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    color: "white",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    transition: "background 0.2s",
+                  }}
+                  title="Join a fresh chess game"
+                >
+                  Quick Play
+                </button>
+              ) : null}
+
+              <button
+                onClick={onExit}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  background: "rgba(255, 59, 48, 0.2)",
+                  backdropFilter: "blur(8px)",
+                  border: "1px solid rgba(255, 59, 48, 0.3)",
+                  color: "#ff6b6b",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  fontWeight: 500,
+                }}
+              >
+                Exit
+              </button>
+            </div>
+          </>
+        )}
 
         {quickPlayStatus ? (
           <div
@@ -7424,7 +7807,7 @@ export default function World({
                     gap: 8,
                   }}
                 >
-                  {listOccupiedChannels(baseRoomId).map((r) => (
+                  {listSelectableChannels(baseRoomId).map((r) => (
                     <button
                       key={r.roomId}
                       onClick={() => goToRoom(r.roomId)}
@@ -7487,7 +7870,7 @@ export default function World({
                     gap: 8,
                   }}
                 >
-                  {listOccupiedChannels(`${baseRoomId}-4p`).map((r) => (
+                  {listSelectableChannels(`${baseRoomId}-4p`).map((r) => (
                     <button
                       key={r.roomId}
                       onClick={() => goToRoom(r.roomId)}
@@ -7523,153 +7906,158 @@ export default function World({
 
       <LoadTestPanel roomId={roomId} />
 
-      <div
-        style={{
-          position: "fixed",
-          left: 12,
-          bottom: 12,
-          width: isMobile ? 280 : 320,
-          maxWidth: "calc(100vw - 24px)",
-          borderRadius: 10,
-          border: "1px solid rgba(127,127,127,0.25)",
-          background: "rgba(0,0,0,0.35)",
-          backdropFilter: "blur(6px)",
-          padding: 10,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          pointerEvents: "auto",
-        }}
-      >
+      {!isMobile || mobileChatOpen ? (
         <div
-          ref={chatScrollRef}
           style={{
-            maxHeight: 180,
-            overflow: "auto",
+            position: "fixed",
+            left: 12,
+            bottom: isMobile
+              ? `calc(${MOBILE_BOTTOM_NAV_HEIGHT}px + 12px + env(safe-area-inset-bottom))`
+              : 12,
+            width: isMobile ? 280 : 320,
+            maxWidth: "calc(100vw - 24px)",
+            borderRadius: 10,
+            border: "1px solid rgba(127,127,127,0.25)",
+            background: "rgba(0,0,0,0.35)",
+            backdropFilter: "blur(6px)",
+            padding: 10,
             display: "flex",
             flexDirection: "column",
-            gap: 6,
-            fontSize: 12,
-            opacity: 0.95,
+            gap: 8,
+            pointerEvents: "auto",
+            zIndex: 40,
           }}
         >
-          {chat.slice(-30).map((m: ChatMessage) => (
-            <div key={m.id} style={{ lineHeight: 1.25 }}>
-              <span style={{ opacity: 0.9, fontWeight: 600 }}>
-                {m.fromName}:
-              </span>{" "}
-              <span style={{ opacity: 0.95 }}>{m.text}</span>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            ref={chatInputRef}
-            value={chatInput}
-            placeholder={connected ? "Chat..." : "Connecting..."}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter") return;
-              submitChat();
-            }}
+          <div
+            ref={chatScrollRef}
             style={{
-              height: 34,
-              padding: "0 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(127,127,127,0.25)",
-              background: "transparent",
-              color: "inherit",
-              outline: "none",
-              flex: 1,
-              minWidth: 0,
+              maxHeight: 180,
+              overflow: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 12,
+              opacity: 0.95,
             }}
-          />
+          >
+            {chat.slice(-30).map((m: ChatMessage) => (
+              <div key={m.id} style={{ lineHeight: 1.25 }}>
+                <span style={{ opacity: 0.9, fontWeight: 600 }}>
+                  {m.fromName}:
+                </span>{" "}
+                <span style={{ opacity: 0.95 }}>{m.text}</span>
+              </div>
+            ))}
+          </div>
 
-          {/* Compact mobile voice toggle: sits to the right of the chat input */}
-          {isMobile ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              ref={chatInputRef}
+              value={chatInput}
+              placeholder={connected ? "Chat..." : "Connecting..."}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                submitChat();
+              }}
+              style={{
+                height: 34,
+                padding: "0 10px",
+                borderRadius: 8,
+                border: "1px solid rgba(127,127,127,0.25)",
+                background: "transparent",
+                color: "inherit",
+                outline: "none",
+                flex: 1,
+                minWidth: 0,
+              }}
+            />
+
+            {/* Compact mobile voice toggle: sits to the right of the chat input */}
+            {isMobile ? (
+              <button
+                onClick={() => {
+                  void voice.toggleMic();
+                }}
+                style={{
+                  height: 34,
+                  width: 36,
+                  borderRadius: 8,
+                  border: "1px solid rgba(127,127,127,0.25)",
+                  background: voice.micMuted
+                    ? "rgba(255,255,255,0.06)"
+                    : "rgba(46, 213, 115, 0.18)",
+                  color: "white",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "grid",
+                  placeItems: "center",
+                  flex: "0 0 auto",
+                }}
+                title={voice.micMuted ? "Unmute mic" : "Mute mic"}
+                aria-label={voice.micMuted ? "Unmute mic" : "Mute mic"}
+              >
+                🎙
+              </button>
+            ) : null}
+
+            {/* Compact mobile deafen toggle */}
+            {isMobile ? (
+              <button
+                onClick={() => setVoiceDeafened((v) => !v)}
+                style={{
+                  height: 34,
+                  width: 36,
+                  borderRadius: 8,
+                  border: "1px solid rgba(127,127,127,0.25)",
+                  background: voiceDeafened
+                    ? "rgba(255,255,255,0.12)"
+                    : "rgba(255,255,255,0.06)",
+                  color: "white",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "grid",
+                  placeItems: "center",
+                  flex: "0 0 auto",
+                }}
+                title={
+                  voiceDeafened
+                    ? "Undeafen (hear others)"
+                    : "Deafen (stop hearing)"
+                }
+                aria-label={
+                  voiceDeafened
+                    ? "Undeafen (hear others)"
+                    : "Deafen (stop hearing)"
+                }
+              >
+                {voiceDeafened ? "🔇" : "🔈"}
+              </button>
+            ) : null}
+
             <button
               onClick={() => {
-                void voice.toggleMic();
+                submitChat();
               }}
               style={{
                 height: 34,
-                width: 36,
+                padding: "0 12px",
                 borderRadius: 8,
                 border: "1px solid rgba(127,127,127,0.25)",
-                background: voice.micMuted
-                  ? "rgba(255,255,255,0.06)"
-                  : "rgba(46, 213, 115, 0.18)",
+                background: "rgba(255,255,255,0.06)",
                 color: "white",
-                fontWeight: 800,
+                fontWeight: 700,
                 cursor: "pointer",
-                display: "grid",
-                placeItems: "center",
                 flex: "0 0 auto",
               }}
-              title={voice.micMuted ? "Unmute mic" : "Mute mic"}
-              aria-label={voice.micMuted ? "Unmute mic" : "Mute mic"}
+              title="Send chat (Enter)"
+              aria-label="Send chat"
             >
-              🎙
+              Enter
             </button>
-          ) : null}
-
-          {/* Compact mobile deafen toggle */}
-          {isMobile ? (
-            <button
-              onClick={() => setVoiceDeafened((v) => !v)}
-              style={{
-                height: 34,
-                width: 36,
-                borderRadius: 8,
-                border: "1px solid rgba(127,127,127,0.25)",
-                background: voiceDeafened
-                  ? "rgba(255,255,255,0.12)"
-                  : "rgba(255,255,255,0.06)",
-                color: "white",
-                fontWeight: 800,
-                cursor: "pointer",
-                display: "grid",
-                placeItems: "center",
-                flex: "0 0 auto",
-              }}
-              title={
-                voiceDeafened
-                  ? "Undeafen (hear others)"
-                  : "Deafen (stop hearing)"
-              }
-              aria-label={
-                voiceDeafened
-                  ? "Undeafen (hear others)"
-                  : "Deafen (stop hearing)"
-              }
-            >
-              {voiceDeafened ? "🔇" : "🔈"}
-            </button>
-          ) : null}
-
-          <button
-            onClick={() => {
-              submitChat();
-            }}
-            style={{
-              height: 34,
-              padding: "0 12px",
-              borderRadius: 8,
-              border: "1px solid rgba(127,127,127,0.25)",
-              background: "rgba(255,255,255,0.06)",
-              color: "white",
-              fontWeight: 700,
-              cursor: "pointer",
-              flex: "0 0 auto",
-            }}
-            title="Send chat (Enter)"
-            aria-label="Send chat"
-          >
-            Enter
-          </button>
+          </div>
         </div>
-      </div>
+      ) : null}
       {/* Top Right Dock */}
       <div
         style={{
@@ -7677,9 +8065,9 @@ export default function World({
           top: 12,
           right: 12,
           display: "flex",
-          flexDirection: isMobile ? "column" : "row",
-          gap: isMobile ? 10 : 12,
-          alignItems: isMobile ? "flex-end" : "center",
+          flexDirection: isMobile || isTablet ? "column" : "row",
+          gap: isMobile || isTablet ? 10 : 12,
+          alignItems: isMobile || isTablet ? "flex-end" : "center",
           pointerEvents: "auto",
         }}
         data-pawnsquare-menu-root
@@ -8089,6 +8477,362 @@ export default function World({
           </>
         ) : null}
       </div>
+
+      {/* Mobile Bottom Nav + Menu Sheet */}
+      {isMobile ? (
+        <>
+          <div
+            style={{
+              position: "fixed",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: `calc(${MOBILE_BOTTOM_NAV_HEIGHT}px + env(safe-area-inset-bottom))`,
+              paddingBottom: "env(safe-area-inset-bottom)",
+              background: "rgba(0,0,0,0.35)",
+              backdropFilter: "blur(8px)",
+              borderTop: "1px solid rgba(255,255,255,0.12)",
+              display: "grid",
+              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+              zIndex: 50,
+              pointerEvents: "auto",
+            }}
+          >
+            <button
+              onClick={() => {
+                setShowRoomsModal(true);
+                setMobileMenuSheetOpen(false);
+              }}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "white",
+                fontWeight: 800,
+                fontSize: 12,
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+                gap: 2,
+                paddingTop: 8,
+              }}
+              aria-label="Rooms"
+              title="Rooms"
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>🏠</span>
+              Rooms
+            </button>
+
+            <button
+              onClick={() => {
+                if (!is4pRoom) startQuickPlay();
+                setMobileMenuSheetOpen(false);
+              }}
+              disabled={is4pRoom}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "white",
+                fontWeight: 800,
+                fontSize: 12,
+                cursor: is4pRoom ? "not-allowed" : "pointer",
+                opacity: is4pRoom ? 0.45 : 1,
+                display: "grid",
+                placeItems: "center",
+                gap: 2,
+                paddingTop: 8,
+              }}
+              aria-label="Quick Play"
+              title={
+                is4pRoom ? "Quick Play unavailable in 4P room" : "Quick Play"
+              }
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>🎲</span>
+              Quick Play
+            </button>
+
+            <button
+              onClick={() => {
+                setMobileChatOpen((v) => !v);
+                setMobileMenuSheetOpen(false);
+              }}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "white",
+                fontWeight: 800,
+                fontSize: 12,
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+                gap: 2,
+                paddingTop: 8,
+              }}
+              aria-label={mobileChatOpen ? "Close chat" : "Open chat"}
+              title={mobileChatOpen ? "Close chat" : "Chat"}
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>💬</span>
+              Chat
+            </button>
+
+            <button
+              onClick={() => {
+                setMobileMenuSheetOpen((v) => !v);
+              }}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "white",
+                fontWeight: 800,
+                fontSize: 12,
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+                gap: 2,
+                paddingTop: 8,
+              }}
+              aria-label={mobileMenuSheetOpen ? "Close menu" : "Open menu"}
+              title={mobileMenuSheetOpen ? "Close menu" : "Menu"}
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>☰</span>
+              Menu
+            </button>
+          </div>
+
+          {mobileMenuSheetOpen ? (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.55)",
+                backdropFilter: "blur(8px)",
+                zIndex: 65,
+                pointerEvents: "auto",
+                display: "flex",
+                alignItems: "flex-end",
+              }}
+              onClick={() => setMobileMenuSheetOpen(false)}
+              aria-label="Close menu"
+            >
+              <div
+                style={{
+                  width: "100%",
+                  borderTopLeftRadius: 18,
+                  borderTopRightRadius: 18,
+                  borderTop: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(10,10,12,0.94)",
+                  color: "white",
+                  padding: 14,
+                  paddingBottom: `calc(14px + ${MOBILE_BOTTOM_NAV_HEIGHT}px + env(safe-area-inset-bottom))`,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 10,
+                  }}
+                >
+                  <div style={{ fontWeight: 900, letterSpacing: 0.4 }}>
+                    Menu
+                  </div>
+                  <button
+                    onClick={() => setMobileMenuSheetOpen(false)}
+                    style={{
+                      height: 34,
+                      width: 34,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "white",
+                      cursor: "pointer",
+                      display: "grid",
+                      placeItems: "center",
+                      fontSize: 18,
+                      fontWeight: 900,
+                    }}
+                    aria-label="Close menu"
+                    title="Close"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 10 }}
+                >
+                  {avatarSystem === "three-avatar" ? (
+                    <button
+                      onClick={() => {
+                        setShopOpen(true);
+                        setMobileMenuSheetOpen(false);
+                      }}
+                      style={{
+                        height: 44,
+                        borderRadius: 14,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "rgba(255,255,255,0.06)",
+                        color: "white",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "0 14px",
+                        fontWeight: 800,
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                        }}
+                      >
+                        <ShopIcon size={18} />
+                        Shop/Inventory
+                      </span>
+                      <span style={{ opacity: 0.75 }}>›</span>
+                    </button>
+                  ) : null}
+
+                  {avatarSystem === "three-avatar" ? (
+                    <button
+                      onClick={() => {
+                        if (!supabaseUser) {
+                          openAuthModal();
+                          setMobileMenuSheetOpen(false);
+                          return;
+                        }
+                        setQuestsOpen(true);
+                        setMobileMenuSheetOpen(false);
+                      }}
+                      style={{
+                        height: 44,
+                        borderRadius: 14,
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        background: "rgba(255,255,255,0.06)",
+                        color: "white",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "0 14px",
+                        fontWeight: 800,
+                      }}
+                    >
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                        }}
+                      >
+                        <CoinsIcon size={18} />
+                        Quests
+                      </span>
+                      <span style={{ opacity: 0.75 }}>›</span>
+                    </button>
+                  ) : null}
+
+                  <button
+                    onClick={() => {
+                      setSettingsOpen(true);
+                      setMobileMenuSheetOpen(false);
+                    }}
+                    style={{
+                      height: 44,
+                      borderRadius: 14,
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "white",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "0 14px",
+                      fontWeight: 800,
+                    }}
+                  >
+                    <span
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
+                      <span style={{ fontSize: 18, lineHeight: 1 }}>⚙</span>
+                      Settings
+                    </span>
+                    <span style={{ opacity: 0.75 }}>›</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (!supabaseUser) {
+                        openAuthModal();
+                        setMobileMenuSheetOpen(false);
+                        return;
+                      }
+                      setMenuOpen(true);
+                      setMobileMenuSheetOpen(false);
+                    }}
+                    style={{
+                      height: 44,
+                      borderRadius: 14,
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "white",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "0 14px",
+                      fontWeight: 800,
+                    }}
+                    title={supabaseUser ? "Account" : "Login"}
+                    aria-label={supabaseUser ? "Account" : "Login"}
+                  >
+                    <span
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
+                      <span style={{ fontSize: 18, lineHeight: 1 }}>👤</span>
+                      {supabaseUser ? "Account" : "Login"}
+                    </span>
+                    <span style={{ opacity: 0.75 }}>›</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setMobileMenuSheetOpen(false);
+                      onExit();
+                    }}
+                    style={{
+                      height: 44,
+                      borderRadius: 14,
+                      border: "1px solid rgba(255, 59, 48, 0.35)",
+                      background: "rgba(255, 59, 48, 0.12)",
+                      color: "#ffb3b3",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "0 14px",
+                      fontWeight: 900,
+                    }}
+                    title="Exit"
+                    aria-label="Exit"
+                  >
+                    <span
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
+                      <span style={{ fontSize: 18, lineHeight: 1 }}>⏻</span>
+                      Exit
+                    </span>
+                    <span style={{ opacity: 0.75 }}>›</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : null}
 
       {boardControls ? (
         <div

@@ -5,11 +5,7 @@ import { Html, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { BoardLamp } from "./world";
 import { WaterPlane } from "./water-material";
-import { Butterflies } from "./butterflies";
 import { Fireflies } from "./fireflies";
-import { FloatingParticles } from "./floating-particles";
-import { Wildflowers } from "./wildflowers";
-import { AmbientBirds } from "./ambient-birds";
 import type { LeaderboardEntry } from "@/lib/partyRoom";
 
 function clamp(n: number, min: number, max: number) {
@@ -1981,15 +1977,28 @@ export function ParkLobby({
     []
   );
 
-  // Dev mode state
+  // Dev mode state (persisted; used by other components too)
   const [devMode, setDevMode] = useState(false);
-  const [enhancements, setEnhancements] = useState({
-    butterflies: false,
-    fireflies: true,
-    floatingParticles: true,
-    wildflowers: false,
-    ambientBirds: false,
-  });
+
+  // Initialize from persisted flag
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem("pawnsquare.devMode");
+      setDevMode(v === "1");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Persist + broadcast changes
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("pawnsquare.devMode", devMode ? "1" : "0");
+      window.dispatchEvent(new Event("pawnsquare-dev-mode-changed"));
+    } catch {
+      // ignore
+    }
+  }, [devMode]);
 
   // Toggle dev mode with tilde key
   useEffect(() => {
@@ -2003,78 +2012,9 @@ export function ParkLobby({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const toggleEnhancement = (key: keyof typeof enhancements) => {
-    setEnhancements((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
   return (
     <>
-      {/* Dev Mode Panel */}
-      {devMode && (
-        <Html position={[0, 0, 0]} center style={{ pointerEvents: "none" }}>
-          <div
-            style={{
-              position: "fixed",
-              top: "10px",
-              right: "10px",
-              background: "rgba(0, 0, 0, 0.85)",
-              color: "white",
-              padding: "16px",
-              borderRadius: "8px",
-              fontFamily: "monospace",
-              fontSize: "12px",
-              minWidth: "220px",
-              pointerEvents: "auto",
-              zIndex: 10000,
-            }}
-          >
-            <div
-              style={{
-                marginBottom: "12px",
-                fontWeight: "bold",
-                fontSize: "14px",
-              }}
-            >
-              🎮 Dev Mode - Enhancements
-            </div>
-            {Object.entries(enhancements).map(([key, value]) => (
-              <label
-                key={key}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  marginBottom: "8px",
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={value}
-                  onChange={() =>
-                    toggleEnhancement(key as keyof typeof enhancements)
-                  }
-                  style={{ marginRight: "8px", cursor: "pointer" }}
-                />
-                <span style={{ textTransform: "capitalize" }}>
-                  {key.replace(/([A-Z])/g, " $1").trim()}
-                </span>
-              </label>
-            ))}
-            <div
-              style={{
-                marginTop: "12px",
-                paddingTop: "8px",
-                borderTop: "1px solid #444",
-                fontSize: "10px",
-                opacity: 0.7,
-              }}
-            >
-              Press ` (tilde) to toggle
-            </div>
-          </div>
-        </Html>
-      )}
+      {/* Dev Mode: intentionally no enhancements UI (toggle with ` key). */}
 
       {/* Cozy garden plaza lighting (sunset) */}
       <ambientLight intensity={0.24} color="#ffe8c8" />
@@ -2112,22 +2052,8 @@ export function ParkLobby({
         <GrassMaterial vertexColors roughness={1} metalness={0} />
       </mesh>
 
-      {/* ENHANCED: Flying butterflies */}
-      {enhancements.butterflies && <Butterflies count={20} />}
-
-      {/* ENHANCED: Magical fireflies at dusk */}
-      {enhancements.fireflies && <Fireflies count={120} />}
-
-      {/* ENHANCED: Floating dandelion seeds and pollen */}
-      {enhancements.floatingParticles && <FloatingParticles count={250} />}
-
-      {/* ENHANCED: Scattered wildflowers */}
-      {enhancements.wildflowers && (
-        <Wildflowers count={400} radius={50} excludeRadius={18} />
-      )}
-
-      {/* ENHANCED: Birds flying overhead */}
-      {enhancements.ambientBirds && <AmbientBirds count={12} />}
+      {/* Fireflies (always on) */}
+      <Fireflies count={120} />
 
       {/* Lakes/ponds - much closer and visible */}
       {/* Lake 1 - East side */}

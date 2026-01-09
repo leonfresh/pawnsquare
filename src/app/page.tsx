@@ -19,7 +19,7 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [gender, setGender] = useState<"male" | "female">("male");
   const [inputValue, setInputValue] = useState("");
-  const [selectedRoom, setSelectedRoom] = useState<string>("main-room");
+  const [selectedRoom, setSelectedRoom] = useState<string>("main-room-ch1");
   const [selectedMode, setSelectedMode] = useState<"normal" | "4p">("normal");
   const [lobbyType, setLobbyType] = useState<"park" | "scifi">("park");
   const [worldReady, setWorldReady] = useState(false);
@@ -33,11 +33,12 @@ export default function Home() {
   const baseForMode = selectedMode === "4p" ? base4pRoom : baseNormalRoom;
 
   const roomIdForChannel = (base: string, ch: number) => {
-    if (ch <= 1) return base;
-    return `${base}-ch${ch - 1}`;
+    const n = Math.max(1, Math.floor(ch));
+    return `${base}-ch${n}`;
   };
 
   const channelForRoomId = (base: string, roomId: string) => {
+    // Legacy fallback: older links used the base with no -ch suffix.
     if (roomId === base) return 1;
     const m = roomId.match(
       new RegExp(
@@ -48,13 +49,62 @@ export default function Home() {
     if (!m) return null;
     const n = parseInt(m[1]!, 10);
     if (!Number.isFinite(n)) return null;
-    return n + 1;
+    return n;
   };
 
   const occupiedChannels = (base: string) => {
-    // Only channels with people, but always include CH.1 so the UI isn't empty.
-    const list = (allRooms || [])
-      .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
+    // Normal rooms UX: Always show CH.1-CH.3.
+    // Hide CH.4+ until CH.1-CH.3 are all full.
+    const isNormalBase = base === baseNormalRoom;
+
+    const known = (allRooms || []).filter((r) =>
+      r.roomId.startsWith(`${base}-ch`)
+    );
+    const byId = new Map<string, number>();
+    for (const r of known) byId.set(r.roomId, r.playerCount);
+    const countFor = (roomId: string) => byId.get(roomId) ?? 0;
+
+    const mk = (ch: number) => {
+      const roomId = roomIdForChannel(base, ch);
+      return { roomId, playerCount: countFor(roomId), ch };
+    };
+
+    if (isNormalBase) {
+      const firstThree = [mk(1), mk(2), mk(3)];
+      const allThreeFull = firstThree.every(
+        (r) => r.playerCount >= MAX_PLAYERS_PER_ROOM
+      );
+      if (!allThreeFull) return firstThree;
+
+      // Once CH.1-3 are all full, reveal CH.4+.
+      const extras = known
+        .map((r) => ({
+          roomId: r.roomId,
+          playerCount: r.playerCount,
+          ch: channelForRoomId(base, r.roomId),
+        }))
+        .filter(
+          (r): r is { roomId: string; playerCount: number; ch: number } =>
+            typeof r.ch === "number" && r.ch >= 4
+        )
+        .sort((a, b) => a.ch - b.ch)
+        // Prefer to avoid showing a huge list of empty channels.
+        .filter((r) => r.playerCount > 0);
+
+      const out = [...firstThree];
+      // Always include CH.4 so there's an obvious next option.
+      out.push(mk(4));
+      // Include any additional occupied channels (5+).
+      for (const e of extras) {
+        if (e.ch === 4) continue; // already included
+        out.push(e);
+      }
+      return out;
+    }
+
+    // Default behavior for other bases (e.g. 4P): only show channels with people,
+    // but always include CH.1 so the UI isn't empty.
+    const list = known
       .filter((r) => r.playerCount > 0)
       .map((r) => ({
         roomId: r.roomId,
@@ -68,24 +118,54 @@ export default function Home() {
       .sort((a, b) => a.ch - b.ch);
 
     if (!list.some((r) => r.ch === 1)) {
-      list.unshift({ roomId: base, playerCount: 0, ch: 1 });
+      list.unshift({
+        roomId: roomIdForChannel(base, 1),
+        playerCount: 0,
+        ch: 1,
+      });
     }
-
     return list;
   };
 
   const autoPickRoom = (base: string) => {
-    const known = (allRooms || [])
-      .filter((r) => r.roomId === base || r.roomId.startsWith(`${base}-ch`))
-      .sort((a, b) => b.playerCount - a.playerCount);
+    const isNormalBase = base === baseNormalRoom;
+    const known = (allRooms || []).filter((r) =>
+      r.roomId.startsWith(`${base}-ch`)
+    );
 
-    const available = known.filter((r) => r.playerCount < MAX_PLAYERS_PER_ROOM);
+    if (isNormalBase) {
+      const firstThree = [1, 2, 3]
+        .map((ch) => {
+          const roomId = roomIdForChannel(base, ch);
+          const match = known.find((r) => r.roomId === roomId);
+          return {
+            roomId,
+            playerCount: match?.playerCount ?? 0,
+          };
+        })
+        .sort((a, b) => b.playerCount - a.playerCount);
+
+      const availableFirstThree = firstThree.filter(
+        (r) => r.playerCount < MAX_PLAYERS_PER_ROOM
+      );
+      if (availableFirstThree[0]) return availableFirstThree[0].roomId;
+
+      // If CH.1-3 are all full, fall through to the generic picker (which can
+      // create/recommend CH.4+).
+    }
+
+    const knownSorted = [...known].sort(
+      (a, b) => b.playerCount - a.playerCount
+    );
+    const available = knownSorted.filter(
+      (r) => r.playerCount < MAX_PLAYERS_PER_ROOM
+    );
     if (available[0]) return available[0].roomId;
 
-    const channels = known
+    const channels = knownSorted
       .map((r) => channelForRoomId(base, r.roomId))
       .filter((n): n is number => typeof n === "number");
-    const maxCh = channels.length ? Math.max(...channels) : 1;
+    const maxCh = channels.length ? Math.max(...channels) : 0;
     return roomIdForChannel(base, maxCh + 1);
   };
 

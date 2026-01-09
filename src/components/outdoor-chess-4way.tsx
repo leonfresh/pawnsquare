@@ -2,10 +2,11 @@
 
 import { RoundedBox, Text } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { Vec3 } from "@/lib/partyRoom";
 import { formatClock } from "./chess-core";
+import { useChessSounds } from "./chess-sounds";
 import {
   Chess4Piece,
   isSquare4,
@@ -443,6 +444,41 @@ export function OutdoorChess4P({
     canMoveThisTurn,
   } = chessGame;
 
+  const { playMove, playCapture } = useChessSounds();
+  const lastSoundSeqRef = useRef(0);
+  const prevPiecesRef = useRef(netState.pieces);
+
+  useEffect(() => {
+    const prevPieces = prevPiecesRef.current;
+    prevPiecesRef.current = netState.pieces;
+
+    if (!isSeated) return;
+    if (netState.seq <= lastSoundSeqRef.current) return;
+    lastSoundSeqRef.current = netState.seq;
+
+    const lm = netState.lastMove;
+    if (!lm) return;
+
+    const to = String(lm.to);
+    const file = to.charCodeAt(0) - 97;
+    const rank = Number.parseInt(to.slice(1), 10) - 1;
+    if (!Number.isFinite(file) || !Number.isFinite(rank)) {
+      playMove();
+      return;
+    }
+    const toKey = `${file},${rank}`;
+    const wasOccupied = !!(prevPieces as any)?.[toKey];
+    if (wasOccupied) playCapture();
+    else playMove();
+  }, [
+    isSeated,
+    netState.seq,
+    netState.lastMove,
+    netState.pieces,
+    playMove,
+    playCapture,
+  ]);
+
   const padOffset = boardSize / 2 + 1.15;
   const padSize: [number, number] = [2.35, 0.75];
 
@@ -518,7 +554,7 @@ export function OutdoorChess4P({
   }, [originVec.x, originVec.y, originVec.z, squareSize]);
 
   return (
-    <group>
+    <group userData={{ blocksClickToMove: true }}>
       {resultLabel ? (
         <Text
           position={[originVec.x, originVec.y + 1.6, originVec.z]}

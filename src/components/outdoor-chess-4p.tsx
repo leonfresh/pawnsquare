@@ -3,7 +3,8 @@
 import { RoundedBox, Text } from "@react-three/drei";
 import type { ThreeEvent } from "@react-three/fiber";
 import type { RefObject } from "react";
-import { useMemo, useState } from "react";
+import { Chess } from "chess.js";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { BoardMode, Vec3 } from "@/lib/partyRoom";
 import {
@@ -13,6 +14,7 @@ import {
   type Square,
 } from "./chess-core";
 import { Chess4Piece, useChess4Game, type TeamSeat } from "./chess4-core";
+import { useChessSounds } from "./chess-sounds";
 
 function JoinPad({
   label,
@@ -315,6 +317,42 @@ export function OutdoorChess4P({
     resultLabel,
   } = chessGame;
 
+  const { playMove, playCapture } = useChessSounds();
+  const prevFenForSoundRef = useRef(netState.fen);
+  const lastSoundSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (!isSeated) {
+      prevFenForSoundRef.current = netState.fen;
+      return;
+    }
+    if (netState.seq <= lastSoundSeqRef.current) return;
+    lastSoundSeqRef.current = netState.seq;
+
+    if (netState.lastMove) {
+      try {
+        const tempChess = new Chess(prevFenForSoundRef.current);
+        const moveResult = tempChess.move({
+          from: netState.lastMove.from,
+          to: netState.lastMove.to,
+          promotion: "q",
+        });
+        if (moveResult && (moveResult as any).captured) playCapture();
+        else playMove();
+      } catch {
+        playMove();
+      }
+    }
+
+    prevFenForSoundRef.current = netState.fen;
+  }, [
+    isSeated,
+    netState.seq,
+    netState.fen,
+    netState.lastMove,
+    playMove,
+    playCapture,
+  ]);
   const boardStyle = useMemo(() => ({ light: "#deb887", dark: "#8b4513" }), []);
 
   const canInteract = isSeated && !netState.result && mySides.has(turn);
@@ -370,7 +408,7 @@ export function OutdoorChess4P({
   const [warningSquare, setWarningSquare] = useState<string | null>(null);
 
   return (
-    <group>
+    <group userData={{ blocksClickToMove: true }}>
       {resultLabel ? (
         <Text
           position={[originVec.x, originVec.y + 1.5, originVec.z]}

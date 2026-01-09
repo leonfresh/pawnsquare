@@ -2,7 +2,14 @@
 
 import { RoundedBox, Text, useGLTF, Html } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type RefObject,
+  type MutableRefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import type { BoardMode, Vec3 } from "@/lib/partyRoom";
 import { chessVariantForMode, engineForMode } from "@/lib/boardModes";
@@ -18,6 +25,7 @@ import {
 } from "./chess-core";
 import { useCheckersGame } from "./checkers-core";
 import { useChessSounds } from "./chess-sounds";
+import { LocalArrow3D, useLocalArrows } from "./local-arrows";
 import { parseFenMoveNumber } from "@/lib/gooseChess";
 
 /**
@@ -1466,6 +1474,7 @@ export function ScifiChess({
   chessTheme,
   chessBoardTheme,
   gameMode = "chess",
+  suppressCameraRotateRef,
 }: {
   roomId: string;
   boardKey: string;
@@ -1508,6 +1517,7 @@ export function ScifiChess({
   chessTheme?: string;
   chessBoardTheme?: string;
   gameMode?: BoardMode;
+  suppressCameraRotateRef?: MutableRefObject<boolean>;
 }) {
   const engine = engineForMode(gameMode);
   const [warningSquare, setWarningSquare] = useState<Square | null>(null);
@@ -1559,6 +1569,11 @@ export function ScifiChess({
     playClick,
     playHonk,
   } = useChessSounds();
+
+  const localArrows = useLocalArrows({
+    enabled: true,
+    suppressRightDragRef: suppressCameraRotateRef,
+  });
 
   const chessGame = useChessGame({
     enabled: engine === "chess",
@@ -1752,6 +1767,24 @@ export function ScifiChess({
     },
   });
 
+  const lastMoveKeyRef = useRef<string | null>(null);
+  const activeLastMoveKey = useMemo(() => {
+    const lm = (
+      engine === "checkers"
+        ? (checkersGame.netState.lastMove as any)
+        : (chessGame.netState.lastMove as any)
+    ) as any;
+    if (!lm) return null;
+    return `${lm.from}-${lm.to}`;
+  }, [engine, chessGame.netState.lastMove, checkersGame.netState.lastMove]);
+
+  useEffect(() => {
+    if (activeLastMoveKey !== lastMoveKeyRef.current) {
+      if (localArrows.arrows.length > 0) localArrows.clearArrows();
+      lastMoveKeyRef.current = activeLastMoveKey;
+    }
+  }, [activeLastMoveKey, localArrows.arrows.length, localArrows.clearArrows]);
+
   const originVec = chessGame.originVec;
   const ox = originVec.x;
   const oz = originVec.z;
@@ -1832,8 +1865,45 @@ export function ScifiChess({
     }
     chessGame.requestSitAt(seatX, seatZ);
   };
+  const activeDevModeEnabled =
+    engine === "checkers" ? false : chessGame.devModeEnabled;
+  const activeDevJoinLog = engine === "checkers" ? [] : chessGame.devJoinLog;
   const activeResultLabel =
     engine === "checkers" ? checkersGame.resultLabel : chessGame.resultLabel;
+
+  const [devJoinModalOpen, setDevJoinModalOpen] = useState(false);
+  const [devJoinModalSide, setDevJoinModalSide] = useState<Side | null>(null);
+  const lastPendingJoinSideRef = useRef<Side | null>(null);
+  useEffect(() => {
+    if (!activeDevModeEnabled) {
+      setDevJoinModalOpen(false);
+      setDevJoinModalSide(null);
+      lastPendingJoinSideRef.current = activePendingJoinSide;
+      return;
+    }
+
+    const prev = lastPendingJoinSideRef.current;
+    lastPendingJoinSideRef.current = activePendingJoinSide;
+
+    // Auto-open when a join starts.
+    if (activePendingJoinSide && activePendingJoinSide !== prev) {
+      setDevJoinModalOpen(true);
+      setDevJoinModalSide(activePendingJoinSide);
+    }
+
+    // Also open if we have fresh logs while joining.
+    if (activePendingJoinSide && activeDevJoinLog.length > 0) {
+      setDevJoinModalOpen(true);
+    }
+  }, [activeDevModeEnabled, activePendingJoinSide, activeDevJoinLog.length]);
+
+  const devClickJoin = (side: Side) => {
+    if (activeDevModeEnabled) {
+      setDevJoinModalSide(side);
+      setDevJoinModalOpen(true);
+    }
+    activeClickJoin(side);
+  };
 
   const rematchRequestedBy: Side | null =
     engine === "chess" &&
@@ -2437,7 +2507,10 @@ export function ScifiChess({
       />
 
       {/* Board */}
-      <group position={[originVec.x, originVec.y, originVec.z]}>
+      <group
+        position={[originVec.x, originVec.y, originVec.z]}
+        userData={{ blocksClickToMove: true }}
+      >
         {/* Board Base - brighter */}
         <mesh position={[0, -0.05, 0]} receiveShadow castShadow>
           <boxGeometry args={[boardSize + 0.2, 0.1, boardSize + 0.2]} />
@@ -2508,11 +2581,22 @@ export function ScifiChess({
               key={square}
               position={[x, 0, z]}
               onPointerDown={(e) => {
+                if (e.button === 2) {
+                  e.stopPropagation();
+                  e.nativeEvent?.preventDefault?.();
+                  localArrows.onRightDownSquare(square as Square);
+                  return;
+                }
                 if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
                 activeOnPickSquare(square);
               }}
+              onContextMenu={(e) => {
+                e.stopPropagation();
+                e.nativeEvent?.preventDefault?.();
+              }}
               onPointerEnter={() => {
+                localArrows.onRightEnterSquare(square as Square);
                 if (engine === "chess") {
                   chessGame.setHoveredSquare(square as Square);
                 }
@@ -2696,6 +2780,108 @@ export function ScifiChess({
         })}
       </group>
 
+      {/* Local-only arrows (right-drag). */}
+      {localArrows.arrows.map((a, idx) => (
+        <LocalArrow3D
+          key={`${a.from}-${a.to}-${idx}`}
+          arrow={a}
+          origin={originVec}
+          squareSize={squareSize}
+        />
+      ))}
+
+      {/* Dev Mode: join modal log (chess only) */}
+      {activeDevModeEnabled && devJoinModalOpen ? (
+        <Html position={[0, 0, 0]} center style={{ pointerEvents: "none" }}>
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0, 0, 0, 0.55)",
+              zIndex: 100000,
+              pointerEvents: "auto",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "18px",
+            }}
+            onClick={() => setDevJoinModalOpen(false)}
+          >
+            <div
+              style={{
+                width: "min(780px, 92vw)",
+                maxHeight: "min(520px, 82vh)",
+                background: "rgba(0, 0, 0, 0.92)",
+                color: "white",
+                borderRadius: "12px",
+                padding: "14px",
+                fontFamily: "monospace",
+                boxSizing: "border-box",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "12px",
+                  marginBottom: "10px",
+                }}
+              >
+                <div style={{ fontWeight: "bold" }}>
+                  Dev Mode Join Log (joining{" "}
+                  {devJoinModalSide
+                    ? devJoinModalSide === "w"
+                      ? "White"
+                      : "Black"
+                    : "?"}
+                  )
+                </div>
+                <button
+                  type="button"
+                  style={{
+                    background: "transparent",
+                    color: "white",
+                    border: "1px solid rgba(255,255,255,0.25)",
+                    borderRadius: "8px",
+                    padding: "6px 10px",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => setDevJoinModalOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+              <div
+                style={{
+                  opacity: 0.75,
+                  fontSize: "11px",
+                  marginBottom: "10px",
+                }}
+              >
+                Tip: This join flow is intentionally slowed down in dev mode.
+              </div>
+              <pre
+                style={{
+                  margin: 0,
+                  whiteSpace: "pre-wrap",
+                  overflow: "auto",
+                  maxHeight: "min(400px, 62vh)",
+                  padding: "10px",
+                  borderRadius: "10px",
+                  background: "rgba(255,255,255,0.06)",
+                }}
+              >
+                {activeDevJoinLog.length > 0
+                  ? activeDevJoinLog.join("\n")
+                  : "(waiting for logs…)"}
+              </pre>
+            </div>
+          </div>
+        </Html>
+      ) : null}
+
       {/* Join pads */}
       <JoinPad
         label={`${formatClock(activeClocks.remaining.w)}\n${
@@ -2713,7 +2899,7 @@ export function ScifiChess({
           activePendingJoinSide === "b" ||
           (!!activeSeats.w && activeSeats.w.connId !== activeSelfConnId)
         }
-        onClick={() => activeClickJoin("w")}
+        onClick={() => devClickJoin("w")}
       />
       <JoinPad
         label={`${formatClock(activeClocks.remaining.b)}\n${
@@ -2731,7 +2917,7 @@ export function ScifiChess({
           activePendingJoinSide === "w" ||
           (!!activeSeats.b && activeSeats.b.connId !== activeSelfConnId)
         }
-        onClick={() => activeClickJoin("b")}
+        onClick={() => devClickJoin("b")}
       />
 
       {/* Control console / TV */}

@@ -65,19 +65,50 @@ function defaultName(selfId: string) {
 
 const PARTYKIT_HOST = process.env.NEXT_PUBLIC_PARTYKIT_HOST || "127.0.0.1:1999";
 
+const EQUIPPED_AVATAR_URL_STORAGE_KEY = "pawnsquare:equippedAvatarUrl";
+
+function readCachedEquippedAvatarUrl(): string | undefined {
+  try {
+    if (typeof window === "undefined") return undefined;
+    const v = window.localStorage.getItem(EQUIPPED_AVATAR_URL_STORAGE_KEY);
+    const cleaned = (v ?? "").toString().trim();
+    return cleaned ? cleaned : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function cacheEquippedAvatarUrl(url: string | undefined) {
+  try {
+    if (typeof window === "undefined") return;
+    const cleaned = (url ?? "").toString().trim();
+    if (!cleaned) return;
+    window.localStorage.setItem(EQUIPPED_AVATAR_URL_STORAGE_KEY, cleaned);
+  } catch {
+    // ignore
+  }
+}
+
 export function usePartyRoom(
   roomId: string,
   opts?: {
     initialName?: string;
     initialGender?: "male" | "female";
+    initialAvatarUrl?: string;
     paused?: boolean;
   }
 ) {
   const [selfId, setSelfId] = useState<string>("");
   const [selfName, setSelfName] = useState<string>("");
   const [selfGender, setSelfGender] = useState<"male" | "female">("male");
+  const initialAvatarUrlStable = useMemo(() => {
+    const opt = (opts?.initialAvatarUrl ?? "").toString().trim();
+    if (opt) return opt;
+    return readCachedEquippedAvatarUrl();
+  }, [opts?.initialAvatarUrl]);
+
   const [selfAvatarUrl, setSelfAvatarUrl] = useState<string | undefined>(
-    undefined
+    () => initialAvatarUrlStable
   );
   const [players, setPlayers] = useState<Record<string, Player>>({});
   const [chat, setChat] = useState<ChatMessage[]>([]);
@@ -94,7 +125,7 @@ export function usePartyRoom(
   const connectSeqRef = useRef(0);
   const selfNameRef = useRef<string>("");
   const selfGenderRef = useRef<"male" | "female">("male");
-  const selfAvatarUrlRef = useRef<string | undefined>(undefined);
+  const selfAvatarUrlRef = useRef<string | undefined>(initialAvatarUrlStable);
   const paused = opts?.paused ?? false;
 
   // Batch chat updates so spam doesn't trigger a render per message.
@@ -122,6 +153,12 @@ export function usePartyRoom(
     selfGenderRef.current = initialGenderStable;
     setSelfGender(initialGenderStable);
   }, [initialNameStable, initialGenderStable]);
+
+  useEffect(() => {
+    selfAvatarUrlRef.current = initialAvatarUrlStable;
+    setSelfAvatarUrl(initialAvatarUrlStable);
+    cacheEquippedAvatarUrl(initialAvatarUrlStable);
+  }, [initialAvatarUrlStable]);
 
   useEffect(() => {
     if (paused) return;
@@ -414,6 +451,7 @@ export function usePartyRoom(
     (url: string) => {
       selfAvatarUrlRef.current = url;
       setSelfAvatarUrl(url);
+      cacheEquippedAvatarUrl(url);
 
       // Re-send hello with updated avatar
       if (socketRef.current?.readyState === WebSocket.OPEN && selfId) {

@@ -3,7 +3,14 @@
 import { useFrame } from "@react-three/fiber";
 import { Chess, type Square } from "chess.js";
 import PartySocket from "partysocket";
-import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import { useGLTF } from "@react-three/drei";
 import type { Vec3 } from "@/lib/partyRoom";
@@ -39,6 +46,23 @@ export type ClockState = {
   active: Side;
   lastTickMs: number | null;
 };
+
+function safeJson(value: any) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function readRuntimeDevModeFlag() {
+  if (process.env.NODE_ENV === "production") return false;
+  try {
+    return window.localStorage.getItem("pawnsquare.devMode") === "1";
+  } catch {
+    return false;
+  }
+}
 
 export type SeatInfo = {
   connId: string;
@@ -1203,6 +1227,8 @@ export type UseChessGameResult = {
   onPickSquare: (square: Square) => void;
   onPickPiece: (square: Square) => void;
   clickJoin: (side: Side) => void;
+  devModeEnabled: boolean;
+  devJoinLog: string[];
   setTimeControlByIndex: (idx: number) => void;
   clickReset: () => void;
   requestSitAt: (seatX: number, seatZ: number) => void;
@@ -1246,10 +1272,56 @@ export function useChessGame({
 
   const socketRef = useRef<PartySocket | null>(null);
   const [chessSelfId, setChessSelfId] = useState<string>("");
-  const [chessConnected, setChessConnected] = useState(false);
-  const chessConnectedRef = useRef(false);
+  // Start the PartyKit connection flow as early as possible when enabled.
+  // (Avoid a one-frame window where a user can click Join before we've even
+  // scheduled the initial websocket handshake.)
+  const [chessConnected, setChessConnected] = useState<boolean>(() => enabled);
+  const chessConnectedRef = useRef<boolean>(enabled);
   const pendingJoinRef = useRef<Side | null>(null);
   const [pendingJoinSide, setPendingJoinSide] = useState<Side | null>(null);
+
+  const [devModeEnabled, setDevModeEnabled] = useState(false);
+  const [devJoinLog, setDevJoinLog] = useState<string[]>([]);
+
+  useEffect(() => {
+    const handle = () => setDevModeEnabled(readRuntimeDevModeFlag());
+    handle();
+
+    window.addEventListener("pawnsquare-dev-mode-changed", handle);
+    window.addEventListener("storage", handle);
+    return () => {
+      window.removeEventListener("pawnsquare-dev-mode-changed", handle);
+      window.removeEventListener("storage", handle);
+    };
+  }, []);
+
+  const pushDevJoinLog = useCallback(
+    (message: string, data?: any) => {
+      if (!devModeEnabled) return;
+      const time = new Date().toLocaleTimeString();
+      const line =
+        data === undefined
+          ? `${time} ${message}`
+          : `${time} ${message} ${safeJson(data)}`;
+      setDevJoinLog((prev) => {
+        const next = [...prev, line];
+        return next.length > 60 ? next.slice(next.length - 60) : next;
+      });
+      try {
+        if (data !== undefined) console.log("[DevJoin]", message, data);
+        else console.log("[DevJoin]", message);
+      } catch {
+        // ignore
+      }
+    },
+    [devModeEnabled]
+  );
+
+  const sleepMs = useCallback((ms: number) => {
+    return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+  }, []);
+
+  const joinOpTokenRef = useRef(0);
 
   const activeModeRef = useRef(true);
   useEffect(() => {
@@ -1260,9 +1332,7 @@ export function useChessGame({
     chessConnectedRef.current = chessConnected;
   }, [chessConnected]);
 
-  // Pre-connect as soon as the board is mounted.
-  // This shifts the initial socket handshake/state parsing off the "join" click,
-  // which otherwise can feel like a hitch.
+  // Ensure we connect promptly whenever enabled flips on.
   useEffect(() => {
     if (!enabled) return;
     if (!chessConnectedRef.current) {
@@ -1615,11 +1685,26 @@ export function useChessGame({
 
   const requestJoin = (side: Side) => {
     const seat = netState.seats[side];
-    if (seat && seat.connId !== chessSelfId) return;
+    if (seat && seat.connId !== chessSelfId) {
+      if (devModeEnabled)
+        pushDevJoinLog("requestJoin blocked: seat already taken", {
+          side,
+          seat,
+          chessSelfId,
+        });
+      return;
+    }
+    if (devModeEnabled)
+      pushDevJoinLog("send join", {
+        side,
+        playerId: selfId,
+        name: selfName,
+      });
     send({ type: "join", side, playerId: selfId, name: selfName });
   };
 
   const requestLeave = (side: Side) => {
+    if (devModeEnabled) pushDevJoinLog("send leave", { side });
     send({ type: "leave", side });
   };
 
@@ -1804,39 +1889,87 @@ export function useChessGame({
     onJoinIntent?.(boardKey);
     setPendingJoinSide(side);
 
+    joinOpTokenRef.current += 1;
+    const token = joinOpTokenRef.current;
+
+    if (devModeEnabled) {
+      setDevJoinLog([]);
+      pushDevJoinLog("clickJoin", { boardKey, side, lobby, variant });
+    }
+
     if (joinScheduleRef.current) {
       window.clearTimeout(joinScheduleRef.current);
       joinScheduleRef.current = null;
     }
 
+    const DEV_DELAY_BEFORE_ACTION_MS = 120;
+    const DEV_DELAY_BETWEEN_STEPS_MS = 160;
+    const delayBefore = devModeEnabled ? DEV_DELAY_BEFORE_ACTION_MS : 0;
+
     joinScheduleRef.current = window.setTimeout(() => {
       joinScheduleRef.current = null;
 
-      click?.();
+      const run = async () => {
+        if (token !== joinOpTokenRef.current) return;
 
-      if (!chessConnectedRef.current) {
-        pendingJoinRef.current = side;
-        chessConnectedRef.current = true;
-        setChessConnected(true);
-        return;
-      }
+        click?.();
+        if (devModeEnabled) pushDevJoinLog("played click sound");
 
-      if (
-        !socketRef.current ||
-        socketRef.current.readyState !== WebSocket.OPEN
-      ) {
-        pendingJoinRef.current = side;
-        return;
-      }
+        if (devModeEnabled) {
+          await sleepMs(DEV_DELAY_BETWEEN_STEPS_MS);
+          if (token !== joinOpTokenRef.current) return;
+        }
 
-      if (mySides.has(side)) {
-        requestLeave(side);
-        setPendingJoinSide(null);
-        return;
-      }
+        if (!chessConnectedRef.current) {
+          if (devModeEnabled)
+            pushDevJoinLog("not connected: queue join and force-connect");
+          pendingJoinRef.current = side;
+          chessConnectedRef.current = true;
+          setChessConnected(true);
+          return;
+        }
 
-      requestJoin(side);
-    }, 0);
+        if (devModeEnabled) {
+          await sleepMs(DEV_DELAY_BETWEEN_STEPS_MS);
+          if (token !== joinOpTokenRef.current) return;
+        }
+
+        if (
+          !socketRef.current ||
+          socketRef.current.readyState !== WebSocket.OPEN
+        ) {
+          if (devModeEnabled)
+            pushDevJoinLog("socket not open: queue join until WS opens", {
+              readyState: socketRef.current?.readyState ?? null,
+            });
+          pendingJoinRef.current = side;
+          return;
+        }
+
+        if (devModeEnabled) {
+          await sleepMs(DEV_DELAY_BETWEEN_STEPS_MS);
+          if (token !== joinOpTokenRef.current) return;
+        }
+
+        if (mySides.has(side)) {
+          if (devModeEnabled)
+            pushDevJoinLog("already seated on side: leaving", { side });
+          requestLeave(side);
+          setPendingJoinSide(null);
+          return;
+        }
+
+        if (devModeEnabled)
+          pushDevJoinLog("request join", {
+            side,
+            seats: netState.seats,
+            chessSelfId,
+          });
+        requestJoin(side);
+      };
+
+      void run();
+    }, delayBefore);
   };
 
   const requestSitAt = (seatX: number, seatZ: number) => {
@@ -2326,6 +2459,8 @@ export function useChessGame({
     onPickSquare,
     onPickPiece,
     clickJoin,
+    devModeEnabled,
+    devJoinLog,
     setTimeControlByIndex,
     clickReset,
     requestSitAt,
