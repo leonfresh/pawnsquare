@@ -8,6 +8,13 @@ import { WaterPlane } from "./water-material";
 import { Fireflies } from "./fireflies";
 import type { LeaderboardEntry } from "@/lib/partyRoom";
 
+export type InteriorFloorStyle =
+  | "carpet"
+  | "mosaic"
+  | "herringbone"
+  | "terrazzo"
+  | "slate";
+
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
@@ -1065,18 +1072,45 @@ function TallTreeMaterial(props: any) {
   );
 }
 
-function GrassMaterial(props: any) {
+function GrassMaterial({
+  interiorFloorStyle = "slate",
+  ...props
+}: {
+  interiorFloorStyle?: InteriorFloorStyle;
+} & any) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
-  const uniforms = useRef({ uTime: { value: 0 } });
+  const uniforms = useRef({
+    uTime: { value: 0 },
+    uInteriorFloorStyle: { value: 0 },
+  });
+
+  const interiorFloorStyleValue = useMemo(() => {
+    switch (interiorFloorStyle) {
+      case "carpet":
+        return 4;
+      case "mosaic":
+        return 0;
+      case "herringbone":
+        return 1;
+      case "terrazzo":
+        return 2;
+      case "slate":
+        return 3;
+      default:
+        return 0;
+    }
+  }, [interiorFloorStyle]);
 
   useFrame((state) => {
     if (materialRef.current) {
       uniforms.current.uTime.value = state.clock.elapsedTime;
+      uniforms.current.uInteriorFloorStyle.value = interiorFloorStyleValue;
     }
   });
 
   const onBeforeCompile = (shader: any) => {
     shader.uniforms.uTime = uniforms.current.uTime;
+    shader.uniforms.uInteriorFloorStyle = uniforms.current.uInteriorFloorStyle;
     shader.vertexShader = `
       varying vec3 vPos;
       ${shader.vertexShader}
@@ -1090,6 +1124,7 @@ function GrassMaterial(props: any) {
 
     shader.fragmentShader = `
       uniform float uTime;
+      uniform float uInteriorFloorStyle;
       varying vec3 vPos;
 
       // Grass colors from reference
@@ -1124,6 +1159,27 @@ function GrassMaterial(props: any) {
           f += 0.0625 * noise(p);
           return f;
       }
+
+        // Granite-style layered abs noise (used to fake marble veining).
+        float granite(vec2 p) {
+          float o = 0.0;
+          float amp = 1.0;
+          float norm = 0.0;
+          for (int i = 0; i < 4; i++) {
+            float n = abs(noise(p) * 2.0 - 1.0);
+            o += amp * n;
+            norm += amp;
+            amp *= 0.5;
+            p *= 2.0;
+          }
+          return o / max(norm, 1e-5);
+        }
+
+        mat2 rot(float a) {
+          float s = sin(a);
+          float c = cos(a);
+          return mat2(c, -s, s, c);
+        }
       
       float stripes(float x, float period) {
           return smoothstep(0.0, 0.1, sin(x * 3.14159 * 2.0 / period));
@@ -1191,6 +1247,208 @@ function GrassMaterial(props: any) {
 
       // Mix based on isDirt
       diffuseColor.rgb = mix(finalGrass, dirtColor, isDirt);
+
+      // --- Interior square patch (shader-only, no extra mesh) ---
+      // Cozy floor just in the core play area (leave grass visible around it).
+      float innerHalf = 12.8;
+      float feather = 0.45;
+      float outerHalf = innerHalf + feather;
+
+      // Edge-only feathering: fully opaque in the center.
+      float mx = 1.0 - smoothstep(innerHalf, outerHalf, abs(vPos.x));
+      float mz = 1.0 - smoothstep(innerHalf, outerHalf, abs(vPos.z));
+      float interiorMask = mx * mz;
+
+      // A near-hard core mask for gating decorative details.
+      float coreX = 1.0 - smoothstep(innerHalf - 0.02, innerHalf + 0.02, abs(vPos.x));
+      float coreZ = 1.0 - smoothstep(innerHalf - 0.02, innerHalf + 0.02, abs(vPos.z));
+      float interiorCore = coreX * coreZ;
+
+      // Subtle decorative inlay/border near the edge of the interior square.
+      // (Makes the patch read more "intentional" and upscale.)
+      float edgeDist = innerHalf - max(abs(vPos.x), abs(vPos.z));
+      float borderWidth = 0.95;
+      float borderBand = 1.0 - smoothstep(0.0, borderWidth, edgeDist);
+      float borderLine = 1.0 - smoothstep(0.0, 0.08, abs(edgeDist - 0.28));
+      float inlayMask = clamp(borderBand * 0.35 + borderLine * 0.65, 0.0, 1.0) * interiorCore;
+
+      // Feather edges a bit with low-frequency noise so it blends into the park.
+      float edgeN = fbm(vPos.xz * 0.22);
+      // Keep the center fully opaque; only perturb in the feather ring.
+      float edgeProx = clamp(edgeDist, 0.0, feather);
+      float edgeOnly = 1.0 - smoothstep(0.0, feather, edgeProx);
+      interiorMask = clamp(interiorMask + (edgeN - 0.5) * 0.18 * edgeOnly, 0.0, 1.0);
+
+        vec2 mUv = vPos.xz;
+        float floorStyle = uInteriorFloorStyle;
+        vec3 surface = vec3(0.0);
+
+        // (0) Classic interior mosaic tile.
+        if (floorStyle < 0.5) {
+          float tileSize = 0.62;
+          vec2 g = mUv / tileSize;
+          vec2 cell = floor(g);
+          vec2 f = fract(g);
+
+          float distToEdge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y));
+          float groutWidth = 0.055;
+          float grout = 1.0 - smoothstep(0.0, groutWidth, distToEdge);
+
+          float r0 = hash(cell + vec2(1.7, 9.2));
+          float r1 = hash(cell + vec2(7.3, 2.1));
+          vec3 tileA = vec3(0.66, 0.63, 0.56);
+          vec3 tileB = vec3(0.56, 0.54, 0.48);
+          vec3 tileCol = mix(tileA, tileB, r0);
+          tileCol *= 0.96 + (r1 - 0.5) * 0.10;
+
+          float bevel = smoothstep(0.0, groutWidth * 2.2, distToEdge);
+          tileCol *= 0.90 + 0.12 * bevel;
+
+          float speck = noise(mUv * 10.0);
+          tileCol *= 0.96 + 0.07 * (speck - 0.5);
+
+          vec3 groutCol = vec3(0.20, 0.19, 0.18);
+          surface = mix(tileCol, groutCol, grout);
+        }
+        // (1) Herringbone parquet.
+        else if (floorStyle < 1.5) {
+          float blockSize = 0.85;
+          vec2 q = rot(0.78539816339) * (mUv / blockSize);
+          vec2 cell = floor(q);
+          vec2 f = fract(q);
+
+          float parity = mod(cell.x + cell.y, 2.0);
+          vec2 u = f - 0.5;
+          if (parity > 0.5) u = u.yx;
+
+          float aspect = 2.2;
+          float edgeX = 0.5 - abs(u.x) / aspect;
+          float edgeY = 0.5 - abs(u.y);
+          float edge = min(edgeX, edgeY);
+
+          float groutW = 0.030;
+          float grout = 1.0 - smoothstep(0.0, groutW, edge);
+
+          float r0 = hash(cell + vec2(1.7, 9.2));
+          float r1 = hash(cell + vec2(7.3, 2.1));
+
+          // Wood grain running along plank length (u.x direction after parity swap).
+          vec2 grainUv = mUv;
+          if (parity > 0.5) grainUv = grainUv.yx;
+          
+          // Longitudinal grain lines.
+          float grainFreq = 18.0 + r0 * 8.0;
+          float grainLine = sin(grainUv.y * grainFreq + r1 * 10.0);
+          grainLine = grainLine * 0.5 + 0.5;
+          float grainStrength = fbm(grainUv * vec2(0.8, 4.5) + vec2(r0, r1) * 5.0);
+          float grain = mix(0.5, grainLine, grainStrength * 0.6);
+          
+          // Fine speckle.
+          float speck = noise(grainUv * 15.0 + vec2(r1, r0) * 3.0);
+          
+          // Dark walnut-like palette.
+          vec3 woodA = vec3(0.34, 0.22, 0.14);
+          vec3 woodB = vec3(0.20, 0.13, 0.08);
+          vec3 wood = mix(woodB, woodA, 0.40 + 0.60 * grain);
+          wood *= 0.92 + 0.10 * (speck - 0.5);
+          wood *= 0.94 + (r0 - 0.5) * 0.10;
+
+          vec3 groutCol = vec3(0.06, 0.05, 0.05);
+          surface = mix(wood, groutCol, grout);
+        }
+        // (2) Terrazzo.
+        else if (floorStyle < 2.5) {
+          vec3 base = vec3(0.78, 0.76, 0.72);
+          float baseN = fbm(mUv * 0.12 + vec2(2.3, -1.1));
+          base *= 0.95 + 0.10 * (baseN - 0.5);
+
+          float chipScale = 3.6;
+          vec2 cg = mUv * chipScale;
+          vec2 cell = floor(cg);
+          vec2 f = fract(cg);
+
+          float a0 = hash(cell + vec2(1.1, 2.3));
+          float a1 = hash(cell + vec2(3.7, 9.4));
+          float a2 = hash(cell + vec2(8.2, 4.6));
+          vec2 c0 = vec2(a0, a1);
+          vec2 c1 = vec2(a2, hash(cell + vec2(5.5, 7.7)));
+          float r0 = 0.08 + 0.10 * hash(cell + vec2(9.1, 1.2));
+          float r1 = 0.07 + 0.12 * hash(cell + vec2(2.2, 6.6));
+
+          float d0 = length(f - c0);
+          float d1 = length(f - c1);
+          float chip0 = 1.0 - smoothstep(r0, r0 + 0.02, d0);
+          float chip1 = 1.0 - smoothstep(r1, r1 + 0.02, d1);
+          float chip = clamp(chip0 + chip1, 0.0, 1.0);
+
+          vec3 chipA = vec3(0.30, 0.29, 0.33);
+          vec3 chipB = vec3(0.55, 0.50, 0.42);
+          vec3 chipC = vec3(0.18, 0.15, 0.14);
+          float pick = hash(cell + vec2(6.1, 3.3));
+          vec3 chipCol = pick < 0.33 ? chipA : (pick < 0.66 ? chipB : chipC);
+
+          surface = mix(base, chipCol, chip * 0.85);
+        }
+        // (3) Slate / soapstone.
+        else if (floorStyle < 3.5) {
+          vec3 base = vec3(0.12, 0.13, 0.15);
+          float cloud = fbm(mUv * 0.06 + vec2(6.2, -3.9));
+          float fine = fbm(mUv * 0.35);
+          base *= 0.88 + 0.22 * (cloud - 0.5);
+          base *= 0.95 + 0.08 * (fine - 0.5);
+
+          float speck = noise(mUv * 12.0);
+          base *= 0.95 + 0.10 * (speck - 0.5);
+
+          float v = abs(sin(mUv.x * 0.18 + mUv.y * 0.22 + fbm(mUv * 0.08) * 2.0));
+          float veins = smoothstep(0.96, 0.995, v);
+          base = mix(base, base * 0.75, veins * 0.25);
+
+          surface = base;
+        }
+        // (4) Royal navy carpet.
+        else {
+          // Tuned to read as a plush royal carpet without being too loud.
+          vec3 navy = vec3(0.03, 0.06, 0.14);
+          vec3 gold = vec3(0.78, 0.66, 0.30);
+          vec3 crimson = vec3(0.55, 0.15, 0.12);
+
+          // Fiber/pile variation.
+          float weave = fbm(mUv * 6.5) * 0.65 + noise(mUv * 18.0) * 0.35;
+          vec3 base = navy * (0.90 + 0.16 * (weave - 0.5));
+
+          // Center medallion + subtle ornaments.
+          vec2 p = mUv * 0.22;
+          float r = length(p * vec2(1.0, 1.25));
+          float med = 1.0 - smoothstep(0.62, 0.80, r);
+          float ang = atan(p.y, p.x);
+          float petals = abs(sin(ang * 6.0 + fbm(p * 3.0) * 1.6));
+          float ornament = smoothstep(0.38, 0.92, petals) * med;
+
+          // Border motif (uses the existing borderBand from the interior mask section).
+          vec2 bUv = mUv * 0.35;
+          float b0 = abs(sin(bUv.x * 3.14159));
+          float b1 = abs(sin(bUv.y * 3.14159));
+          float borderMotif = smoothstep(0.55, 0.92, b0 * b1);
+
+          base = mix(base, gold * 0.62, ornament * 0.55);
+          base = mix(base, crimson * 0.55, med * smoothstep(0.65, 0.92, abs(sin(ang * 12.0))) * 0.22);
+          base = mix(base, gold * 0.58, borderBand * borderMotif * 0.40);
+
+          // Slight directional pile sheen.
+          float pile = 0.5 + 0.5 * sin((mUv.x + mUv.y) * 24.0 + weave * 2.5);
+          base *= 0.96 + 0.05 * (pile - 0.5);
+
+          surface = base;
+        }
+
+        // Warm metallic-ish inlay/border (kept subtle).
+        float inlayN = fbm(mUv * 0.35 + vec2(2.1, -7.7));
+        vec3 inlayColor = vec3(0.78, 0.70, 0.42);
+        surface = mix(surface, inlayColor, inlayMask * (0.78 + 0.22 * (inlayN - 0.5)));
+
+      // Hybrid mix: keep some of the original park ground showing through.
+      diffuseColor.rgb = mix(diffuseColor.rgb, surface, interiorMask);
       `
     );
   };
@@ -1957,9 +2215,11 @@ function ProceduralRabbit({
 export function ParkLobby({
   leaderboard,
   showLeaderboardWall = true,
+  interiorFloorStyle = "slate",
 }: {
   leaderboard?: LeaderboardEntry[];
   showLeaderboardWall?: boolean;
+  interiorFloorStyle?: InteriorFloorStyle;
 }) {
   const groundGeom = useMemo(() => makeGroundGeometry({}), []);
   const plazaGeom = useMemo(
@@ -2049,7 +2309,12 @@ export function ParkLobby({
 
       {/* Ground: grass base */}
       <mesh geometry={groundGeom} receiveShadow>
-        <GrassMaterial vertexColors roughness={1} metalness={0} />
+        <GrassMaterial
+          interiorFloorStyle={interiorFloorStyle}
+          vertexColors
+          roughness={1}
+          metalness={0}
+        />
       </mesh>
 
       {/* Fireflies (always on) */}
@@ -2656,7 +2921,7 @@ export function ParkLobby({
       })}
 
       {/* Stone wall to the north - for future credits/leaderboard */}
-      <group position={[0, 0, 14]}>
+      <group position={[0, 0, 14]} userData={{ cameraOccluder: true }}>
         {/* Back wall (faces south toward the boards) */}
         <mesh position={[0, 0.6, 3]} castShadow receiveShadow>
           <boxGeometry args={[36, 1.2, 1]} />
@@ -2727,7 +2992,7 @@ export function ParkLobby({
       </group>
 
       {/* Stone wall to the south - for future credits/leaderboard */}
-      <group position={[0, 0, -14]}>
+      <group position={[0, 0, -14]} userData={{ cameraOccluder: true }}>
         {/* Back wall (faces north toward the boards) */}
         <mesh position={[0, 0.6, -3]} castShadow receiveShadow>
           <boxGeometry args={[36, 1.2, 1]} />

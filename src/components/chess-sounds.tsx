@@ -29,6 +29,8 @@ export function useChessSounds() {
       };
       load("move", "/sounds/Move.mp3");
       load("capture", "/sounds/Capture.mp3");
+      load("correct", "/sounds/correct.mp3");
+      load("wrong", "/sounds/wrong.mp3");
       // Select.mp3 doesn't exist, will use fallback synth
       // load("select", "/sounds/Select.mp3");
       load("warning", "/sounds/LowTime.mp3");
@@ -167,6 +169,20 @@ export function useChessSounds() {
     });
   }, [playOrFallback, playTone]);
 
+  const playCorrect = useCallback(() => {
+    playOrFallback("correct", () => {
+      playTone(660, "sine", 0.12, 0.25);
+      setTimeout(() => playTone(880, "sine", 0.12, 0.25), 90);
+    });
+  }, [playOrFallback, playTone]);
+
+  const playWrong = useCallback(() => {
+    playOrFallback("wrong", () => {
+      playTone(220, "square", 0.12, 0.25, -60);
+      playNoise(0.06, 0.25);
+    });
+  }, [playOrFallback, playTone, playNoise]);
+
   return {
     playMove,
     playCapture,
@@ -174,5 +190,7 @@ export function useChessSounds() {
     playWarning,
     playClick,
     playHonk,
+    playCorrect,
+    playWrong,
   };
 }

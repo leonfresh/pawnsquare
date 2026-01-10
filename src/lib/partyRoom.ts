@@ -45,18 +45,42 @@ export type LeaderboardEntry = {
   score: number;
 };
 
+export type PuzzleRushDifficulty =
+  | "easiest"
+  | "easier"
+  | "normal"
+  | "harder"
+  | "hardest";
+
+export type PuzzleRushNetState = {
+  boardKey: string;
+  seq: number;
+  leaderConnId: string;
+  running: boolean;
+  endsAtMs: number | null;
+  fen: string;
+  turn: "w" | "b";
+  score: number;
+  difficulty: PuzzleRushDifficulty;
+  puzzleId: string | null;
+  lastMove: { from: string; to: string } | null;
+};
+
 type PartyMessage =
   | {
       type: "sync";
       players: Record<string, Omit<Player, "lastSeen">>;
       chat?: ChatMessage[];
       boardModes?: Record<string, BoardMode>;
+      puzzleRushStates?: Record<string, PuzzleRushNetState>;
     }
   | { type: "player-joined"; player: Omit<Player, "lastSeen"> }
   | { type: "player-moved"; id: string; position: Vec3; rotY: number }
   | { type: "player-left"; id: string }
   | { type: "chat"; message: ChatMessage }
   | { type: "board:modes"; boardModes: Record<string, BoardMode> }
+  | { type: "puzzleRush:state"; state: PuzzleRushNetState }
+  | { type: "puzzleRush:clear"; boardKey: string }
   | { type: "leaderboard"; entries: LeaderboardEntry[] };
 
 function defaultName(selfId: string) {
@@ -114,6 +138,9 @@ export function usePartyRoom(
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [puzzleRushStates, setPuzzleRushStates] = useState<
+    Record<string, PuzzleRushNetState>
+  >({});
   const [boardModes, setBoardModes] = useState<Record<string, BoardMode>>({
     a: "chess",
     b: "chess",
@@ -230,6 +257,12 @@ export function usePartyRoom(
           if (msg.boardModes && typeof msg.boardModes === "object") {
             setBoardModes(msg.boardModes);
           }
+          if (
+            msg.puzzleRushStates &&
+            typeof msg.puzzleRushStates === "object"
+          ) {
+            setPuzzleRushStates(msg.puzzleRushStates);
+          }
         } else if (msg.type === "player-joined") {
           console.log("[PartyKit] Player joined:", msg.player.id);
           setPlayers((prev) => ({
@@ -291,6 +324,20 @@ export function usePartyRoom(
           setPlayers((prev) => {
             const next = { ...prev };
             delete next[msg.id];
+            return next;
+          });
+        } else if (msg.type === "puzzleRush:state") {
+          const st = msg.state;
+          const key = (st?.boardKey ?? "").toString().trim().slice(0, 8);
+          if (!key) return;
+          setPuzzleRushStates((prev) => ({ ...prev, [key]: st }));
+        } else if (msg.type === "puzzleRush:clear") {
+          const key = (msg.boardKey ?? "").toString().trim().slice(0, 8);
+          if (!key) return;
+          setPuzzleRushStates((prev) => {
+            if (!prev[key]) return prev;
+            const next = { ...prev };
+            delete next[key];
             return next;
           });
         } else if (msg.type === "chat") {
@@ -479,6 +526,21 @@ export function usePartyRoom(
       }
     : null;
 
+  const claimPuzzleRushLeader = useCallback((boardKey: string) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    const key = (boardKey ?? "").toString().trim().slice(0, 8);
+    if (!key) return;
+    socketRef.current.send(
+      JSON.stringify({ type: "puzzleRush:claim", boardKey: key })
+    );
+  }, []);
+
+  const sendPuzzleRushState = useCallback((state: PuzzleRushNetState) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    if (!state) return;
+    socketRef.current.send(JSON.stringify({ type: "puzzleRush:state", state }));
+  }, []);
+
   return {
     self,
     players,
@@ -487,12 +549,15 @@ export function usePartyRoom(
     leaderboard,
     connected,
     boardModes,
+    puzzleRushStates,
     sendSelfState,
     sendChat,
     setBoardMode,
     reportActivityMove,
     setName,
     setAvatarUrl,
+    claimPuzzleRushLeader,
+    sendPuzzleRushState,
     socketRef, // Expose for voice integration
   };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { RoundedBox, Text, useGLTF, Html } from "@react-three/drei";
+import { RoundedBox, Text, useGLTF, Html, Billboard } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import {
   type RefObject,
@@ -10,8 +10,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { Chess } from "chess.js";
 import * as THREE from "three";
-import type { BoardMode, Vec3 } from "@/lib/partyRoom";
+import type { BoardMode, PuzzleRushNetState, Vec3 } from "@/lib/partyRoom";
 import { chessVariantForMode, engineForMode } from "@/lib/boardModes";
 import {
   AnimatedPiece,
@@ -28,6 +29,32 @@ import { useChessSounds } from "./chess-sounds";
 import { LocalArrow3D, useLocalArrows } from "./local-arrows";
 import { parseFenMoveNumber } from "@/lib/gooseChess";
 import { usePuzzleRushGame } from "./puzzle-rush-core";
+
+function chessPiecesFromFen(
+  fen: string
+): Array<{ square: Square; type: string; color: Side }> {
+  const chess = (() => {
+    try {
+      return new Chess(fen);
+    } catch {
+      return new Chess();
+    }
+  })();
+
+  const out: Array<{ square: Square; type: string; color: Side }> = [];
+  const board = chess.board();
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const p = board[r]?.[f];
+      if (!p) continue;
+      const file = FILES[f]!;
+      const rank = 8 - r;
+      const sq = `${file}${rank}` as Square;
+      out.push({ square: sq, type: p.type, color: p.color });
+    }
+  }
+  return out;
+}
 
 /**
  * Sci-Fi board implementation notes (unified game logic)
@@ -428,6 +455,61 @@ function HolographicRematchRequestText({
         />
       </Text>
     </group>
+  );
+}
+
+function HolographicPuzzleRushHud({
+  originVec,
+  boardSize,
+  label,
+}: {
+  originVec: THREE.Vector3;
+  boardSize: number;
+  label: string;
+}) {
+  const textRef = useRef<any>(null);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const time = performance.now() * 0.001;
+    const opacity = 0.85 + Math.sin(time * 2.2) * 0.12;
+    if (textRef.current.material) {
+      textRef.current.material.opacity = opacity;
+    }
+  });
+
+  return (
+    <Billboard
+      position={[
+        originVec.x + boardSize / 2 + 0.75,
+        originVec.y + 1.8,
+        originVec.z - boardSize / 2 - 0.5,
+      ]}
+      follow
+      lockX={false}
+      lockY={false}
+      lockZ={false}
+    >
+      <Text
+        ref={textRef}
+        fontSize={0.18}
+        color="#00d9ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.012}
+        outlineColor="#003d4d"
+        font="/fonts/Orbitron-Bold.ttf"
+      >
+        {label}
+        <meshBasicMaterial
+          attach="material"
+          color="#00d9ff"
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </Text>
+    </Billboard>
   );
 }
 
@@ -1458,6 +1540,9 @@ export function ScifiChess({
   selfPositionRef,
   selfId,
   selfName,
+  puzzleRushNetState,
+  claimPuzzleRushLeader,
+  sendPuzzleRushState,
   onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
@@ -1483,6 +1568,9 @@ export function ScifiChess({
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  puzzleRushNetState?: PuzzleRushNetState | null;
+  claimPuzzleRushLeader?: (boardKey: string) => void;
+  sendPuzzleRushState?: (state: PuzzleRushNetState) => void;
   onActivityMove?: (game: string, boardKey: string) => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
@@ -1570,6 +1658,8 @@ export function ScifiChess({
     playWarning,
     playClick,
     playHonk,
+    playCorrect,
+    playWrong,
   } = useChessSounds();
 
   const localArrows = useLocalArrows({
@@ -1617,9 +1707,19 @@ export function ScifiChess({
     roomId,
     boardKey,
     lobby: "scifi",
+    selfConnId: selfId,
+    netState: puzzleRushNetState ?? null,
+    claimLeader: claimPuzzleRushLeader,
+    publishState: sendPuzzleRushState,
     controlsOpen: !!controlsOpen,
     board2dOpen: !!board2dOpen,
     onBoardControls,
+    sounds: {
+      move: playMove,
+      capture: playCapture,
+      correct: playCorrect,
+      wrong: playWrong,
+    },
   });
 
   // Quick Play: if targeted, try to join an available seat (only on fresh games).
@@ -1781,6 +1881,7 @@ export function ScifiChess({
 
   const lastMoveKeyRef = useRef<string | null>(null);
   const activeLastMoveKey = useMemo(() => {
+    if (isPuzzleRush) return null;
     const lm = (
       engine === "checkers"
         ? (checkersGame.netState.lastMove as any)
@@ -1788,7 +1889,12 @@ export function ScifiChess({
     ) as any;
     if (!lm) return null;
     return `${lm.from}-${lm.to}`;
-  }, [engine, chessGame.netState.lastMove, checkersGame.netState.lastMove]);
+  }, [
+    isPuzzleRush,
+    engine,
+    chessGame.netState.lastMove,
+    checkersGame.netState.lastMove,
+  ]);
 
   useEffect(() => {
     if (activeLastMoveKey !== lastMoveKeyRef.current) {
@@ -1808,7 +1914,8 @@ export function ScifiChess({
   const squareSize = chessGame.squareSize;
   const boardSize = chessGame.boardSize;
 
-  const activeTurn = engine === "checkers" ? checkersGame.turn : chessGame.turn;
+  const baseTurn = engine === "checkers" ? checkersGame.turn : chessGame.turn;
+  const activeTurn = isPuzzleRush ? puzzleRush.turn : baseTurn;
   const activeMySides =
     engine === "checkers" ? checkersGame.mySides : chessGame.mySides;
   const activeMyPrimarySide =
@@ -1818,13 +1925,24 @@ export function ScifiChess({
   const activeIsSeated =
     engine === "checkers" ? checkersGame.isSeated : chessGame.isSeated;
   const activeSelected = (
-    engine === "checkers" ? checkersGame.selected : chessGame.selected
+    isPuzzleRush
+      ? (puzzleRush.selected as any)
+      : engine === "checkers"
+      ? checkersGame.selected
+      : chessGame.selected
   ) as string | null;
   const activeLegalTargets = (
-    engine === "checkers" ? checkersGame.legalTargets : chessGame.legalTargets
+    isPuzzleRush
+      ? (puzzleRush.legalTargets as any)
+      : engine === "checkers"
+      ? checkersGame.legalTargets
+      : chessGame.legalTargets
   ) as string[];
-  const activeLastMove =
-    engine === "checkers" ? checkersGame.lastMove : chessGame.lastMove;
+  const activeLastMove = isPuzzleRush
+    ? (puzzleRush.lastMove as any)
+    : engine === "checkers"
+    ? checkersGame.lastMove
+    : chessGame.lastMove;
   const activePendingJoinSide =
     engine === "checkers"
       ? checkersGame.pendingJoinSide
@@ -1837,6 +1955,13 @@ export function ScifiChess({
       : chessGame.netState.seats;
   const activeSelfConnId =
     engine === "checkers" ? checkersGame.gameSelfId : chessGame.chessSelfId;
+
+  const activeChessPieces = useMemo(() => {
+    if (engine !== "chess")
+      return [] as Array<{ square: Square; type: string; color: Side }>;
+    if (isPuzzleRush) return chessPiecesFromFen(puzzleRush.fen);
+    return chessGame.pieces;
+  }, [engine, isPuzzleRush, puzzleRush.fen, chessGame.pieces]);
 
   const seatOccupied = (
     seat?: { connId?: string | null; playerId?: string | null } | null
@@ -1853,6 +1978,10 @@ export function ScifiChess({
     ? checkersGame.emitControlsOpen
     : chessGame.emitControlsOpen;
   const activeOnPickSquare = (sq: string) => {
+    if (isPuzzleRush) {
+      puzzleRush.onPickSquare(sq as any);
+      return;
+    }
     if (engine === "checkers") {
       checkersGame.onPickSquare(sq);
       return;
@@ -1860,6 +1989,10 @@ export function ScifiChess({
     chessGame.onPickSquare(sq as any);
   };
   const activeOnPickPiece = (sq: string) => {
+    if (isPuzzleRush) {
+      puzzleRush.onPickSquare(sq as any);
+      return;
+    }
     if (engine === "checkers") {
       checkersGame.onPickPiece(sq);
       return;
@@ -2525,6 +2658,7 @@ export function ScifiChess({
       <group
         position={[originVec.x, originVec.y, originVec.z]}
         userData={{ blocksClickToMove: true }}
+        rotation={[0, isPuzzleRush && puzzleRush.turn === "b" ? Math.PI : 0, 0]}
       >
         {/* Board Base - brighter */}
         <mesh position={[0, -0.05, 0]} receiveShadow castShadow>
@@ -2567,15 +2701,18 @@ export function ScifiChess({
           const pieceOnSquare =
             engine === "checkers"
               ? checkersGame.pieces.find((p) => p.square === square)
-              : chessGame.pieces.find((p) => p.square === square);
-          const canInteract =
-            isTarget ||
-            (pieceOnSquare &&
-              activeMySides.has(pieceOnSquare.color) &&
-              activeTurn === pieceOnSquare.color &&
-              (engine !== "checkers" ||
-                !checkersGame.netState.forcedFrom ||
-                checkersGame.netState.forcedFrom === square));
+              : activeChessPieces.find((p) => p.square === square);
+          const canInteract = isPuzzleRush
+            ? isTarget ||
+              isSel ||
+              (!!pieceOnSquare && activeTurn === pieceOnSquare.color)
+            : isTarget ||
+              (pieceOnSquare &&
+                activeMySides.has(pieceOnSquare.color) &&
+                activeTurn === pieceOnSquare.color &&
+                (engine !== "checkers" ||
+                  !checkersGame.netState.forcedFrom ||
+                  checkersGame.netState.forcedFrom === square));
 
           // Check if this is a valid goose placement square
           const isValidGoosePlacement =
@@ -2598,7 +2735,6 @@ export function ScifiChess({
               onPointerDown={(e) => {
                 if (e.button === 2) {
                   e.stopPropagation();
-                  e.nativeEvent?.preventDefault?.();
                   localArrows.onRightDownSquare(square as Square);
                   return;
                 }
@@ -2612,13 +2748,13 @@ export function ScifiChess({
               }}
               onPointerEnter={() => {
                 localArrows.onRightEnterSquare(square as Square);
-                if (engine === "chess") {
+                if (engine === "chess" && !isPuzzleRush) {
                   chessGame.setHoveredSquare(square as Square);
                 }
                 if (canInteract) document.body.style.cursor = "pointer";
               }}
               onPointerLeave={() => {
-                if (engine === "chess") {
+                if (engine === "chess" && !isPuzzleRush) {
                   chessGame.setHoveredSquare(null);
                 }
                 document.body.style.cursor = "default";
@@ -2974,76 +3110,6 @@ export function ScifiChess({
           activeEmitControlsOpen();
         }}
       />
-
-      {isPuzzleRush ? (
-        <group
-          position={[
-            controlPadCenter.x,
-            controlPadCenter.y,
-            controlPadCenter.z,
-          ]}
-        >
-          <group
-            position={[0, 0.015, 0]}
-            onPointerDown={(e) => {
-              if (e.button !== 0) return;
-              e.stopPropagation();
-              if (puzzleRush.running) puzzleRush.stop();
-              else void puzzleRush.start();
-            }}
-            onPointerEnter={() => {
-              document.body.style.cursor = "pointer";
-            }}
-            onPointerLeave={() => {
-              document.body.style.cursor = "default";
-            }}
-          >
-            <mesh receiveShadow>
-              <boxGeometry args={[0.9, 0.03, 0.9]} />
-              <meshStandardMaterial
-                color={puzzleRush.running ? "#0044aa" : "#111"}
-                roughness={0.2}
-                metalness={0.9}
-                emissive={puzzleRush.running ? "#0044aa" : "#000"}
-                emissiveIntensity={0.5}
-              />
-            </mesh>
-            <mesh position={[0, 0.018, 0]}>
-              <boxGeometry args={[0.98, 0.01, 0.98]} />
-              <meshBasicMaterial
-                color={puzzleRush.running ? "#00ffff" : "#0088ff"}
-                transparent
-                opacity={0.6}
-              />
-            </mesh>
-            <Text
-              position={[0, 0.031, 0]}
-              rotation={[-Math.PI / 2, 0, 0]}
-              fontSize={0.18}
-              lineHeight={0.9}
-              maxWidth={0.86}
-              textAlign="center"
-              color={puzzleRush.running ? "#00ffff" : "#fff"}
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.008}
-              outlineColor={puzzleRush.running ? "#00ffff" : "#000000"}
-              fontWeight="bold"
-            >
-              {puzzleRush.running ? "STOP\nRUSH" : "START\nRUSH"}
-            </Text>
-            {puzzleRush.running ? (
-              <pointLight
-                position={[0, 0.5, 0]}
-                color="#00ffff"
-                intensity={2}
-                distance={3}
-              />
-            ) : null}
-          </group>
-        </group>
-      ) : null}
-
       {/* Goose Chess visuals */}
       {gameMode === "goose"
         ? (() => {
@@ -3144,6 +3210,16 @@ export function ScifiChess({
         />
       ) : null}
 
+      {isPuzzleRush ? (
+        <HolographicPuzzleRushHud
+          originVec={originVec}
+          boardSize={boardSize}
+          label={`PUZZLE RUSH\nSCORE: ${puzzleRush.score}\nTIME: ${formatClock(
+            puzzleRush.remainingMs
+          )}`}
+        />
+      ) : null}
+
       {/* Startled squares handled by shader effect on pieces */}
 
       {/* Coordinate labels */}
@@ -3182,18 +3258,24 @@ export function ScifiChess({
               />
             );
           })
-        : chessGame.pieces.map((p) => {
+        : activeChessPieces.map((p) => {
             const isMyPiece = activeMySides.has(p.color);
-            const canMove = activeTurn === p.color && isMyPiece;
+            const canMove = isPuzzleRush
+              ? activeTurn === p.color
+              : activeTurn === p.color && isMyPiece;
             const animateFrom =
-              chessGame.animatedFromByTo.get(p.square) ?? null;
+              (isPuzzleRush
+                ? puzzleRush.animatedFromByTo.get(p.square)
+                : chessGame.animatedFromByTo.get(p.square)) ?? null;
             const isStartled =
               gameMode === "goose" &&
               chessGame.goosePhase !== "goose" &&
               chessGame.startledSquares.includes(p.square);
 
             const animKey = animateFrom
-              ? `anim:${chessGame.netState.seq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
+              ? `anim:${
+                  isPuzzleRush ? puzzleRush.animSeq : chessGame.netState.seq
+                }:${p.color}:${p.type}:${animateFrom}->${p.square}`
               : `static:${p.color}:${p.type}:${p.square}`;
 
             return (
@@ -3205,10 +3287,16 @@ export function ScifiChess({
                   originVec={originVec}
                   squareSize={squareSize}
                   animateFrom={animateFrom}
-                  animSeq={chessGame.netState.seq}
+                  animSeq={
+                    isPuzzleRush ? puzzleRush.animSeq : chessGame.netState.seq
+                  }
                   canMove={canMove}
                   mySide={activeMyPrimarySide}
                   onPickPiece={(sq) => {
+                    if (isPuzzleRush) {
+                      puzzleRush.onPickSquare(sq as any);
+                      return;
+                    }
                     // Check for invalid capture attempt with startled piece
                     if (
                       gameMode === "goose" &&

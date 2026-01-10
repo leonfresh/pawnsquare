@@ -20,6 +20,27 @@ type ChatMessage = {
 
 type BoardMode = "chess" | "checkers" | "goose" | "puzzleRush";
 
+type PuzzleRushDifficulty =
+  | "easiest"
+  | "easier"
+  | "normal"
+  | "harder"
+  | "hardest";
+
+type PuzzleRushNetState = {
+  boardKey: string;
+  seq: number;
+  leaderConnId: string;
+  running: boolean;
+  endsAtMs: number | null;
+  fen: string;
+  turn: "w" | "b";
+  score: number;
+  difficulty: PuzzleRushDifficulty;
+  puzzleId: string | null;
+  lastMove: { from: string; to: string } | null;
+};
+
 type LeaderboardEntry = {
   id: string;
   name: string;
@@ -41,6 +62,8 @@ type Message =
   | { type: "chat"; text: string }
   | { type: "sync"; players: Record<string, Player>; chat: ChatMessage[] }
   | { type: "board:set-mode"; boardKey: string; mode: BoardMode }
+  | { type: "puzzleRush:claim"; boardKey: string }
+  | { type: "puzzleRush:state"; state: PuzzleRushNetState }
   | { type: "voice:offer"; to: string; offer: RTCSessionDescriptionInit }
   | { type: "voice:answer"; to: string; answer: RTCSessionDescriptionInit }
   | { type: "voice:ice"; to: string; candidate: RTCIceCandidateInit }
@@ -55,6 +78,12 @@ type DiscoverSyncMessage = {
 
 type LeaderboardMessage = { type: "leaderboard"; entries: LeaderboardEntry[] };
 
+type PuzzleRushStateMessage = {
+  type: "puzzleRush:state";
+  state: PuzzleRushNetState;
+};
+type PuzzleRushClearMessage = { type: "puzzleRush:clear"; boardKey: string };
+
 export default class RoomServer implements Party.Server {
   players: Map<string, Player> = new Map();
   chat: ChatMessage[] = [];
@@ -64,6 +93,8 @@ export default class RoomServer implements Party.Server {
     c: "chess",
     d: "chess",
   };
+
+  puzzleRushStates: Record<string, PuzzleRushNetState> = {};
 
   stats: Map<
     string,
@@ -81,6 +112,30 @@ export default class RoomServer implements Party.Server {
   static readonly MAX_PLAYERS = 16;
 
   constructor(readonly room: Party.Room) {}
+
+  private sanitizeBoardKey(boardKey: unknown) {
+    return (boardKey ?? "").toString().trim().slice(0, 8);
+  }
+
+  private broadcastPuzzleRushState(state: PuzzleRushNetState) {
+    this.room.broadcast(
+      JSON.stringify({
+        type: "puzzleRush:state",
+        state,
+      } satisfies PuzzleRushStateMessage)
+    );
+  }
+
+  private clearPuzzleRushState(boardKey: string) {
+    if (!this.puzzleRushStates[boardKey]) return;
+    delete this.puzzleRushStates[boardKey];
+    this.room.broadcast(
+      JSON.stringify({
+        type: "puzzleRush:clear",
+        boardKey,
+      } satisfies PuzzleRushClearMessage)
+    );
+  }
 
   private isDiscoveryRoom() {
     // PartyKit room id is stable for the server instance.
@@ -200,6 +255,7 @@ export default class RoomServer implements Party.Server {
         players,
         chat: this.chat,
         boardModes: this.boardModes,
+        puzzleRushStates: this.puzzleRushStates,
       })
     );
 
@@ -314,7 +370,7 @@ export default class RoomServer implements Party.Server {
 
         this.room.broadcast(JSON.stringify({ type: "chat", message: chatMsg }));
       } else if (msg.type === "board:set-mode") {
-        const boardKey = (msg.boardKey ?? "").toString().trim().slice(0, 8);
+        const boardKey = this.sanitizeBoardKey(msg.boardKey);
         const mode: BoardMode =
           msg.mode === "checkers"
             ? "checkers"
@@ -329,9 +385,94 @@ export default class RoomServer implements Party.Server {
         if (prev === mode) return;
         this.boardModes[boardKey] = mode;
 
+        // Leaving Puzzle Rush clears shared state for that board.
+        if (prev === "puzzleRush" && mode !== "puzzleRush") {
+          this.clearPuzzleRushState(boardKey);
+        }
+
         this.room.broadcast(
           JSON.stringify({ type: "board:modes", boardModes: this.boardModes })
         );
+      } else if (msg.type === "puzzleRush:claim") {
+        const boardKey = this.sanitizeBoardKey(msg.boardKey);
+        if (!boardKey) return;
+        if ((this.boardModes[boardKey] ?? "chess") !== "puzzleRush") return;
+
+        const existing = this.puzzleRushStates[boardKey];
+        const leaderAlive = existing?.leaderConnId
+          ? Boolean(this.room.getConnection(existing.leaderConnId))
+          : false;
+
+        if (!existing || !leaderAlive) {
+          const next: PuzzleRushNetState = {
+            boardKey,
+            seq: (existing?.seq ?? 0) + 1,
+            leaderConnId: sender.id,
+            running: false,
+            endsAtMs: null,
+            fen:
+              existing?.fen ??
+              "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            turn: existing?.turn ?? "w",
+            score: existing?.score ?? 0,
+            difficulty: existing?.difficulty ?? "easiest",
+            puzzleId: existing?.puzzleId ?? null,
+            lastMove: existing?.lastMove ?? null,
+          };
+          this.puzzleRushStates[boardKey] = next;
+          this.broadcastPuzzleRushState(next);
+        } else {
+          // Leader already exists; just re-broadcast authoritative state.
+          this.broadcastPuzzleRushState(existing);
+        }
+      } else if (msg.type === "puzzleRush:state") {
+        const st = msg.state as PuzzleRushNetState;
+        const boardKey = this.sanitizeBoardKey(st?.boardKey);
+        if (!boardKey) return;
+        if ((this.boardModes[boardKey] ?? "chess") !== "puzzleRush") return;
+
+        const existing = this.puzzleRushStates[boardKey];
+        if (!existing) return;
+        if (existing.leaderConnId !== sender.id) return;
+
+        const safe: PuzzleRushNetState = {
+          boardKey,
+          seq: Math.max(existing.seq + 1, Number(st.seq) || 0),
+          leaderConnId: sender.id,
+          running: Boolean(st.running),
+          endsAtMs:
+            st.endsAtMs === null || st.endsAtMs === undefined
+              ? null
+              : Number(st.endsAtMs) || null,
+          fen: (st.fen ?? "").toString().slice(0, 128),
+          turn: st.turn === "b" ? "b" : "w",
+          score: Math.max(0, Math.floor(Number(st.score) || 0)),
+          difficulty:
+            st.difficulty === "hardest"
+              ? "hardest"
+              : st.difficulty === "harder"
+              ? "harder"
+              : st.difficulty === "normal"
+              ? "normal"
+              : st.difficulty === "easier"
+              ? "easier"
+              : "easiest",
+          puzzleId: st.puzzleId
+            ? (st.puzzleId ?? "").toString().slice(0, 16)
+            : null,
+          lastMove:
+            st.lastMove && (st.lastMove as any).from && (st.lastMove as any).to
+              ? {
+                  from: ((st.lastMove as any).from ?? "")
+                    .toString()
+                    .slice(0, 2),
+                  to: ((st.lastMove as any).to ?? "").toString().slice(0, 2),
+                }
+              : null,
+        };
+
+        this.puzzleRushStates[boardKey] = safe;
+        this.broadcastPuzzleRushState(safe);
       } else if (msg.type === "voice:offer" && msg.to) {
         // Relay WebRTC offer to target peer
         console.log(
@@ -421,6 +562,13 @@ export default class RoomServer implements Party.Server {
     }
 
     this.players.delete(conn.id);
+
+    // If a leader disconnects, clear the board's Puzzle Rush state.
+    for (const [boardKey, st] of Object.entries(this.puzzleRushStates)) {
+      if (st.leaderConnId === conn.id) {
+        this.clearPuzzleRushState(boardKey);
+      }
+    }
 
     // Notify others
     this.room.broadcast(JSON.stringify({ type: "player-left", id: conn.id }));

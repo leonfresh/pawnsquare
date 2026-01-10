@@ -2900,7 +2900,7 @@ export function SciFiLobby({
       <HoloJellyfish position={[-20, 20, 20]} />
 
       {/* Wall enclosures (north/south) for future credits/leaderboard */}
-      <group position={[0, 0, 14]}>
+      <group position={[0, 0, 14]} userData={{ cameraOccluder: true }}>
         <mesh position={[0, 0.6, 3]} castShadow receiveShadow>
           <boxGeometry args={[36, 1.2, 1]} />
           <SciFiWallMaterial
@@ -2991,7 +2991,7 @@ export function SciFiLobby({
         </mesh>
       </group>
 
-      <group position={[0, 0, -14]}>
+      <group position={[0, 0, -14]} userData={{ cameraOccluder: true }}>
         <mesh position={[0, 0.6, -3]} castShadow receiveShadow>
           <boxGeometry args={[36, 1.2, 1]} />
           <SciFiWallMaterial

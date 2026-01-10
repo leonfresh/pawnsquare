@@ -2423,6 +2423,7 @@ function FollowCamera({
   orbitApiRef,
   rotateModeRef,
   suppressRightDragRef,
+  occluderRefs,
   povMode,
   yawRef,
   setPovMode,
@@ -2434,11 +2435,12 @@ function FollowCamera({
   } | null>;
   rotateModeRef?: React.MutableRefObject<boolean>;
   suppressRightDragRef?: React.MutableRefObject<boolean>;
+  occluderRefs?: Array<React.RefObject<THREE.Object3D | null>>;
   povMode?: boolean;
   yawRef?: React.RefObject<number>;
   setPovMode?: (next: boolean) => void;
 }) {
-  const { gl } = useThree();
+  const { gl, scene } = useThree();
   const draggingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   const pinchRef = useRef<{ dist: number; radius: number } | null>(null);
@@ -2449,6 +2451,17 @@ function FollowCamera({
   const desiredPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const lookAtPosRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const orbitOffsetRef = useRef<THREE.Vector3>(new THREE.Vector3());
+
+  // Camera occlusion: fade walls that block view of the player.
+  const occlusionRayRef = useRef(new THREE.Raycaster());
+  const occlusionFromRef = useRef(new THREE.Vector3());
+  const occlusionToRef = useRef(new THREE.Vector3());
+  const occlusionDirRef = useRef(new THREE.Vector3());
+  const occluderMeshesRef = useRef<THREE.Mesh[]>([]);
+  const occluderScanAccRef = useRef(0);
+  const occluderMeshToRootRef = useRef<WeakMap<THREE.Object3D, THREE.Object3D>>(
+    new WeakMap()
+  );
 
   // POV orientation (yaw/pitch) controlled by drag.
   const povYawRef = useRef(0);
@@ -2765,6 +2778,199 @@ function FollowCamera({
 
     // Cache direction so POV entry can align with current camera heading.
     camera.getWorldDirection(lastOrbitDirRef.current);
+
+    // Periodically rescan the scene for meshes marked as camera occluders.
+    occluderScanAccRef.current += dt;
+    if (
+      occluderMeshesRef.current.length === 0 ||
+      occluderScanAccRef.current > 0.75
+    ) {
+      occluderScanAccRef.current = 0;
+      const next: THREE.Mesh[] = [];
+      const meshToRoot = new WeakMap<THREE.Object3D, THREE.Object3D>();
+
+      const findOccluderRoot = (obj: THREE.Object3D) => {
+        let cur: THREE.Object3D | null = obj;
+        let hops = 0;
+        while (cur && hops < 16) {
+          if ((cur.userData as any)?.cameraOccluder) return cur;
+          cur = cur.parent;
+          hops += 1;
+        }
+        return null;
+      };
+
+      scene.traverse((obj) => {
+        const mesh = obj as any;
+        if (!mesh?.isMesh) return;
+        const root = findOccluderRoot(obj);
+        if (!root) return;
+        next.push(mesh as THREE.Mesh);
+        meshToRoot.set(obj, root);
+      });
+
+      // Also include any explicit occluder refs (legacy / extra safety).
+      if (occluderRefs?.length) {
+        for (const r of occluderRefs) {
+          const root = r.current;
+          if (!root) continue;
+          root.traverse((obj) => {
+            const mesh = obj as any;
+            if (!mesh?.isMesh) return;
+            next.push(mesh as THREE.Mesh);
+            meshToRoot.set(obj, root);
+          });
+        }
+      }
+
+      occluderMeshesRef.current = next;
+      occluderMeshToRootRef.current = meshToRoot;
+    }
+
+    const occluderMeshes = occluderMeshesRef.current;
+    if (occluderMeshes.length) {
+      const from = occlusionFromRef.current.copy(camera.position);
+      const to = occlusionToRef.current.set(t.x, t.y + 1.2, t.z);
+      const dist = from.distanceTo(to);
+
+      occlusionDirRef.current.copy(to).sub(from).normalize();
+      const ray = occlusionRayRef.current;
+      ray.set(from, occlusionDirRef.current);
+      ray.far = dist;
+
+      const hits = ray.intersectObjects(occluderMeshes as any, false);
+      const hitRoots = new Set<THREE.Object3D>();
+      const meshToRoot = occluderMeshToRootRef.current;
+      for (const h of hits) {
+        if (h.distance >= dist - 0.1) continue;
+        hitRoots.add(meshToRoot.get(h.object) ?? h.object);
+      }
+
+      const lerpAlpha = clamp(dt * 12, 0, 1);
+      for (const mesh of occluderMeshes) {
+        const mat = (mesh as any)?.material as any;
+        if (!mat) continue;
+
+        const root = meshToRoot.get(mesh) ?? mesh;
+        const shouldHide = hitRoots.has(root);
+
+        const applyTo = (m: any) => {
+          const hasOcclusionUniform =
+            !!m?.uniforms?.uOcclusionOpacity &&
+            typeof m.uniforms.uOcclusionOpacity.value === "number";
+
+          if (!hasOcclusionUniform && typeof m?.opacity !== "number") return;
+          if (!m.userData) m.userData = {};
+          if (!m.userData.__occlusionBase) {
+            m.userData.__occlusionBase = {
+              opacity: m.opacity,
+              occlusionOpacity: hasOcclusionUniform
+                ? m.uniforms.uOcclusionOpacity.value
+                : undefined,
+              transparent: m.transparent,
+              depthWrite: m.depthWrite,
+            };
+          }
+          const base = m.userData.__occlusionBase;
+          const baseOpacity =
+            typeof base.opacity === "number" ? base.opacity : 1.0;
+          const baseOcc =
+            typeof base.occlusionOpacity === "number"
+              ? base.occlusionOpacity
+              : 1.0;
+          const desiredOpacity = shouldHide ? 0.0 : baseOpacity;
+
+          // Standard materials fade via opacity; shader backgrounds fade via uOcclusionOpacity.
+          if (hasOcclusionUniform) {
+            const desiredOcc = shouldHide ? 0.0 : baseOcc;
+            const cur =
+              typeof m.uniforms.uOcclusionOpacity.value === "number"
+                ? m.uniforms.uOcclusionOpacity.value
+                : baseOcc;
+            const next = THREE.MathUtils.lerp(cur, desiredOcc, lerpAlpha);
+            m.uniforms.uOcclusionOpacity.value = next;
+            m.transparent = true;
+            m.depthWrite = false;
+            return;
+          }
+
+          const nextOpacity = THREE.MathUtils.lerp(
+            Number.isFinite(m.opacity) ? m.opacity : baseOpacity,
+            desiredOpacity,
+            lerpAlpha
+          );
+
+          m.opacity = nextOpacity;
+          if (desiredOpacity < 0.999 || nextOpacity < 0.999) {
+            m.transparent = true;
+            m.depthWrite = false;
+          } else {
+            m.transparent = base.transparent;
+            m.depthWrite = base.depthWrite;
+            m.opacity = baseOpacity;
+          }
+        };
+
+        // Disable raycasting on the mesh when it's nearly invisible (< 5% opacity).
+        // This prevents invisible occluders from blocking mouse interactions.
+        const applyRaycastState = (targetMesh: THREE.Mesh) => {
+          const mat = (targetMesh as any)?.material as any;
+          if (!mat) return;
+
+          // Determine effective opacity from either standard material or shader uniform.
+          let effectiveOpacity = 1.0;
+          if (Array.isArray(mat)) {
+            // For multi-material, use minimum opacity across all materials.
+            effectiveOpacity = Math.min(
+              ...mat.map((m: any) => {
+                if (
+                  m?.uniforms?.uOcclusionOpacity &&
+                  typeof m.uniforms.uOcclusionOpacity.value === "number"
+                ) {
+                  return m.uniforms.uOcclusionOpacity.value;
+                }
+                return typeof m?.opacity === "number" ? m.opacity : 1.0;
+              })
+            );
+          } else {
+            if (
+              mat?.uniforms?.uOcclusionOpacity &&
+              typeof mat.uniforms.uOcclusionOpacity.value === "number"
+            ) {
+              effectiveOpacity = mat.uniforms.uOcclusionOpacity.value;
+            } else if (typeof mat?.opacity === "number") {
+              effectiveOpacity = mat.opacity;
+            }
+          }
+
+          // Store original raycast function if not already stored.
+          if (targetMesh.userData.__occlusionOriginalRaycast === undefined) {
+            targetMesh.userData.__occlusionOriginalRaycast =
+              targetMesh.raycast || null;
+          }
+
+          // Disable raycast when nearly invisible; restore when visible.
+          if (effectiveOpacity < 0.05) {
+            (targetMesh as any).raycast = () => {};
+          } else {
+            const originalRaycast =
+              targetMesh.userData.__occlusionOriginalRaycast;
+            if (originalRaycast !== undefined) {
+              (targetMesh as any).raycast = originalRaycast;
+            }
+          }
+        };
+
+        if (Array.isArray(mat)) {
+          for (const m of mat) applyTo(m);
+        } else {
+          applyTo(mat);
+        }
+
+        // Apply raycast state after material updates.
+        applyRaycastState(mesh);
+      }
+    }
   });
 
   return null;
@@ -3319,6 +3525,32 @@ function SelfSimulation({
     pos.current.x = clamp(pos.current.x, -18, 18);
     pos.current.z = clamp(pos.current.z, -18, 18);
 
+    // Central divider wall collision (horizontal wall at z=0 with doorway from x=-3 to x=3)
+    const wallThickness = 0.4;
+    const halfWall = wallThickness / 2;
+    const doorMinX = -3;
+    const doorMaxX = 3;
+
+    const isInDoorway = pos.current.x >= doorMinX && pos.current.x <= doorMaxX;
+    if (!isInDoorway) {
+      const wasSouth = lastPosRef.current.z < -halfWall;
+      const wasNorth = lastPosRef.current.z > halfWall;
+      const isCrossingToNorth = wasSouth && pos.current.z > -halfWall;
+      const isCrossingToSouth = wasNorth && pos.current.z < halfWall;
+
+      if (isCrossingToNorth) {
+        pos.current.z = -halfWall;
+        if (moveTargetRef.current && moveTargetRef.current.dest[2] > 0) {
+          moveTargetRef.current = null;
+        }
+      } else if (isCrossingToSouth) {
+        pos.current.z = halfWall;
+        if (moveTargetRef.current && moveTargetRef.current.dest[2] < 0) {
+          moveTargetRef.current = null;
+        }
+      }
+    }
+
     // network throttle
     const now = performance.now();
     const p: Vec3 = [pos.current.x, pos.current.y, pos.current.z];
@@ -3339,7 +3571,7 @@ function SelfSimulation({
   return null;
 }
 
-import { ParkLobby } from "@/components/park-lobby";
+import { ParkLobby, type InteriorFloorStyle } from "@/components/park-lobby";
 import { SciFiLobby, SciFiLamp } from "@/components/scifi-lobby";
 import {
   ShopIcon,
@@ -3363,6 +3595,8 @@ type TvWallScreen = {
   position: [number, number, number];
   rotationY: number;
   boardKey: string;
+  boardOrigin: [number, number, number];
+  flipTvOrientation?: boolean;
   shaderVariant?: "starfield" | "triangleTunnel";
 };
 
@@ -3441,6 +3675,7 @@ const TV_SPACE_FRAGMENT = /* glsl */ `
   precision mediump float;
   varying vec2 vUv;
   uniform float uTime;
+  uniform float uOcclusionOpacity;
 
   #define TAU 6.28318530718
   #define PI 3.14159265359
@@ -3543,7 +3778,7 @@ const TV_SPACE_FRAGMENT = /* glsl */ `
     col = pow(col, vec3(0.88));
     col *= 1.04;
 
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(col, 1.0 * uOcclusionOpacity);
   }
 `;
 
@@ -3553,6 +3788,7 @@ const TV_TRIANGLE_TUNNEL_FRAGMENT = /* glsl */ `
   precision mediump float;
   varying vec2 vUv;
   uniform float uTime;
+  uniform float uOcclusionOpacity;
 
   // 2D rotation
   mat2 rot(float a) {
@@ -3625,7 +3861,7 @@ const TV_TRIANGLE_TUNNEL_FRAGMENT = /* glsl */ `
     col = pow(col, vec3(0.88));
     col *= 1.06;
 
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(col, 1.0 * uOcclusionOpacity);
   }
 `;
 
@@ -3780,14 +4016,34 @@ const InWorldTv = memo(function InWorldTv({
   screen,
   sync,
   mode,
+  enableShaders = true,
+  showHousing = true,
 }: {
   screen: TvWallScreen;
   sync: Board2dSync | null;
   mode: BoardMode;
+  enableShaders?: boolean;
+  showHousing?: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [imageVersion, setImageVersion] = useState(0);
   const [clockVersion, setClockVersion] = useState(0);
+
+  const tvOrient = useMemo<"white" | "black">(() => {
+    // TV orientation: fixed per-TV based on which side of the physical board it's closest to.
+    // User rule:
+    // - TV next to black pieces -> show orientation for white
+    // - TV next to white pieces -> show orientation for black
+    const oz = screen.boardOrigin?.[2] ?? 0;
+    const dz = (screen.position?.[2] ?? 0) - oz;
+    const blackSide = oz === 0 ? dz >= 0 : oz > 0 ? dz > 0 : dz < 0; // away from z=0
+    const baseOrient: "white" | "black" = blackSide ? "white" : "black";
+    return screen.flipTvOrientation
+      ? baseOrient === "white"
+        ? "black"
+        : "white"
+      : baseOrient;
+  }, [screen.boardOrigin, screen.position]);
 
   const canvas = useMemo(() => {
     const c = document.createElement("canvas");
@@ -3864,8 +4120,17 @@ const InWorldTv = memo(function InWorldTv({
   }, [canvas]);
 
   useFrame((state) => {
+    if (!enableShaders) return;
     TV_SPACE_UNIFORMS.uTime.value = state.clock.elapsedTime;
   });
+
+  const tvShaderUniforms = useMemo(
+    () => ({
+      uTime: TV_SPACE_UNIFORMS.uTime,
+      uOcclusionOpacity: { value: 1 },
+    }),
+    []
+  );
 
   const isChess4Way = screen.boardKey === "m";
   const engine = engineForMode(mode);
@@ -4111,9 +4376,7 @@ const InWorldTv = memo(function InWorldTv({
 
     const light = "#f0d9b5";
     const dark = "#b58863";
-    // TV orientation: always show the side-to-move at the bottom.
-    // (When it's black's move, flip so black is at the bottom.)
-    const orient: "white" | "black" = sync.turn === "b" ? "black" : "white";
+    const orient = tvOrient;
 
     for (let r = 0; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
@@ -4290,7 +4553,7 @@ const InWorldTv = memo(function InWorldTv({
 
       const square = uvToSquareInTvBoard(
         uv,
-        sync.turn === "b" ? "black" : "white",
+        tvOrient,
         canvas.width,
         canvas.height
       );
@@ -4326,67 +4589,79 @@ const InWorldTv = memo(function InWorldTv({
         if (moved) return;
       }
     },
-    [supported, sync, pieceMap, selected, engine, mode, canvas]
+    [supported, sync, pieceMap, selected, engine, mode, canvas, tvOrient]
   );
 
   return (
-    <group position={screen.position} rotation={[0, screen.rotationY, 0]}>
-      {/* Modern TV housing + bezel */}
-      <RoundedBox
-        args={[6.8, 4.05, 0.26]}
-        radius={0.22}
-        smoothness={8}
-        position={[0, 0, -0.06]}
-        castShadow
-        receiveShadow
-      >
-        <meshStandardMaterial
-          color="#0b0b10"
-          roughness={0.55}
-          metalness={0.35}
-        />
-      </RoundedBox>
+    <group
+      position={screen.position}
+      rotation={[0, screen.rotationY, 0]}
+      userData={{ cameraOccluder: true }}
+    >
+      {showHousing ? (
+        <>
+          {/* Modern TV housing + bezel */}
+          <RoundedBox
+            args={[6.8, 4.05, 0.26]}
+            radius={0.22}
+            smoothness={8}
+            position={[0, 0, -0.06]}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial
+              color="#0b0b10"
+              roughness={0.55}
+              metalness={0.35}
+            />
+          </RoundedBox>
 
-      <RoundedBox
-        args={[6.65, 3.9, 0.12]}
-        radius={0.2}
-        smoothness={8}
-        position={[0, 0, 0.03]}
-      >
-        <meshStandardMaterial
-          color="#0a0a0f"
-          roughness={0.35}
-          metalness={0.6}
-        />
-      </RoundedBox>
+          <RoundedBox
+            args={[6.65, 3.9, 0.12]}
+            radius={0.2}
+            smoothness={8}
+            position={[0, 0, 0.03]}
+          >
+            <meshStandardMaterial
+              color="#0a0a0f"
+              roughness={0.35}
+              metalness={0.6}
+            />
+          </RoundedBox>
 
-      {/* Screen glow plane */}
-      <mesh position={[0, 0, 0.095]} renderOrder={0}>
-        <planeGeometry args={[6.35, 3.6]} />
-        <meshStandardMaterial
-          color="#000000"
-          emissive="#0a0f18"
-          emissiveIntensity={0.9}
-          roughness={1}
-          metalness={0}
-        />
-      </mesh>
+          {/* Screen glow plane */}
+          <mesh position={[0, 0, 0.095]} renderOrder={0}>
+            <planeGeometry args={[6.35, 3.6]} />
+            <meshStandardMaterial
+              color="#000000"
+              emissive="#0a0f18"
+              emissiveIntensity={0.9}
+              roughness={1}
+              metalness={0}
+            />
+          </mesh>
+        </>
+      ) : null}
 
-      {/* Space shader background (fills the whole visible screen) */}
+      {/* Background behind the board (shader or flat fallback) */}
       <mesh position={[0, 0, 0.101]} renderOrder={1}>
         <planeGeometry args={[6.35, 3.6]} />
-        <shaderMaterial
-          vertexShader={TV_SPACE_VERTEX}
-          fragmentShader={
-            screen.shaderVariant === "triangleTunnel"
-              ? TV_TRIANGLE_TUNNEL_FRAGMENT
-              : TV_SPACE_FRAGMENT
-          }
-          uniforms={TV_SPACE_UNIFORMS}
-          side={THREE.DoubleSide}
-          transparent={false}
-          depthWrite={false}
-        />
+        {enableShaders ? (
+          <shaderMaterial
+            vertexShader={TV_SPACE_VERTEX}
+            fragmentShader={
+              screen.shaderVariant === "triangleTunnel"
+                ? TV_TRIANGLE_TUNNEL_FRAGMENT
+                : TV_SPACE_FRAGMENT
+            }
+            uniforms={tvShaderUniforms}
+            side={THREE.DoubleSide}
+            transparent
+            depthWrite={false}
+          />
+        ) : (
+          <meshBasicMaterial color="#05060a" toneMapped={false} />
+        )}
       </mesh>
 
       {/* WebGL screen surface (canvas texture) */}
@@ -4406,23 +4681,211 @@ const InWorldTv = memo(function InWorldTv({
       </mesh>
 
       {/* Glass layer (purely visual; does not intercept clicks) */}
-      <mesh position={[0, 0, 0.114]} raycast={() => null} renderOrder={3}>
-        <planeGeometry args={[6.4, 3.65]} />
-        <meshPhysicalMaterial
-          transparent
-          opacity={0.14}
-          roughness={0.08}
-          metalness={0}
-          clearcoat={1}
-          clearcoatRoughness={0.22}
-          color="#111118"
-          toneMapped={false}
-          depthWrite={false}
-        />
-      </mesh>
+      {showHousing ? (
+        <mesh position={[0, 0, 0.114]} raycast={() => null} renderOrder={3}>
+          <planeGeometry args={[6.4, 3.65]} />
+          <meshPhysicalMaterial
+            transparent
+            opacity={0.14}
+            roughness={0.08}
+            metalness={0}
+            clearcoat={1}
+            clearcoatRoughness={0.22}
+            color="#111118"
+            toneMapped={false}
+            depthWrite={false}
+          />
+        </mesh>
+      ) : null}
     </group>
   );
 });
+
+function CentralWall({
+  position,
+  width,
+  lobbyType,
+  wallRef,
+}: {
+  position: [number, number, number];
+  width: number;
+  lobbyType: "park" | "scifi";
+  wallRef?: React.RefObject<THREE.Mesh | null>;
+}) {
+  const materialRef = useRef<THREE.MeshStandardMaterial>(null);
+
+  const onBeforeCompile = useCallback(
+    (shader: any) => {
+      if (lobbyType === "park") {
+        shader.vertexShader = `
+          varying vec3 vPos;
+          ${shader.vertexShader}
+        `.replace(
+          "#include <worldpos_vertex>",
+          `
+          #include <worldpos_vertex>
+          vPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          `
+        );
+
+        shader.fragmentShader = `
+          varying vec3 vPos;
+
+          // Brick colors from ParkLobby wall shader
+          #define COLOR_BRICKWALL mix(vec3(0.52,0.33,0.22),vec3(0.9,0.9,0.7),0.35)
+          #define COLOR_MORTAR vec3(0.7, 0.7, 0.65)
+
+          ${shader.fragmentShader}
+        `.replace(
+          "#include <color_fragment>",
+          `
+          #include <color_fragment>
+
+          // Simple procedural brick pattern
+          vec2 brickSize = vec2(0.8, 0.4);
+          vec2 st = vPos.xz / brickSize;
+          if (abs(vPos.y) > abs(vPos.x) && abs(vPos.y) > abs(vPos.z)) {
+            st = vPos.xz / brickSize;
+          } else {
+            st = vec2(vPos.x + vPos.z, vPos.y) / brickSize;
+          }
+
+          if (fract(st.y * 0.5) > 0.5) st.x += 0.5;
+
+          vec2 f = fract(st);
+          vec2 s = step(vec2(0.05), f) - step(vec2(0.95), f);
+          float brick = s.x * s.y;
+
+          vec3 brickColor = COLOR_BRICKWALL;
+          float noise = fract(sin(dot(floor(st), vec2(12.9898, 78.233))) * 43758.5453);
+          brickColor *= 0.9 + 0.2 * noise;
+
+          diffuseColor.rgb = mix(COLOR_MORTAR, brickColor, brick);
+          `
+        );
+        return;
+      }
+
+      // SciFi wall shader (matches the about/leaderboard panels)
+      shader.vertexShader = `
+        varying vec3 vWorldPos;
+        varying vec3 vWorldN;
+        ${shader.vertexShader}
+      `.replace(
+        "#include <worldpos_vertex>",
+        `
+          #include <worldpos_vertex>
+          vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vWorldN = normalize(mat3(modelMatrix) * normal);
+          `
+      );
+
+      shader.fragmentShader = `
+        varying vec3 vWorldPos;
+        varying vec3 vWorldN;
+
+        float hash21(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+        float noise2(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          float a = hash21(i + vec2(0.0, 0.0));
+          float b = hash21(i + vec2(1.0, 0.0));
+          float c = hash21(i + vec2(0.0, 1.0));
+          float d = hash21(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+        }
+        float fbm2(vec2 p) {
+          float f = 0.0;
+          f += 0.5000 * noise2(p); p *= 2.02;
+          f += 0.2500 * noise2(p); p *= 2.03;
+          f += 0.1250 * noise2(p); p *= 2.01;
+          f += 0.0625 * noise2(p);
+          return f;
+        }
+
+        float panelSeams(vec2 p, vec2 cell) {
+          vec2 g = p / cell;
+          vec2 f = abs(fract(g) - 0.5);
+          float line = min(f.x, f.y);
+          return 1.0 - smoothstep(0.485, 0.5, line);
+        }
+
+        vec2 wallCoords(vec3 wp, vec3 wn) {
+          vec3 an = abs(wn);
+          if (an.z > an.x && an.z > an.y) return wp.xy;
+          if (an.x > an.y) return wp.zy;
+          return wp.xz;
+        }
+
+        ${shader.fragmentShader}
+      `
+        .replace(
+          "#include <color_fragment>",
+          `
+          #include <color_fragment>
+
+          vec2 p = wallCoords(vWorldPos, vWorldN);
+          float g0 = panelSeams(p, vec2(1.8, 1.8));
+          float g1 = panelSeams(p + vec2(0.35, 0.55), vec2(4.8, 4.8));
+          float seams = clamp(g0 * 0.9 + g1 * 0.35, 0.0, 1.0);
+
+          float grime = fbm2(p * 0.45) * 0.75 + fbm2(p * 2.1) * 0.25;
+          float wear = smoothstep(0.25, 0.85, grime);
+
+          diffuseColor.rgb *= mix(0.86, 1.03, wear);
+          diffuseColor.rgb += vec3(0.0, 0.004, 0.010);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.12, seams * 0.10);
+          `
+        )
+        .replace(
+          "#include <roughnessmap_fragment>",
+          `
+          #include <roughnessmap_fragment>
+          vec2 pR = wallCoords(vWorldPos, vWorldN);
+          float rN = fbm2(pR * 0.55);
+          roughnessFactor = clamp(roughnessFactor * mix(0.88, 1.20, rN), 0.02, 1.0);
+          `
+        )
+        .replace(
+          "#include <metalnessmap_fragment>",
+          `
+          #include <metalnessmap_fragment>
+          vec2 pM = wallCoords(vWorldPos, vWorldN);
+          float mN = fbm2(pM * 0.25);
+          metalnessFactor = clamp(metalnessFactor * mix(0.85, 1.15, mN), 0.0, 1.0);
+          `
+        );
+    },
+    [lobbyType]
+  );
+
+  const wallHeight = 2.8;
+  const wallThickness = 0.4;
+
+  return (
+    <mesh
+      ref={wallRef as any}
+      position={position}
+      castShadow
+      receiveShadow
+      userData={{ cameraOccluder: true }}
+    >
+      <boxGeometry args={[width, wallHeight, wallThickness]} />
+      <meshStandardMaterial
+        ref={materialRef}
+        color={lobbyType === "scifi" ? "#0b0b12" : "#ffffff"}
+        roughness={lobbyType === "scifi" ? 0.55 : 0.9}
+        metalness={lobbyType === "scifi" ? 0.75 : 0.05}
+        onBeforeCompile={onBeforeCompile}
+        transparent
+        opacity={1}
+      />
+    </mesh>
+  );
+}
 
 export default function World({
   roomId,
@@ -5680,6 +6143,9 @@ export default function World({
   const selfSpeedRef = useRef<number>(0);
   const lookAtTargetRef = useRef<THREE.Vector3 | null>(null);
 
+  const centralWallLeftRef = useRef<THREE.Mesh | null>(null);
+  const centralWallRightRef = useRef<THREE.Mesh | null>(null);
+
   const cameraOrbitApiRef = useRef<{
     rotateByPixels: (dx: number, dy: number) => void;
   } | null>(null);
@@ -5805,16 +6271,22 @@ export default function World({
     return () => window.clearTimeout(t);
   }, [pendingJoinBoardKey]);
 
+  // Layout constants shared by boards + wall TVs.
+  // Boards should be centered between the divider TVs (near z=0) and the wall TVs (near z=±16).
+  const TV_WALL_Z = 16.05;
+  const TV_DIVIDER_Z = 0.23;
+  const BOARD_Z = (TV_WALL_Z + TV_DIVIDER_Z) / 2;
+
   const boards = useMemo(
     () =>
       [
         // Centered 2x2 layout so boards don't collide with plaza planters/greenery blocks.
-        { key: "a", origin: [-6, 0.04, -6] as [number, number, number] },
-        { key: "b", origin: [6, 0.04, -6] as [number, number, number] },
-        { key: "c", origin: [-6, 0.04, 6] as [number, number, number] },
-        { key: "d", origin: [6, 0.04, 6] as [number, number, number] },
+        { key: "a", origin: [-6, 0.04, -BOARD_Z] as [number, number, number] },
+        { key: "b", origin: [6, 0.04, -BOARD_Z] as [number, number, number] },
+        { key: "c", origin: [-6, 0.04, BOARD_Z] as [number, number, number] },
+        { key: "d", origin: [6, 0.04, BOARD_Z] as [number, number, number] },
       ] as const,
-    []
+    [BOARD_Z]
   );
 
   // Room ID parsing:
@@ -5840,37 +6312,88 @@ export default function World({
     [is4pRoom, boards]
   );
 
+  const devUiEnabled = showFps;
+  const [devTvsEnabled, setDevTvsEnabled] = useState(true);
+  const [devTvShadersEnabled, setDevTvShadersEnabled] = useState(true);
+  const [devTvHousingEnabled, setDevTvHousingEnabled] = useState(true);
+  const [devInteriorFloorStyle, setDevInteriorFloorStyle] =
+    useState<InteriorFloorStyle>("slate");
+
   const tvWallScreens = useMemo(() => {
-    const y = 2.8;
+    const wallY = 2.8;
+    const centerY = wallY;
     // Slightly in front of the wall panels (toward the room center) so the TV doesn't z-fight.
     // Wall groups live at z=±14, and the panel faces are at local z=±2.2.
-    const northZ = 16.05;
-    const southZ = -16.05;
+    const northZ = TV_WALL_Z;
+    const southZ = -TV_WALL_Z;
 
-    const base: Omit<TvWallScreen, "boardKey">[] = [
+    const base: Omit<TvWallScreen, "boardKey" | "boardOrigin">[] = [
       {
         id: "north-left",
-        position: [-6, y, northZ],
+        position: [-6, wallY, northZ],
         rotationY: Math.PI,
+        flipTvOrientation: true,
         shaderVariant: "triangleTunnel",
       },
-      { id: "north-right", position: [6, y, northZ], rotationY: Math.PI },
+      {
+        id: "north-right",
+        position: [6, wallY, northZ],
+        rotationY: Math.PI,
+        flipTvOrientation: true,
+      },
       {
         id: "south-left",
-        position: [-6, y, southZ],
+        position: [-6, wallY, southZ],
         rotationY: 0,
         shaderVariant: "triangleTunnel",
       },
-      { id: "south-right", position: [6, y, southZ], rotationY: 0 },
+      { id: "south-right", position: [6, wallY, southZ], rotationY: 0 },
+
+      // Center divider TVs on both sides of the wall at z=0.
+      // In `InWorldTv`, the canvas plane is front-faced only, so facing matters:
+      // rotationY=0 faces +Z, rotationY=Math.PI faces -Z.
+      {
+        id: "center-south-left",
+        position: [-6, centerY, -TV_DIVIDER_Z],
+        rotationY: Math.PI,
+        shaderVariant: "triangleTunnel",
+      },
+      {
+        id: "center-south-right",
+        position: [6, centerY, -TV_DIVIDER_Z],
+        rotationY: Math.PI,
+      },
+      {
+        id: "center-north-left",
+        position: [-6, centerY, TV_DIVIDER_Z],
+        rotationY: 0,
+        flipTvOrientation: true,
+      },
+      {
+        id: "center-north-right",
+        position: [6, centerY, TV_DIVIDER_Z],
+        rotationY: 0,
+        flipTvOrientation: true,
+      },
     ];
 
     if (is4pRoom) {
       // 4P uses a different board; existing UX already disables the 2D board there.
-      return base.map((s) => ({ ...s, boardKey: "m" }));
+      return base.map((s) => ({
+        ...s,
+        boardKey: "m",
+        boardOrigin: [0, 0, 0] as [number, number, number],
+      }));
     }
 
     const pickNearest = (pos: [number, number, number]) => {
-      let bestKey: string = activeBoards[0]?.key ?? "a";
+      let bestBoard: { key: string; origin: [number, number, number] } | null =
+        activeBoards[0]
+          ? {
+              key: activeBoards[0].key as string,
+              origin: activeBoards[0].origin as [number, number, number],
+            }
+          : null;
       let bestD = Number.POSITIVE_INFINITY;
       for (const b of activeBoards) {
         const dx = pos[0] - b.origin[0];
@@ -5879,19 +6402,27 @@ export default function World({
         const d = dx * dx + dy * dy + dz * dz;
         if (d < bestD) {
           bestD = d;
-          bestKey = b.key as string;
+          bestBoard = {
+            key: b.key as string,
+            origin: b.origin as [number, number, number],
+          };
         }
       }
-      return bestKey;
+      return (
+        bestBoard ?? { key: "a", origin: [0, 0, 0] as [number, number, number] }
+      );
     };
 
-    return base.map((s) => ({ ...s, boardKey: pickNearest(s.position) }));
-  }, [activeBoards, is4pRoom]);
+    return base.map((s) => {
+      const b = pickNearest(s.position);
+      return { ...s, boardKey: b.key, boardOrigin: b.origin };
+    });
+  }, [activeBoards, is4pRoom, TV_DIVIDER_Z, TV_WALL_Z]);
 
-  const watched2dBoardKeys = useMemo(
-    () => new Set(tvWallScreens.map((s) => s.boardKey)),
-    [tvWallScreens]
-  );
+  const watched2dBoardKeys = useMemo(() => {
+    if (!devTvsEnabled) return new Set<string>();
+    return new Set(tvWallScreens.map((s) => s.boardKey));
+  }, [tvWallScreens, devTvsEnabled]);
 
   const quickPlayTokenRef = useRef(0);
   const quickPlayOrderRef = useRef<string[]>([]);
@@ -6650,19 +7181,44 @@ export default function World({
             <ParkLobby
               leaderboard={leaderboard}
               showLeaderboardWall={!is4pRoom}
+              interiorFloorStyle={devInteriorFloorStyle}
             />
           )}
 
+          {/* Center divider wall at z=0 (door opening at x=-3..3) */}
+          {sceneStage >= 1 && !is4pRoom ? (
+            <group>
+              <CentralWall
+                position={[-8.5, 1.4, 0]}
+                width={11}
+                lobbyType={lobbyType}
+                wallRef={centralWallLeftRef}
+              />
+              <CentralWall
+                position={[8.5, 1.4, 0]}
+                width={11}
+                lobbyType={lobbyType}
+                wallRef={centralWallRightRef}
+              />
+            </group>
+          ) : null}
+
           {sceneStage >= 2 ? (
             <group>
-              {tvWallScreens.map((screen) => (
-                <InWorldTv
-                  key={screen.id}
-                  screen={screen}
-                  sync={board2dByKey[screen.boardKey] ?? null}
-                  mode={(boardModes?.[screen.boardKey] as BoardMode) ?? "chess"}
-                />
-              ))}
+              {devTvsEnabled
+                ? tvWallScreens.map((screen) => (
+                    <InWorldTv
+                      key={screen.id}
+                      screen={screen}
+                      sync={board2dByKey[screen.boardKey] ?? null}
+                      mode={
+                        (boardModes?.[screen.boardKey] as BoardMode) ?? "chess"
+                      }
+                      enableShaders={devTvShadersEnabled}
+                      showHousing={devTvHousingEnabled}
+                    />
+                  ))
+                : null}
             </group>
           ) : null}
 
@@ -6715,6 +7271,7 @@ export default function World({
             orbitApiRef={cameraOrbitApiRef}
             rotateModeRef={cameraRotateModeRef}
             suppressRightDragRef={suppressCameraRightDragRef}
+            occluderRefs={[centralWallLeftRef, centralWallRightRef]}
             povMode={povMode}
             yawRef={selfRotRef}
             setPovMode={setPovMode}
@@ -7988,6 +8545,122 @@ export default function World({
       ) : null}
 
       <LoadTestPanel roomId={roomId} />
+
+      {devUiEnabled ? (
+        <div
+          style={{
+            position: "fixed",
+            right: 12,
+            top: 12,
+            width: 260,
+            maxWidth: "calc(100vw - 24px)",
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.14)",
+            background: "rgba(0,0,0,0.42)",
+            backdropFilter: "blur(8px)",
+            color: "white",
+            padding: 10,
+            fontSize: 12,
+            pointerEvents: "auto",
+            zIndex: 85,
+          }}
+        >
+          <div style={{ fontWeight: 900, letterSpacing: 0.2 }}>Dev TV</div>
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              marginTop: 10,
+            }}
+          >
+            <span style={{ opacity: 0.92 }}>Enable TVs</span>
+            <input
+              type="checkbox"
+              checked={devTvsEnabled}
+              onChange={(e) => setDevTvsEnabled(e.target.checked)}
+            />
+          </label>
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              marginTop: 8,
+              opacity: devTvsEnabled ? 1 : 0.55,
+            }}
+          >
+            <span style={{ opacity: 0.92 }}>TV shaders</span>
+            <input
+              type="checkbox"
+              checked={devTvShadersEnabled}
+              disabled={!devTvsEnabled}
+              onChange={(e) => setDevTvShadersEnabled(e.target.checked)}
+            />
+          </label>
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              marginTop: 8,
+              opacity: devTvsEnabled ? 1 : 0.55,
+            }}
+          >
+            <span style={{ opacity: 0.92 }}>TV housings</span>
+            <input
+              type="checkbox"
+              checked={devTvHousingEnabled}
+              disabled={!devTvsEnabled}
+              onChange={(e) => setDevTvHousingEnabled(e.target.checked)}
+            />
+          </label>
+
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              marginTop: 10,
+            }}
+          >
+            <span style={{ opacity: 0.92 }}>Floor texture</span>
+            <select
+              value={devInteriorFloorStyle}
+              onChange={(e) =>
+                setDevInteriorFloorStyle(e.target.value as InteriorFloorStyle)
+              }
+              style={{
+                height: 28,
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.18)",
+                background: "rgba(0,0,0,0.25)",
+                color: "white",
+                padding: "0 8px",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <option value="carpet">Royal navy carpet</option>
+              <option value="mosaic">Mosaic tile</option>
+              <option value="herringbone">Herringbone parquet</option>
+              <option value="terrazzo">Terrazzo</option>
+              <option value="slate">Slate</option>
+            </select>
+          </label>
+
+          <div style={{ marginTop: 8, opacity: 0.7, lineHeight: 1.25 }}>
+            Housings off keeps board screens only.
+          </div>
+        </div>
+      ) : null}
 
       {!isMobile || mobileChatOpen ? (
         <div

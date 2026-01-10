@@ -592,7 +592,6 @@ export function OutdoorChess4P({
               onPointerDown={(e) => {
                 if (e.button === 2) {
                   e.stopPropagation();
-                  e.nativeEvent?.preventDefault?.();
                   onRightDownSquare(square);
                   return;
                 }

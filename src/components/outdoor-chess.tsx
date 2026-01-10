@@ -1,6 +1,6 @@
 "use client";
 
-import { RoundedBox, Text, useGLTF, Html } from "@react-three/drei";
+import { RoundedBox, Text, useGLTF, Html, Billboard } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import {
   type RefObject,
@@ -10,8 +10,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { Chess } from "chess.js";
 import * as THREE from "three";
-import type { BoardMode, Vec3 } from "@/lib/partyRoom";
+import type { BoardMode, PuzzleRushNetState, Vec3 } from "@/lib/partyRoom";
 import {
   chessVariantForMode,
   engineForMode,
@@ -325,6 +326,61 @@ function HolographicRematchRequestText({
         />
       </Text>
     </group>
+  );
+}
+
+function HolographicPuzzleRushHud({
+  originVec,
+  boardSize,
+  label,
+}: {
+  originVec: THREE.Vector3;
+  boardSize: number;
+  label: string;
+}) {
+  const textRef = useRef<any>(null);
+
+  useFrame(() => {
+    if (!textRef.current) return;
+    const time = performance.now() * 0.001;
+    const opacity = 0.85 + Math.sin(time * 2.2) * 0.12;
+    if (textRef.current.material) {
+      textRef.current.material.opacity = opacity;
+    }
+  });
+
+  return (
+    <Billboard
+      position={[
+        originVec.x + boardSize / 2 + 0.75,
+        originVec.y + 1.8,
+        originVec.z - boardSize / 2 - 0.5,
+      ]}
+      follow
+      lockX={false}
+      lockY={false}
+      lockZ={false}
+    >
+      <Text
+        ref={textRef}
+        fontSize={0.18}
+        color="#00d9ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.012}
+        outlineColor="#003d4d"
+        font="/fonts/Orbitron-Bold.ttf"
+      >
+        {label}
+        <meshBasicMaterial
+          attach="material"
+          color="#00d9ff"
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </Text>
+    </Billboard>
   );
 }
 
@@ -679,6 +735,35 @@ function isSquare(val: string): val is Square {
   const f = val.charCodeAt(0);
   const r = val.charCodeAt(1);
   return f >= 97 && f <= 104 && r >= 49 && r <= 56;
+}
+
+function chessPiecesFromFen(
+  fen: string
+): Array<{ square: Square; type: string; color: Side }> {
+  const chess = (() => {
+    try {
+      return new Chess(fen);
+    } catch {
+      return new Chess();
+    }
+  })();
+
+  const out: Array<{ square: Square; type: string; color: Side }> = [];
+  const board = chess.board();
+
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const p = board[r]?.[f];
+      if (!p) continue;
+      const file = FILES[f]!;
+      const rank = 8 - r;
+      const sq = `${file}${rank}`;
+      if (!isSquare(sq)) continue;
+      out.push({ square: sq, type: p.type, color: p.color });
+    }
+  }
+
+  return out;
 }
 
 function isDarkSquare(square: string) {
@@ -2277,6 +2362,9 @@ export type OutdoorChessProps = {
   selfPositionRef: RefObject<THREE.Vector3>;
   selfId: string;
   selfName?: string;
+  puzzleRushNetState?: PuzzleRushNetState | null;
+  claimPuzzleRushLeader?: (boardKey: string) => void;
+  sendPuzzleRushState?: (state: PuzzleRushNetState) => void;
   onActivityMove?: (game: string, boardKey: string) => void;
   joinLockedBoardKey?: string | null;
   leaveAllNonce?: number;
@@ -2322,6 +2410,9 @@ function OutdoorChessChessMode({
   selfPositionRef,
   selfId,
   selfName,
+  puzzleRushNetState,
+  claimPuzzleRushLeader,
+  sendPuzzleRushState,
   onActivityMove,
   joinLockedBoardKey,
   leaveAllNonce,
@@ -2380,6 +2471,8 @@ function OutdoorChessChessMode({
     playWarning,
     playClick,
     playHonk,
+    playCorrect,
+    playWrong,
   } = useChessSounds();
   const localArrows = useLocalArrows({
     enabled: true,
@@ -2424,9 +2517,19 @@ function OutdoorChessChessMode({
     roomId,
     boardKey,
     lobby: "park",
+    selfConnId: selfId,
+    netState: puzzleRushNetState ?? null,
+    claimLeader: claimPuzzleRushLeader,
+    publishState: sendPuzzleRushState,
     controlsOpen,
     board2dOpen,
     onBoardControls,
+    sounds: {
+      move: playMove,
+      capture: playCapture,
+      correct: playCorrect,
+      wrong: playWrong,
+    },
   });
 
   // Quick Play: if targeted, try to join an available seat (only on fresh games).
@@ -2590,6 +2693,23 @@ function OutdoorChessChessMode({
     drawOfferFrom,
     rematch,
   } = chessGame;
+
+  const puzzlePieces = useMemo(() => {
+    if (!isPuzzleRush) return null;
+    return chessPiecesFromFen(puzzleRush.fen);
+  }, [isPuzzleRush, puzzleRush.fen]);
+
+  const activePieces = isPuzzleRush ? puzzlePieces ?? [] : pieces;
+  const activeTurn = isPuzzleRush ? puzzleRush.turn : turn;
+  const activeSelected = isPuzzleRush ? puzzleRush.selected : selected;
+  const activeLegalTargets = isPuzzleRush
+    ? puzzleRush.legalTargets
+    : legalTargets;
+  const activeLastMove = isPuzzleRush ? puzzleRush.lastMove : lastMove;
+  const activeAnimatedFromByTo = isPuzzleRush
+    ? puzzleRush.animatedFromByTo
+    : animatedFromByTo;
+  const activeSeq = isPuzzleRush ? puzzleRush.animSeq : netState.seq;
 
   const [devJoinModalOpen, setDevJoinModalOpen] = useState(false);
   const [devJoinModalSide, setDevJoinModalSide] = useState<Side | null>(null);
@@ -2816,7 +2936,10 @@ function OutdoorChessChessMode({
       ))}
 
       {/* Board */}
-      <group position={[originVec.x, originVec.y, originVec.z]}>
+      <group
+        position={[originVec.x, originVec.y, originVec.z]}
+        rotation={[0, isPuzzleRush && puzzleRush.turn === "b" ? Math.PI : 0, 0]}
+      >
         {Array.from({ length: 64 }).map((_, idx) => {
           const file = idx % 8;
           const rankFromTop = Math.floor(idx / 8);
@@ -2827,11 +2950,11 @@ function OutdoorChessChessMode({
           const z = (rankFromTop - 3.5) * squareSize;
           const isDark = (file + rankFromTop) % 2 === 1;
 
-          const isTarget = legalTargets.includes(square as any);
-          const isSel = selected === (square as any);
-          const isLastMoveFrom = lastMove?.from === square;
-          const isLastMoveTo = lastMove?.to === square;
-          const pieceOnSquare = pieces.find(
+          const isTarget = activeLegalTargets.includes(square as any);
+          const isSel = activeSelected === (square as any);
+          const isLastMoveFrom = activeLastMove?.from === square;
+          const isLastMoveTo = activeLastMove?.to === square;
+          const pieceOnSquare = activePieces.find(
             (p) => p.square === (square as Square)
           );
           const isStartled =
@@ -2839,11 +2962,14 @@ function OutdoorChessChessMode({
             !!pieceOnSquare &&
             goosePhase !== "goose" &&
             startledSquares.includes(square as Square);
-          const canInteract =
-            isTarget ||
-            (pieceOnSquare &&
-              mySides.has(pieceOnSquare.color) &&
-              turn === pieceOnSquare.color);
+          const canInteract = isPuzzleRush
+            ? isTarget ||
+              isSel ||
+              (!!pieceOnSquare && activeTurn === pieceOnSquare.color)
+            : isTarget ||
+              (pieceOnSquare &&
+                mySides.has(pieceOnSquare.color) &&
+                activeTurn === pieceOnSquare.color);
 
           // Check if this is a valid goose placement square
           const isValidGoosePlacement =
@@ -2866,13 +2992,13 @@ function OutdoorChessChessMode({
               onPointerDown={(e) => {
                 if (e.button === 2) {
                   e.stopPropagation();
-                  e.nativeEvent?.preventDefault?.();
                   localArrows.onRightDownSquare(square as Square);
                   return;
                 }
                 if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
-                if (!isPuzzleRush) onPickSquare(square as any);
+                if (isPuzzleRush) puzzleRush.onPickSquare(square as any);
+                else onPickSquare(square as any);
               }}
               onContextMenu={(e) => {
                 e.stopPropagation();
@@ -2881,8 +3007,7 @@ function OutdoorChessChessMode({
               onPointerEnter={() => {
                 localArrows.onRightEnterSquare(square as Square);
                 setHoveredSquare(square as Square);
-                if (canInteract && !isPuzzleRush)
-                  document.body.style.cursor = "pointer";
+                if (canInteract) document.body.style.cursor = "pointer";
               }}
               onPointerLeave={() => {
                 setHoveredSquare(null);
@@ -3206,67 +3331,6 @@ function OutdoorChessChessMode({
           else emitControlsOpen();
         }}
       />
-
-      {isPuzzleRush ? (
-        <group
-          position={[
-            controlPadCenter.x,
-            controlPadCenter.y,
-            controlPadCenter.z,
-          ]}
-        >
-          <group
-            position={[0, 0.015, 0]}
-            onPointerDown={(e) => {
-              if (e.button !== 0) return;
-              e.stopPropagation();
-              if (puzzleRush.running) puzzleRush.stop();
-              else void puzzleRush.start();
-            }}
-            onPointerEnter={() => {
-              document.body.style.cursor = "pointer";
-            }}
-            onPointerLeave={() => {
-              document.body.style.cursor = "default";
-            }}
-          >
-            <mesh receiveShadow>
-              <boxGeometry args={[0.9, 0.03, 0.9]} />
-              <meshStandardMaterial
-                color={puzzleRush.running ? "#d4af37" : "#8b7355"}
-                roughness={0.55}
-                metalness={0.15}
-              />
-            </mesh>
-            <mesh position={[0, 0.018, 0]}>
-              <boxGeometry args={[0.98, 0.01, 0.98]} />
-              <meshBasicMaterial
-                color={puzzleRush.running ? "#7cffd8" : "#ffffff"}
-                transparent
-                opacity={puzzleRush.running ? 0.22 : 0.12}
-              />
-            </mesh>
-            <Text
-              position={[0, 0.031, 0]}
-              rotation={[-Math.PI / 2, 0, 0]}
-              fontSize={0.18}
-              lineHeight={0.9}
-              maxWidth={0.86}
-              textAlign="center"
-              color={puzzleRush.running ? "#7cffd8" : "#1a1a1a"}
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.008}
-              outlineColor={puzzleRush.running ? "#000" : "#000000"}
-              fontWeight="bold"
-              depthOffset={-1}
-            >
-              {puzzleRush.running ? "STOP\nRUSH" : "START\nRUSH"}
-            </Text>
-          </group>
-        </group>
-      ) : null}
-
       {/* Goose Chess visuals */}
       {gameMode === "goose"
         ? (() => {
@@ -3362,6 +3426,16 @@ function OutdoorChessChessMode({
         />
       ) : null}
 
+      {isPuzzleRush ? (
+        <HolographicPuzzleRushHud
+          originVec={originVec}
+          boardSize={boardSize}
+          label={`PUZZLE RUSH\nSCORE: ${puzzleRush.score}\nTIME: ${formatClock(
+            puzzleRush.remainingMs
+          )}`}
+        />
+      ) : null}
+
       {/* Startled squares handled by shader effect on pieces */}
 
       {/* Coordinate labels */}
@@ -3374,16 +3448,18 @@ function OutdoorChessChessMode({
       />
 
       {/* Pieces */}
-      {pieces.map((p) => {
+      {activePieces.map((p) => {
         const isMyPiece = mySides.has(p.color);
-        const canMove = turn === p.color && isMyPiece;
-        const animateFrom = animatedFromByTo.get(p.square) ?? null;
+        const canMove = isPuzzleRush
+          ? activeTurn === p.color
+          : activeTurn === p.color && isMyPiece;
+        const animateFrom = activeAnimatedFromByTo.get(p.square) ?? null;
         const isStartled =
           gameMode === "goose" && startledSquares.includes(p.square);
 
         // Keep key stable for the duration of a move animation.
         const animKey = animateFrom
-          ? `anim:${netState.seq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
+          ? `anim:${activeSeq}:${p.color}:${p.type}:${animateFrom}->${p.square}`
           : `static:${p.color}:${p.type}:${p.square}`;
 
         return (
@@ -3395,10 +3471,16 @@ function OutdoorChessChessMode({
               originVec={originVec}
               squareSize={squareSize}
               animateFrom={animateFrom}
-              animSeq={netState.seq}
+              animSeq={activeSeq}
               canMove={canMove}
-              mySide={myPrimarySide}
-              onPickPiece={onPickPiece}
+              mySide={isPuzzleRush ? activeTurn : myPrimarySide}
+              onPickPiece={(sq) => {
+                if (isPuzzleRush) {
+                  puzzleRush.onPickSquare(sq);
+                  return;
+                }
+                onPickPiece(sq);
+              }}
               whiteTint={whiteTint}
               blackTint={blackTint}
               chessTheme={chessTheme}
@@ -3642,7 +3724,6 @@ function OutdoorChessCheckersMode({
               onPointerDown={(e) => {
                 if (e.button === 2) {
                   e.stopPropagation();
-                  e.nativeEvent?.preventDefault?.();
                   localArrows.onRightDownSquare(square as Square);
                   return;
                 }
