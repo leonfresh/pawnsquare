@@ -27,6 +27,7 @@ import {
   type Side,
   type Square,
 } from "./chess-core";
+import { usePuzzleRushGame } from "./puzzle-rush-core";
 
 /**
  * Park board implementation notes (unified game logic)
@@ -2340,6 +2341,7 @@ function OutdoorChessChessMode({
   gameMode = "chess",
   suppressCameraRotateRef,
 }: OutdoorChessProps) {
+  const isPuzzleRush = gameMode === "puzzleRush";
   const [showCoordinates, setShowCoordinates] = useState(() => {
     if (typeof window !== "undefined") {
       const stored = localStorage.getItem("chess-show-coordinates");
@@ -2385,7 +2387,7 @@ function OutdoorChessChessMode({
   });
 
   const chessGame = useChessGame({
-    enabled: true,
+    enabled: !isPuzzleRush,
     variant: chessVariantForMode(gameMode),
     roomId,
     boardKey,
@@ -2415,6 +2417,16 @@ function OutdoorChessChessMode({
       click: playClick,
       honk: playHonk,
     },
+  });
+
+  const puzzleRush = usePuzzleRushGame({
+    enabled: isPuzzleRush,
+    roomId,
+    boardKey,
+    lobby: "park",
+    controlsOpen,
+    board2dOpen,
+    onBoardControls,
   });
 
   // Quick Play: if targeted, try to join an available seat (only on fresh games).
@@ -2666,7 +2678,7 @@ function OutdoorChessChessMode({
   ) => !!seat?.connId && !!seat?.playerId;
   const bothSeatsOccupied =
     seatOccupied(netState.seats.w) && seatOccupied(netState.seats.b);
-  const canUseControlTV = isSeated || !bothSeatsOccupied;
+  const canUseControlTV = isPuzzleRush ? true : isSeated || !bothSeatsOccupied;
 
   const controlsHintTimerRef = useRef<number | null>(null);
   const [controlsHintOpen, setControlsHintOpen] = useState(false);
@@ -2860,7 +2872,7 @@ function OutdoorChessChessMode({
                 }
                 if (e.button !== 0) return; // Left click only
                 e.stopPropagation();
-                onPickSquare(square as any);
+                if (!isPuzzleRush) onPickSquare(square as any);
               }}
               onContextMenu={(e) => {
                 e.stopPropagation();
@@ -2869,7 +2881,8 @@ function OutdoorChessChessMode({
               onPointerEnter={() => {
                 localArrows.onRightEnterSquare(square as Square);
                 setHoveredSquare(square as Square);
-                if (canInteract) document.body.style.cursor = "pointer";
+                if (canInteract && !isPuzzleRush)
+                  document.body.style.cursor = "pointer";
               }}
               onPointerLeave={() => {
                 setHoveredSquare(null);
@@ -3117,42 +3130,46 @@ function OutdoorChessChessMode({
       ) : null}
 
       {/* Join pads */}
-      <JoinPad
-        label={`${formatClock(clocks.remaining.w)}\n${
-          netState.seats.w
-            ? netState.seats.w.name || "White"
-            : pendingJoinSide === "w"
-            ? "Joining…"
-            : "Join White"
-        }`}
-        center={whitePadCenter}
-        size={padSize}
-        active={mySides.has("w")}
-        disabled={
-          (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
-          pendingJoinSide === "b" ||
-          (!!netState.seats.w && netState.seats.w.connId !== chessSelfId)
-        }
-        onClick={() => devClickJoin("w")}
-      />
-      <JoinPad
-        label={`${formatClock(clocks.remaining.b)}\n${
-          netState.seats.b
-            ? netState.seats.b.name || "Black"
-            : pendingJoinSide === "b"
-            ? "Joining…"
-            : "Join Black"
-        }`}
-        center={blackPadCenter}
-        size={padSize}
-        active={mySides.has("b")}
-        disabled={
-          (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
-          pendingJoinSide === "w" ||
-          (!!netState.seats.b && netState.seats.b.connId !== chessSelfId)
-        }
-        onClick={() => devClickJoin("b")}
-      />
+      {!isPuzzleRush ? (
+        <>
+          <JoinPad
+            label={`${formatClock(clocks.remaining.w)}\n${
+              netState.seats.w
+                ? netState.seats.w.name || "White"
+                : pendingJoinSide === "w"
+                ? "Joining…"
+                : "Join White"
+            }`}
+            center={whitePadCenter}
+            size={padSize}
+            active={mySides.has("w")}
+            disabled={
+              (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
+              pendingJoinSide === "b" ||
+              (!!netState.seats.w && netState.seats.w.connId !== chessSelfId)
+            }
+            onClick={() => devClickJoin("w")}
+          />
+          <JoinPad
+            label={`${formatClock(clocks.remaining.b)}\n${
+              netState.seats.b
+                ? netState.seats.b.name || "Black"
+                : pendingJoinSide === "b"
+                ? "Joining…"
+                : "Join Black"
+            }`}
+            center={blackPadCenter}
+            size={padSize}
+            active={mySides.has("b")}
+            disabled={
+              (joinLockedBoardKey && joinLockedBoardKey !== boardKey) ||
+              pendingJoinSide === "w" ||
+              (!!netState.seats.b && netState.seats.b.connId !== chessSelfId)
+            }
+            onClick={() => devClickJoin("b")}
+          />
+        </>
+      ) : null}
 
       {/* Control TV */}
       <ControlTV
@@ -3185,9 +3202,70 @@ function OutdoorChessChessMode({
           console.log(
             "[ControlTV Chess] Opening controls via emitControlsOpen"
           );
-          emitControlsOpen();
+          if (isPuzzleRush) puzzleRush.emitControlsOpen();
+          else emitControlsOpen();
         }}
       />
+
+      {isPuzzleRush ? (
+        <group
+          position={[
+            controlPadCenter.x,
+            controlPadCenter.y,
+            controlPadCenter.z,
+          ]}
+        >
+          <group
+            position={[0, 0.015, 0]}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              if (puzzleRush.running) puzzleRush.stop();
+              else void puzzleRush.start();
+            }}
+            onPointerEnter={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = "default";
+            }}
+          >
+            <mesh receiveShadow>
+              <boxGeometry args={[0.9, 0.03, 0.9]} />
+              <meshStandardMaterial
+                color={puzzleRush.running ? "#d4af37" : "#8b7355"}
+                roughness={0.55}
+                metalness={0.15}
+              />
+            </mesh>
+            <mesh position={[0, 0.018, 0]}>
+              <boxGeometry args={[0.98, 0.01, 0.98]} />
+              <meshBasicMaterial
+                color={puzzleRush.running ? "#7cffd8" : "#ffffff"}
+                transparent
+                opacity={puzzleRush.running ? 0.22 : 0.12}
+              />
+            </mesh>
+            <Text
+              position={[0, 0.031, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              fontSize={0.18}
+              lineHeight={0.9}
+              maxWidth={0.86}
+              textAlign="center"
+              color={puzzleRush.running ? "#7cffd8" : "#1a1a1a"}
+              anchorX="center"
+              anchorY="middle"
+              outlineWidth={0.008}
+              outlineColor={puzzleRush.running ? "#000" : "#000000"}
+              fontWeight="bold"
+              depthOffset={-1}
+            >
+              {puzzleRush.running ? "STOP\nRUSH" : "START\nRUSH"}
+            </Text>
+          </group>
+        </group>
+      ) : null}
 
       {/* Goose Chess visuals */}
       {gameMode === "goose"

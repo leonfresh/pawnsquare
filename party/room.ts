@@ -18,7 +18,7 @@ type ChatMessage = {
   t: number;
 };
 
-type BoardMode = "chess" | "checkers" | "goose";
+type BoardMode = "chess" | "checkers" | "goose" | "puzzleRush";
 
 type LeaderboardEntry = {
   id: string;
@@ -320,6 +320,8 @@ export default class RoomServer implements Party.Server {
             ? "checkers"
             : msg.mode === "goose"
             ? "goose"
+            : msg.mode === "puzzleRush"
+            ? "puzzleRush"
             : "chess";
         if (!boardKey) return;
 

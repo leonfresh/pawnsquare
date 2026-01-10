@@ -132,6 +132,19 @@ export type BoardControlsEvent =
       clockActive?: Side | null;
       clockSnapshotAtMs?: number;
 
+      // Puzzle Rush (solo)
+      puzzleRushRunning?: boolean;
+      puzzleRushScore?: number;
+      puzzleRushDifficulty?:
+        | "easiest"
+        | "easier"
+        | "normal"
+        | "harder"
+        | "hardest";
+      puzzleRushPuzzleId?: string;
+      onPuzzleRushStart?: () => void;
+      onPuzzleRushStop?: () => void;
+
       // Match UX (chess/goose only)
       resultLabel?: string | null;
       drawOfferFrom?: Side | null;
@@ -188,6 +201,17 @@ export type BoardControlsEvent =
       clockRunning?: boolean;
       clockActive?: Side | null;
       clockSnapshotAtMs?: number;
+
+      // Puzzle Rush (solo)
+      puzzleRushRunning?: boolean;
+      puzzleRushScore?: number;
+      puzzleRushDifficulty?:
+        | "easiest"
+        | "easier"
+        | "normal"
+        | "harder"
+        | "hardest";
+      puzzleRushPuzzleId?: string;
 
       // Match UX (chess/goose only)
       resultLabel?: string | null;

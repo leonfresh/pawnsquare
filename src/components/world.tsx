@@ -34,7 +34,11 @@ import { ChessSetPreview } from "@/components/chess-set-preview";
 import { preloadAvatarUrl } from "@/components/three-avatar";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import type { User } from "@supabase/supabase-js";
-import { BOARD_MODE_DEFS, engineForMode } from "@/lib/boardModes";
+import {
+  BOARD_MODE_DEFS,
+  engineForMode,
+  getBoardModeDef,
+} from "@/lib/boardModes";
 import { useRoomDiscovery } from "@/lib/roomDiscovery";
 
 function makeRadialGlowTexture(size = 64) {
@@ -2983,6 +2987,14 @@ type BoardControlsOpen = {
   clockActive?: "w" | "b" | null;
   clockSnapshotAtMs?: number;
 
+  // Puzzle Rush (solo)
+  puzzleRushRunning?: boolean;
+  puzzleRushScore?: number;
+  puzzleRushDifficulty?: "easiest" | "easier" | "normal" | "harder" | "hardest";
+  puzzleRushPuzzleId?: string;
+  onPuzzleRushStart?: () => void;
+  onPuzzleRushStop?: () => void;
+
   // Match UX (chess/goose only)
   resultLabel?: string | null;
   drawOfferFrom?: "w" | "b" | null;
@@ -3052,6 +3064,12 @@ type Board2dSync = {
   clockRunning?: boolean;
   clockActive?: "w" | "b" | null;
   clockSnapshotAtMs?: number;
+
+  // Puzzle Rush (solo)
+  puzzleRushRunning?: boolean;
+  puzzleRushScore?: number;
+  puzzleRushDifficulty?: "easiest" | "easier" | "normal" | "harder" | "hardest";
+  puzzleRushPuzzleId?: string;
 
   // Match UX (chess/goose only)
   resultLabel?: string | null;
@@ -3949,7 +3967,64 @@ const InWorldTv = memo(function InWorldTv({
     }
 
     // Right-side clocks panel (chess/goose only)
-    if (
+    if (mode === "puzzleRush") {
+      const score = (sync as any).puzzleRushScore ?? 0;
+      const diff = (sync as any).puzzleRushDifficulty ?? "easiest";
+      const running = Boolean((sync as any).puzzleRushRunning);
+
+      // Use the existing clockRemainingMs ticking mechanism.
+      const nowMs = Date.now();
+      const elapsedMs =
+        sync.clockRunning && typeof sync.clockSnapshotAtMs === "number"
+          ? Math.max(0, nowMs - sync.clockSnapshotAtMs)
+          : 0;
+      const baseMs = sync.clockRemainingMs?.w ?? 0;
+      const remMs = sync.clockRunning
+        ? Math.max(0, baseMs - elapsedMs)
+        : baseMs;
+      const timeText = formatClockMs(remMs);
+
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.strokeStyle = "rgba(255,255,255,0.08)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(clockX, clockY, clockW, clockH, 18);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(255,255,255,0.82)";
+      ctx.font = "900 18px system-ui, sans-serif";
+      ctx.fillText("PUZZLE RUSH", clockX + 16, clockY + 34);
+
+      ctx.globalAlpha = 0.85;
+      ctx.font = "700 14px system-ui, sans-serif";
+      ctx.fillText(
+        `Difficulty: ${String(diff).toUpperCase()}`,
+        clockX + 16,
+        clockY + 60
+      );
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.font = "900 44px system-ui, sans-serif";
+      ctx.fillText(timeText, clockX + 16, clockY + 118);
+
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.font = "900 34px system-ui, sans-serif";
+      ctx.fillText(`Score: ${score}`, clockX + 16, clockY + 168);
+
+      ctx.globalAlpha = 0.78;
+      ctx.font = "700 14px system-ui, sans-serif";
+      ctx.fillText(
+        running ? "Tap the TV to solve" : "Open Controls TV to start",
+        clockX + 16,
+        clockY + 198
+      );
+      ctx.globalAlpha = 1;
+
+      ctx.restore();
+    } else if (
       (engine === "chess" || engine === "checkers") &&
       sync.clockRemainingMs
     ) {
@@ -6347,6 +6422,14 @@ export default function World({
           drawOfferFrom: event.drawOfferFrom ?? prev.drawOfferFrom,
           rematch: event.rematch ?? prev.rematch,
           checkersBoard: event.checkersBoard ?? prev.checkersBoard,
+          puzzleRushRunning:
+            (event as any).puzzleRushRunning ?? prev.puzzleRushRunning,
+          puzzleRushScore:
+            (event as any).puzzleRushScore ?? prev.puzzleRushScore,
+          puzzleRushDifficulty:
+            (event as any).puzzleRushDifficulty ?? prev.puzzleRushDifficulty,
+          puzzleRushPuzzleId:
+            (event as any).puzzleRushPuzzleId ?? prev.puzzleRushPuzzleId,
           onMove2d: event.onMove2d,
         };
       });
@@ -8873,6 +8956,9 @@ export default function World({
               const mode: BoardMode =
                 (boardModes?.[boardControls.boardKey] as BoardMode) ?? "chess";
               const isChess4Way = boardControls.boardKey === "m";
+              const modeLabel = isChess4Way
+                ? "Chess 4P"
+                : getBoardModeDef(mode).label;
 
               return (
                 <>
@@ -8962,7 +9048,7 @@ export default function World({
                           textTransform: "capitalize",
                         }}
                       >
-                        {isChess4Way ? "Chess 4P" : mode}
+                        {modeLabel}
                       </div>
                       <div
                         style={{
@@ -8992,6 +9078,109 @@ export default function World({
                   <div
                     style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}
                   >
+                    {mode === "puzzleRush" ? (
+                      <div
+                        style={{
+                          marginBottom: 14,
+                          borderRadius: 14,
+                          border:
+                            boardControls.lobby === "scifi"
+                              ? "1px solid rgba(0,255,255,0.25)"
+                              : "1px solid rgba(0,0,0,0.12)",
+                          background:
+                            boardControls.lobby === "scifi"
+                              ? "rgba(0,0,0,0.22)"
+                              : "rgba(255,255,255,0.55)",
+                          padding: "12px 14px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 12,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 4,
+                          }}
+                        >
+                          <div style={{ fontWeight: 900, fontSize: 14 }}>
+                            Puzzle Rush
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 700,
+                              opacity: 0.85,
+                            }}
+                          >
+                            Score: {boardControls.puzzleRushScore ?? 0}
+                            {boardControls.puzzleRushDifficulty
+                              ? ` • ${String(
+                                  boardControls.puzzleRushDifficulty
+                                ).toUpperCase()}`
+                              : ""}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 10 }}>
+                          {!boardControls.puzzleRushRunning ? (
+                            <button
+                              onClick={() =>
+                                boardControls.onPuzzleRushStart?.()
+                              }
+                              style={{
+                                padding: "10px 14px",
+                                borderRadius: 12,
+                                border:
+                                  boardControls.lobby === "scifi"
+                                    ? "1px solid rgba(0,255,180,0.35)"
+                                    : "1px solid rgba(0,120,90,0.35)",
+                                background:
+                                  boardControls.lobby === "scifi"
+                                    ? "rgba(0,50,40,0.4)"
+                                    : "rgba(210,255,245,0.85)",
+                                color:
+                                  boardControls.lobby === "scifi"
+                                    ? "#7cffd8"
+                                    : "#0d2a32",
+                                cursor: "pointer",
+                                fontWeight: 900,
+                                fontSize: 14,
+                              }}
+                            >
+                              Start (3:00)
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => boardControls.onPuzzleRushStop?.()}
+                              style={{
+                                padding: "10px 14px",
+                                borderRadius: 12,
+                                border:
+                                  boardControls.lobby === "scifi"
+                                    ? "1px solid rgba(255,90,90,0.5)"
+                                    : "1px solid rgba(200,40,40,0.35)",
+                                background:
+                                  boardControls.lobby === "scifi"
+                                    ? "rgba(50,0,0,0.45)"
+                                    : "rgba(255,230,230,0.8)",
+                                color:
+                                  boardControls.lobby === "scifi"
+                                    ? "#ffb3b3"
+                                    : "#5c0f0f",
+                                cursor: "pointer",
+                                fontWeight: 900,
+                                fontSize: 14,
+                              }}
+                            >
+                              Stop
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div
                       style={{
                         display: "flex",
@@ -9645,175 +9834,179 @@ export default function World({
                               </>
                             )}
 
-                            <div
-                              style={{
-                                fontSize: 12,
-                                fontWeight: 700,
-                                marginTop: 16,
-                                marginBottom: 8,
-                                opacity: 0.65,
-                                textTransform: "uppercase",
-                                letterSpacing: 0.5,
-                              }}
-                            >
-                              Time
-                            </div>
-                            <div
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 700,
-                                marginBottom: 10,
-                                opacity: 0.75,
-                              }}
-                            >
-                              Current: {boardControls.timeMinutes}min
-                            </div>
-                            <div
-                              style={{
-                                display: "grid",
-                                gridTemplateColumns:
-                                  "repeat(2, minmax(0, 1fr))",
-                                gap: 10,
-                              }}
-                            >
-                              <button
-                                onClick={boardControls.onDec}
-                                disabled={!boardControls.canDec}
-                                style={{
-                                  padding: "14px",
-                                  borderRadius: 12,
-                                  border:
-                                    boardControls.lobby === "scifi"
-                                      ? "1px solid rgba(0,255,255,0.35)"
-                                      : "1px solid rgba(0,0,0,0.12)",
-                                  background:
-                                    boardControls.lobby === "scifi"
-                                      ? "rgba(0,0,0,0.3)"
-                                      : "rgba(255,255,255,0.8)",
-                                  color: "inherit",
-                                  cursor: boardControls.canDec
-                                    ? "pointer"
-                                    : "not-allowed",
-                                  opacity: boardControls.canDec ? 1 : 0.4,
-                                  fontWeight: 600,
-                                  fontSize: 14,
-                                }}
-                              >
-                                ⏱ Decrease Time
-                              </button>
-                              <button
-                                onClick={boardControls.onInc}
-                                disabled={!boardControls.canInc}
-                                style={{
-                                  padding: "14px",
-                                  borderRadius: 12,
-                                  border:
-                                    boardControls.lobby === "scifi"
-                                      ? "1px solid rgba(0,255,255,0.35)"
-                                      : "1px solid rgba(0,0,0,0.12)",
-                                  background:
-                                    boardControls.lobby === "scifi"
-                                      ? "rgba(0,0,0,0.3)"
-                                      : "rgba(255,255,255,0.8)",
-                                  color: "inherit",
-                                  cursor: boardControls.canInc
-                                    ? "pointer"
-                                    : "not-allowed",
-                                  opacity: boardControls.canInc ? 1 : 0.4,
-                                  fontWeight: 600,
-                                  fontSize: 14,
-                                }}
-                              >
-                                ⏱ Increase Time
-                              </button>
-                            </div>
+                            {mode !== "puzzleRush" ? (
+                              <>
+                                <div
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    marginTop: 16,
+                                    marginBottom: 8,
+                                    opacity: 0.65,
+                                    textTransform: "uppercase",
+                                    letterSpacing: 0.5,
+                                  }}
+                                >
+                                  Time
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 700,
+                                    marginBottom: 10,
+                                    opacity: 0.75,
+                                  }}
+                                >
+                                  Current: {boardControls.timeMinutes}min
+                                </div>
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns:
+                                      "repeat(2, minmax(0, 1fr))",
+                                    gap: 10,
+                                  }}
+                                >
+                                  <button
+                                    onClick={boardControls.onDec}
+                                    disabled={!boardControls.canDec}
+                                    style={{
+                                      padding: "14px",
+                                      borderRadius: 12,
+                                      border:
+                                        boardControls.lobby === "scifi"
+                                          ? "1px solid rgba(0,255,255,0.35)"
+                                          : "1px solid rgba(0,0,0,0.12)",
+                                      background:
+                                        boardControls.lobby === "scifi"
+                                          ? "rgba(0,0,0,0.3)"
+                                          : "rgba(255,255,255,0.8)",
+                                      color: "inherit",
+                                      cursor: boardControls.canDec
+                                        ? "pointer"
+                                        : "not-allowed",
+                                      opacity: boardControls.canDec ? 1 : 0.4,
+                                      fontWeight: 600,
+                                      fontSize: 14,
+                                    }}
+                                  >
+                                    ⏱ Decrease Time
+                                  </button>
+                                  <button
+                                    onClick={boardControls.onInc}
+                                    disabled={!boardControls.canInc}
+                                    style={{
+                                      padding: "14px",
+                                      borderRadius: 12,
+                                      border:
+                                        boardControls.lobby === "scifi"
+                                          ? "1px solid rgba(0,255,255,0.35)"
+                                          : "1px solid rgba(0,0,0,0.12)",
+                                      background:
+                                        boardControls.lobby === "scifi"
+                                          ? "rgba(0,0,0,0.3)"
+                                          : "rgba(255,255,255,0.8)",
+                                      color: "inherit",
+                                      cursor: boardControls.canInc
+                                        ? "pointer"
+                                        : "not-allowed",
+                                      opacity: boardControls.canInc ? 1 : 0.4,
+                                      fontWeight: 600,
+                                      fontSize: 14,
+                                    }}
+                                  >
+                                    ⏱ Increase Time
+                                  </button>
+                                </div>
 
-                            <div
-                              style={{
-                                fontSize: 12,
-                                fontWeight: 700,
-                                marginTop: 16,
-                                marginBottom: 8,
-                                opacity: 0.65,
-                                textTransform: "uppercase",
-                                letterSpacing: 0.5,
-                              }}
-                            >
-                              Increment
-                            </div>
-                            <div
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 700,
-                                marginBottom: 10,
-                                opacity: 0.75,
-                              }}
-                            >
-                              Current: {boardControls.incrementSeconds}s
-                            </div>
-                            <div
-                              style={{
-                                display: "grid",
-                                gridTemplateColumns:
-                                  "repeat(2, minmax(0, 1fr))",
-                                gap: 10,
-                              }}
-                            >
-                              <button
-                                onClick={boardControls.onDecIncrement}
-                                disabled={!boardControls.canDecIncrement}
-                                style={{
-                                  padding: "14px",
-                                  borderRadius: 12,
-                                  border:
-                                    boardControls.lobby === "scifi"
-                                      ? "1px solid rgba(0,255,255,0.35)"
-                                      : "1px solid rgba(0,0,0,0.12)",
-                                  background:
-                                    boardControls.lobby === "scifi"
-                                      ? "rgba(0,0,0,0.3)"
-                                      : "rgba(255,255,255,0.8)",
-                                  color: "inherit",
-                                  cursor: boardControls.canDecIncrement
-                                    ? "pointer"
-                                    : "not-allowed",
-                                  opacity: boardControls.canDecIncrement
-                                    ? 1
-                                    : 0.4,
-                                  fontWeight: 600,
-                                  fontSize: 14,
-                                }}
-                              >
-                                ➖ Decrease
-                              </button>
-                              <button
-                                onClick={boardControls.onIncIncrement}
-                                disabled={!boardControls.canIncIncrement}
-                                style={{
-                                  padding: "14px",
-                                  borderRadius: 12,
-                                  border:
-                                    boardControls.lobby === "scifi"
-                                      ? "1px solid rgba(0,255,255,0.35)"
-                                      : "1px solid rgba(0,0,0,0.12)",
-                                  background:
-                                    boardControls.lobby === "scifi"
-                                      ? "rgba(0,0,0,0.3)"
-                                      : "rgba(255,255,255,0.8)",
-                                  color: "inherit",
-                                  cursor: boardControls.canIncIncrement
-                                    ? "pointer"
-                                    : "not-allowed",
-                                  opacity: boardControls.canIncIncrement
-                                    ? 1
-                                    : 0.4,
-                                  fontWeight: 600,
-                                  fontSize: 14,
-                                }}
-                              >
-                                ➕ Increase
-                              </button>
-                            </div>
+                                <div
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    marginTop: 16,
+                                    marginBottom: 8,
+                                    opacity: 0.65,
+                                    textTransform: "uppercase",
+                                    letterSpacing: 0.5,
+                                  }}
+                                >
+                                  Increment
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: 13,
+                                    fontWeight: 700,
+                                    marginBottom: 10,
+                                    opacity: 0.75,
+                                  }}
+                                >
+                                  Current: {boardControls.incrementSeconds}s
+                                </div>
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    gridTemplateColumns:
+                                      "repeat(2, minmax(0, 1fr))",
+                                    gap: 10,
+                                  }}
+                                >
+                                  <button
+                                    onClick={boardControls.onDecIncrement}
+                                    disabled={!boardControls.canDecIncrement}
+                                    style={{
+                                      padding: "14px",
+                                      borderRadius: 12,
+                                      border:
+                                        boardControls.lobby === "scifi"
+                                          ? "1px solid rgba(0,255,255,0.35)"
+                                          : "1px solid rgba(0,0,0,0.12)",
+                                      background:
+                                        boardControls.lobby === "scifi"
+                                          ? "rgba(0,0,0,0.3)"
+                                          : "rgba(255,255,255,0.8)",
+                                      color: "inherit",
+                                      cursor: boardControls.canDecIncrement
+                                        ? "pointer"
+                                        : "not-allowed",
+                                      opacity: boardControls.canDecIncrement
+                                        ? 1
+                                        : 0.4,
+                                      fontWeight: 600,
+                                      fontSize: 14,
+                                    }}
+                                  >
+                                    ➖ Decrease
+                                  </button>
+                                  <button
+                                    onClick={boardControls.onIncIncrement}
+                                    disabled={!boardControls.canIncIncrement}
+                                    style={{
+                                      padding: "14px",
+                                      borderRadius: 12,
+                                      border:
+                                        boardControls.lobby === "scifi"
+                                          ? "1px solid rgba(0,255,255,0.35)"
+                                          : "1px solid rgba(0,0,0,0.12)",
+                                      background:
+                                        boardControls.lobby === "scifi"
+                                          ? "rgba(0,0,0,0.3)"
+                                          : "rgba(255,255,255,0.8)",
+                                      color: "inherit",
+                                      cursor: boardControls.canIncIncrement
+                                        ? "pointer"
+                                        : "not-allowed",
+                                      opacity: boardControls.canIncIncrement
+                                        ? 1
+                                        : 0.4,
+                                      fontWeight: 600,
+                                      fontSize: 14,
+                                    }}
+                                  >
+                                    ➕ Increase
+                                  </button>
+                                </div>
+                              </>
+                            ) : null}
                           </div>
                         </div>
                       </details>

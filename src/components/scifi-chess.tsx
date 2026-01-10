@@ -27,6 +27,7 @@ import { useCheckersGame } from "./checkers-core";
 import { useChessSounds } from "./chess-sounds";
 import { LocalArrow3D, useLocalArrows } from "./local-arrows";
 import { parseFenMoveNumber } from "@/lib/gooseChess";
+import { usePuzzleRushGame } from "./puzzle-rush-core";
 
 /**
  * Sci-Fi board implementation notes (unified game logic)
@@ -1519,6 +1520,7 @@ export function ScifiChess({
   gameMode?: BoardMode;
   suppressCameraRotateRef?: MutableRefObject<boolean>;
 }) {
+  const isPuzzleRush = gameMode === "puzzleRush";
   const engine = engineForMode(gameMode);
   const [warningSquare, setWarningSquare] = useState<Square | null>(null);
   const [warningStartMs, setWarningStartMs] = useState(0);
@@ -1576,7 +1578,7 @@ export function ScifiChess({
   });
 
   const chessGame = useChessGame({
-    enabled: engine === "chess",
+    enabled: engine === "chess" && !isPuzzleRush,
     variant: chessVariantForMode(gameMode),
     roomId,
     boardKey,
@@ -1608,6 +1610,16 @@ export function ScifiChess({
       warning: playWarning,
       click: playClick,
     },
+  });
+
+  const puzzleRush = usePuzzleRushGame({
+    enabled: isPuzzleRush,
+    roomId,
+    boardKey,
+    lobby: "scifi",
+    controlsOpen: !!controlsOpen,
+    board2dOpen: !!board2dOpen,
+    onBoardControls,
   });
 
   // Quick Play: if targeted, try to join an available seat (only on fresh games).
@@ -1831,12 +1843,15 @@ export function ScifiChess({
   ) => !!seat?.connId && !!seat?.playerId;
   const activeBothSeatsOccupied =
     seatOccupied(activeSeats.w) && seatOccupied(activeSeats.b);
-  const canUseControlTV = activeIsSeated || !activeBothSeatsOccupied;
+  const canUseControlTV = isPuzzleRush
+    ? true
+    : activeIsSeated || !activeBothSeatsOccupied;
 
-  const activeEmitControlsOpen =
-    engine === "checkers"
-      ? checkersGame.emitControlsOpen
-      : chessGame.emitControlsOpen;
+  const activeEmitControlsOpen = isPuzzleRush
+    ? puzzleRush.emitControlsOpen
+    : engine === "checkers"
+    ? checkersGame.emitControlsOpen
+    : chessGame.emitControlsOpen;
   const activeOnPickSquare = (sq: string) => {
     if (engine === "checkers") {
       checkersGame.onPickSquare(sq);
@@ -2959,6 +2974,75 @@ export function ScifiChess({
           activeEmitControlsOpen();
         }}
       />
+
+      {isPuzzleRush ? (
+        <group
+          position={[
+            controlPadCenter.x,
+            controlPadCenter.y,
+            controlPadCenter.z,
+          ]}
+        >
+          <group
+            position={[0, 0.015, 0]}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              if (puzzleRush.running) puzzleRush.stop();
+              else void puzzleRush.start();
+            }}
+            onPointerEnter={() => {
+              document.body.style.cursor = "pointer";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = "default";
+            }}
+          >
+            <mesh receiveShadow>
+              <boxGeometry args={[0.9, 0.03, 0.9]} />
+              <meshStandardMaterial
+                color={puzzleRush.running ? "#0044aa" : "#111"}
+                roughness={0.2}
+                metalness={0.9}
+                emissive={puzzleRush.running ? "#0044aa" : "#000"}
+                emissiveIntensity={0.5}
+              />
+            </mesh>
+            <mesh position={[0, 0.018, 0]}>
+              <boxGeometry args={[0.98, 0.01, 0.98]} />
+              <meshBasicMaterial
+                color={puzzleRush.running ? "#00ffff" : "#0088ff"}
+                transparent
+                opacity={0.6}
+              />
+            </mesh>
+            <Text
+              position={[0, 0.031, 0]}
+              rotation={[-Math.PI / 2, 0, 0]}
+              fontSize={0.18}
+              lineHeight={0.9}
+              maxWidth={0.86}
+              textAlign="center"
+              color={puzzleRush.running ? "#00ffff" : "#fff"}
+              anchorX="center"
+              anchorY="middle"
+              outlineWidth={0.008}
+              outlineColor={puzzleRush.running ? "#00ffff" : "#000000"}
+              fontWeight="bold"
+            >
+              {puzzleRush.running ? "STOP\nRUSH" : "START\nRUSH"}
+            </Text>
+            {puzzleRush.running ? (
+              <pointLight
+                position={[0, 0.5, 0]}
+                color="#00ffff"
+                intensity={2}
+                distance={3}
+              />
+            ) : null}
+          </group>
+        </group>
+      ) : null}
 
       {/* Goose Chess visuals */}
       {gameMode === "goose"

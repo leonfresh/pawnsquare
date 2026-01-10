@@ -32,6 +32,13 @@ export const BOARD_MODE_DEFS = [
     chessVariant: "standard",
   },
   {
+    key: "puzzleRush",
+    label: "Puzzle Rush",
+    icon: "⚡",
+    engine: "chess",
+    chessVariant: "standard",
+  },
+  {
     key: "checkers",
     label: "Checkers",
     icon: "⬤",
